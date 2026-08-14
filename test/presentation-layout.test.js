@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const styles = fs.readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const brand = fs.readFileSync(new URL("../kaplan-brand-layer.css", import.meta.url), "utf8");
 
 test("presentation mode is a fixed no-scroll viewport", () => {
   assert.match(app, /is-presentation/);
@@ -46,4 +47,12 @@ test("next-question navigation follows the authored question ID, not a restored 
 
 test("presenter timer is a prominent shared-screen control", () => {
   assert.match(styles, /presentation-round \.question-timer\{[^}]*min-width:clamp\(112px,13vw,190px\)[^}]*font-size:clamp\(30px,5\.6vh,68px\)/);
+});
+
+test("presentation reserves one title QR and uses a large corner QR with two-column intermission cards", () => {
+  assert.match(app, /const isPresenterCornerQr = Boolean\(qrCanvas\.closest\("\.presenter-join-qr--corner"\)\)/);
+  assert.match(app, /const width = isPresenterCornerQr \? 144 : 150/);
+  assert.match(app, /return `<section class="presentation-card presentation-card--intermission">\$\{presentationLeaderboard\(\)\}<\/section>`/);
+  assert.match(brand, /presentation-card--intermission \.presentation-leaderboard \{ grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(brand, /presentation-card--intermission \.player-logo--presentation \{[^}]*width:min\(100%,150px\)/);
 });

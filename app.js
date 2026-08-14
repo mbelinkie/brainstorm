@@ -248,6 +248,7 @@ let playerId = sessionStorage.getItem("musicTriviaPlayerId") || crypto.randomUUI
 sessionStorage.setItem("musicTriviaPlayerId", playerId);
 let playerName = sessionStorage.getItem("musicTriviaPlayerName") || "";
 let playerLogoKey = normalizePlayerLogoKey(sessionStorage.getItem("quizPlayerLogoKey"));
+let lateJoinBonus = null;
 
 // A host may open the shareable presentation in a second tab. Keep this room
 // credential browser-local and same-origin only; it is never added to a URL.
@@ -419,6 +420,7 @@ async function connectHostedRoom() {
     if (view === "player" && params.has("room") && playerName) {
       const joined = await roomApi.joinRoom({ roomCode, displayName: playerName, playerToken: playerId, logoKey: playerLogoKey });
       state = { ...state, ...joined.state, revision: joined.revision };
+      lateJoinBonus = joined.lateJoinBonus || null;
       announcePlayerPresence();
       render();
     }
@@ -555,8 +557,11 @@ function shell(content, isPlayer = false) {
   return `<section class="${isPlayer ? "player-shell" : "shell"}">${content}</section>`;
 }
 
-function brandTopbar(host = false) {
-  return `<header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">K</span><span>QUIZ CONTROL</span></div>${host ? '<span class="host-badge">HOST VIEW</span>' : `<span class="room-badge">ROOM ${roomCode}</span>`}</header>`;
+function brandTopbar(host = false, presenter = false) {
+  const roomControl = presenter
+    ? '<div class="presenter-join-qr" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>Join</span></div>'
+    : `<span class="room-badge">ROOM ${roomCode}</span>`;
+  return `<header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">K</span><span>BRAINSTORM</span></div>${host ? '<span class="host-badge">HOST VIEW</span>' : roomControl}</header>`;
 }
 
 function preflightChecklist() {
@@ -943,6 +948,14 @@ function activeMultiplierBadge() {
   if (!result || Number(state.targetRoundIndex) !== currentRoundIndex || ["door_choice", "door_reveal", "complete"].includes(state.phase)) return "";
   return `<span class="active-multiplier ${Number(result.multiplier) < 1 ? "is-penalty" : ""}">${formatMultiplier(result.multiplier)} this round</span>`;
 }
+function lateJoinBonusBadge() {
+  if (!lateJoinBonus || !Number.isInteger(Number(lateJoinBonus.targetRoundIndex))) return "";
+  const currentRoundIndex = Math.max(0, Number(state.question?.round || 1) - 1);
+  const targetRoundIndex = Number(lateJoinBonus.targetRoundIndex);
+  if (currentRoundIndex > targetRoundIndex || state.phase === "complete") return "";
+  const timing = currentRoundIndex === targetRoundIndex && !["door_choice", "door_reveal"].includes(state.phase) ? "this round" : `in round ${targetRoundIndex + 1}`;
+  return `<span class="late-join-bonus">Catch-up boost · ${formatMultiplier(lateJoinBonus.multiplier)} ${timing}</span>`;
+}
 function doorChoiceCards({ interactive = false, compact = false } = {}) {
   const config = doorBonusDefinition();
   const entries = state.phase === "door_reveal" ? (state.doorResults || []) : (state.doorPicks || []);
@@ -987,7 +1000,7 @@ function presentationLeaderboard({ final = false } = {}) {
   if (!players.length) return `<section class="presentation-leaderboard-card is-empty"><p class="eyebrow">${final ? "Final standings" : "Scoreboard"}</p><h2>${final ? "The final scores are on their way." : "The scoreboard will appear as players join."}</h2></section>`;
   let previousPoints = null;
   let rank = 0;
-  const visiblePlayers = players.slice(0, final ? 10 : 5);
+  const visiblePlayers = players.slice(0, final ? 10 : 4);
   const rows = visiblePlayers.map((player, index) => {
     const points = Number(player.points) || 0;
     if (previousPoints === null || points !== previousPoints) rank = index + 1;
@@ -1000,23 +1013,26 @@ function presentationLeaderboard({ final = false } = {}) {
 }
 
 function presenterIntermission() {
-  const questionNumber = Number(state.question?.questionInRound) || 1;
-  const totalQuestions = Number(state.question?.questionsInRound) || 1;
-  const roundNumber = Number(state.question?.round) || 1;
-  const totalRounds = Number(state.question?.totalRounds) || 1;
-  return `<section class="presentation-card presentation-card--intermission"><div class="presentation-intermission-copy"><p class="eyebrow">${questionNumber === 1 ? "Next round" : "Up next"}</p><h2>${questionNumber === 1 ? "A new round is about to begin." : `Question ${questionNumber} of ${totalQuestions} is ready.`}</h2><p>Round ${roundNumber} of ${totalRounds} · The host will start when everyone is set.</p></div>${presentationLeaderboard()}</section>`;
+  // The round banner above already provides the next-question context. Keep
+  // this state purpose-built for the shared scoreboard instead of repeating it.
+  return `<section class="presentation-card presentation-card--intermission">${presentationLeaderboard()}</section>`;
 }
 
 function presentationTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
   const subtitle = titlePage.subtitle || "Get your phone ready — we’ll begin shortly.";
-  const musicLogo = '<span class="presentation-title-music-logo" aria-hidden="true">♫</span>';
+  const titleIcon = titlePage.icon || "♫";
+  const musicLogo = `<span class="presentation-title-music-logo" aria-hidden="true">${escapeHtml(titleIcon)}</span>`;
   const themeArt = titlePage.imageAssetId
     ? `<div class="presentation-title-art-with-logo"><img class="presentation-title-art" data-private-image="${escapeHtml(titlePage.imageAssetId)}" alt="${escapeHtml(titlePage.imageAlt || "Quiz theme artwork")}" />${musicLogo}</div>`
     : musicLogo;
   const playerCount = state.players.length;
   return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+}
+
+function presentationCornerJoinQr() {
+  return `<div class="presenter-join-qr presenter-join-qr--corner" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>Join</span></div>`;
 }
 
 function renderPresenter() {
@@ -1034,10 +1050,11 @@ function renderPresenter() {
       ? presenterIntermission()
     : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(state.revealImageAssetId || state.question?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite">${state.phase === "reveal" ? "" : `<p class="eyebrow">${state.phase === "locked" ? "Answers are in" : `Question ${questionNumber}`}</p>`}<h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
   const displayedRound = ["door_choice", "door_reveal"].includes(state.phase) ? Number(state.targetRoundIndex) + 1 : state.question?.round || 1;
-  const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Quiz Control";
+  const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Brainstorm";
   const heading = state.presentationScreen === "title" ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1>${state.phase === "open" ? timerDisplay() : ""}</section>`;
   const fullscreenControl = '<div class="presentation-fullscreen-corner"><button class="presentation-fullscreen-toggle" data-toggle-fullscreen aria-label="Toggle fullscreen presentation" title="Toggle fullscreen">⛶</button></div>';
-  app.innerHTML = shell(`${brandTopbar()}<main class="presentation-main ${state.presentationScreen === "title" ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${fullscreenControl}${soundGate}`, true);
+  const cornerJoinQr = state.presentationScreen === "title" ? "" : presentationCornerJoinQr();
+  app.innerHTML = shell(`${brandTopbar()}<main class="presentation-main ${state.presentationScreen === "title" ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
@@ -1049,11 +1066,11 @@ function playerScoreCards(players = state.players, limit = 6) {
 function renderPlayer() {
   if (params.has("room") && !playerName) {
     const logoChoices = PLAYER_LOGOS.map((logo) => `<label class="player-logo-choice"><input type="radio" name="player-logo" value="${logo.key}" aria-label="${logo.label}" ${playerLogoKey === logo.key ? "checked" : ""} /><span class="player-logo player-logo--${logo.key}" aria-hidden="true">${playerLogoArtwork(logo)}</span></label>`).join("");
-    app.innerHTML = shell(`<main class="player-main player-main--join">${brandTopbar()}<section class="player-card player-card--join"><header class="player-round"><p class="eyebrow">Join room ${roomCode}</p><h1>Ready to play?</h1></header><section class="player-question"><p>Choose a square player logo and enter the name you want shown on the leaderboard.</p><fieldset class="player-logo-picker"><legend>Player logo</legend><div>${logoChoices}</div></fieldset><label class="field"><span>Display name</span><input data-player-name maxlength="32" autocomplete="nickname" placeholder="Your name" /></label><div class="submit-bar"><button class="btn btn-primary" data-join-room>Join quiz</button></div></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--join">${brandTopbar()}<section class="player-card player-card--join"><header class="player-round"><p class="eyebrow">Join room ${roomCode}</p><h1>Ready to play?</h1></header><section class="player-question"><p>Enter your name, then choose a square player logo for the leaderboard.</p><div class="player-join-controls"><label class="field"><span>Display name</span><input data-player-name maxlength="32" autocomplete="nickname" placeholder="Your name" /></label><div class="submit-bar"><button class="btn btn-primary" data-join-room>Join quiz</button></div></div><fieldset class="player-logo-picker"><legend>Player logo</legend><div>${logoChoices}</div></fieldset></section></section></main>`, true);
     return;
   }
   if (state.presentationScreen === "title") {
-    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">You’re in, ${escapeHtml(playerName)}</p><h1>${escapeHtml(state.quizTitle || "Quiz night")}</h1>${playerIdentityBadge()}</header><section class="player-question"><p class="eyebrow">Title screen</p><h2>Get ready to play.</h2><p>${escapeHtml(state.quizSubtitle || "The host will start the first question shortly.")}</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">You’re in, ${escapeHtml(playerName)}</p><h1>${escapeHtml(state.quizTitle || "Quiz night")}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Title screen</p><h2>Get ready to play.</h2><p>${escapeHtml(state.quizSubtitle || "The host will start the first question shortly.")}</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
     return;
   }
   if (["door_choice", "door_reveal"].includes(state.phase)) {
@@ -1061,11 +1078,11 @@ function renderPlayer() {
     const selectedPick = (state.doorPicks || []).find((entry) => entry.playerId === playerId);
     const selectedDoor = doorBonusDefinition()?.doors?.find((door) => door.id === (result?.doorId || selectedPick?.doorId));
     const revealCopy = result ? `<div class="personal-door-result ${Number(result.multiplier) < 1 ? "is-penalty" : "is-boost"}"><span>${doorIconSymbol(selectedDoor?.icon)}</span><div><small>${escapeHtml(selectedDoor?.name || "Your door")}</small><strong>${formatMultiplier(result.multiplier)}</strong><p>This multiplier applies to every automatic point you earn in the next round.</p></div></div>` : `<div class="personal-door-result is-neutral"><span>—</span><div><small>No door selected</small><strong>1×</strong><p>You’ll play the next round at the standard multiplier.</p></div></div>`;
-    app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Choose your door"}</h1>${playerIdentityBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Pick one. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Choose your door"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Pick one. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
-    app.innerHTML = shell(`<main class="player-main player-main--intermission">${brandTopbar()}<section class="player-card player-card--intermission player-holding-card"><header class="player-round"><p class="eyebrow">Scoreboard</p><h1>Next question coming up</h1>${playerIdentityBadge()}${activeMultiplierBadge()}</header><section class="player-question"><p class="eyebrow">Between questions</p><h2>Stay on this screen.</h2><p>The host is showing the leaderboard. The next question will appear here when it starts.</p>${playerScoreCards()}<div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--intermission">${brandTopbar()}<section class="player-card player-card--intermission player-holding-card"><header class="player-round"><p class="eyebrow">Scoreboard</p><h1>Next question coming up</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Between questions</p><h2>Stay on this screen.</h2><p>The host is showing the leaderboard. The next question will appear here when it starts.</p>${playerScoreCards()}<div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
     return;
   }
   const submissionKey = `quiz-submitted:${roomCode}:${state.questionId || state.question?.id}`;
@@ -1073,7 +1090,7 @@ function renderPlayer() {
   const manualSubmit = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"].includes(state.question?.type);
   const phaseMessage = state.phase === "locked" ? "Answers are locked." : state.phase === "reveal" ? "Answer revealed." : state.phase === "complete" ? "Thanks for playing—the final leaderboard is on the shared screen." : isSubmitted ? (manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal.") : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically.";
   const playerType = escapeHtml(state.question?.type || "question");
-  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : questionImage({player:true})}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}${revealImage({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
+  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : questionImage({player:true})}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}${revealImage({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
 }
 
 function render() {
@@ -1230,6 +1247,7 @@ function attachEvents() {
       sessionStorage.setItem("musicTriviaPlayerName", name);
       sessionStorage.setItem("quizPlayerLogoKey", playerLogoKey);
       state = { ...state, ...joined.state, revision: joined.revision };
+      lateJoinBonus = joined.lateJoinBonus || null;
       announcePlayerPresence();
       render();
     } catch (error) { alert(`Could not join this room: ${error.message}`); }
@@ -1384,7 +1402,13 @@ function attachEvents() {
   document.querySelectorAll("[data-private-image]").forEach((image) => {
     loadPrivateImage(image).catch(() => image.remove());
   });
-  document.querySelectorAll("[data-join-qr]").forEach((qrCanvas) => import("https://esm.sh/qrcode@1.5.4").then(({ toCanvas }) => toCanvas(qrCanvas, `${location.origin}${location.pathname}?view=player&room=${encodeURIComponent(roomCode)}`, { width: 150, margin: 1, color: { dark: "#240f6e", light: "#ffffff" } })).catch(() => qrCanvas.remove()));
+  document.querySelectorAll("[data-join-qr]").forEach((qrCanvas) => {
+    const isPresenterCornerQr = Boolean(qrCanvas.closest(".presenter-join-qr--corner"));
+    const width = isPresenterCornerQr ? 144 : 150;
+    import("https://esm.sh/qrcode@1.5.4")
+      .then(({ toCanvas }) => toCanvas(qrCanvas, `${location.origin}${location.pathname}?view=player&room=${encodeURIComponent(roomCode)}`, { width, margin: 1, color: { dark: "#240f6e", light: "#ffffff" } }))
+      .catch(() => qrCanvas.remove());
+  });
   startTimerTicker();
 }
 

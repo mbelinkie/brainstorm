@@ -21,8 +21,9 @@ test("mobile logo selection uses one column with large artwork", () => {
 });
 
 test("player screens give identity and scoreboard logos more room", () => {
-  assert.match(css, /\.player-logo--identity\s*\{[^}]*width:\s*72px/);
-  assert.match(css, /\.player-mini-leaderboard \.player-logo--mini\s*\{[^}]*width:\s*64px/);
+  assert.match(css, /\.player-logo--identity\s*\{[^}]*width:\s*104px/);
+  assert.match(css, /\.player-mini-leaderboard \.player-logo--mini\s*\{[^}]*width:\s*min\(26vw,112px\)/);
+  assert.match(css, /object-fit:\s*contain/);
 });
 
 test("all scoreboard variants render player logos", () => {

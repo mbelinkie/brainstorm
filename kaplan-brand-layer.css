@@ -323,6 +323,9 @@ body.is-presentation .player-shell::after { content: none; }
 .player-card--join .field input::placeholder { color: rgba(255,255,255,.48); }
 .player-card--join .btn-primary { background: var(--k-yellow); color: var(--k-purple); }
 .player-card--join .submit-bar { background: transparent; }
+.player-join-controls { position: sticky; z-index: 3; top: 0; margin: 18px -4px 0; padding: 1px 4px 13px; background: linear-gradient(180deg,rgba(23,6,77,.98) 0%,rgba(23,6,77,.90) 86%,transparent 100%); backdrop-filter: blur(10px); }
+.player-join-controls .field { margin-top: 0; }
+.player-join-controls .submit-bar { margin-top: 12px; padding: 0; }
 
 .player-waiting-pulse i { background: rgba(255,255,255,.30); }
 .player-waiting-pulse i:first-child { background: var(--k-yellow); }
@@ -351,7 +354,7 @@ body.is-presentation .player-shell::after { content: none; }
   font-weight: 900;
   line-height: 1;
 }
-.player-logo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.player-logo img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .player-logo--spark { background: linear-gradient(145deg,#005de8,#2ebef0); }
 .player-logo--peak { background: linear-gradient(145deg,#240f6e,#7c51d9); }
 .player-logo--gem { background: linear-gradient(145deg,#d6083b,#ff6788); }
@@ -552,15 +555,25 @@ body.is-presentation .player-shell::after { content: none; }
 }
 
 @media (max-width: 520px) {
-  .player-mini-leaderboard { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-  .player-mini-leaderboard li { position:relative; grid-template-columns:64px minmax(0,1fr); grid-template-rows:auto auto; align-items:center; gap:7px 10px; min-height:122px; padding:11px; border-radius:16px; }
+  .player-mini-leaderboard { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .player-mini-leaderboard li { position:relative; display:grid; grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) auto auto; justify-items:center; align-items:center; gap:3px; min-height:0; aspect-ratio:4 / 3; padding:12px 10px; border-radius:18px; }
   .player-mini-leaderboard li>.player-mini-place { position:absolute; top:7px; right:7px; width:28px; height:28px; }
-  .player-mini-leaderboard .player-logo--mini { grid-column:1; grid-row:1 / span 2; width:64px; align-self:center; border-radius:15px; }
-  .player-mini-leaderboard strong { grid-column:2; grid-row:1; align-self:end; overflow:hidden; padding-right:25px; font-size:14px; text-overflow:ellipsis; white-space:nowrap; }
-  .player-mini-leaderboard b { grid-column:2; grid-row:2; align-self:start; color:var(--k-yellow); font-size:16px; }.player-mini-leaderboard b small { margin-left:2px; color:rgba(255,255,255,.7); font-size:9px; }
+  .player-mini-leaderboard .player-logo--mini { grid-column:1; grid-row:1; width:min(26vw,112px); max-height:100%; align-self:center; border-radius:18px; }
+  .player-mini-leaderboard strong { grid-column:1; grid-row:2; max-width:100%; overflow:hidden; padding:0 28px 0 4px; font-size:14px; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
+  .player-mini-leaderboard b { grid-column:1; grid-row:3; align-self:start; color:var(--k-yellow); font-size:16px; }.player-mini-leaderboard b small { margin-left:2px; color:rgba(255,255,255,.7); font-size:9px; }
   .player-mini-leaderboard li.is-current-player { border-color:var(--k-yellow); background:rgba(255,200,46,.15); box-shadow:0 0 0 2px rgba(255,200,46,.12); }
-  .player-identity-badge { grid-template-columns:72px minmax(0,1fr); margin-top:15px; padding:9px 16px 9px 9px; border-radius:19px; }.player-logo--identity { width:72px; border-radius:16px; }.player-identity-badge small { font-size:11px; }.player-identity-badge strong { font-size:16px; }
+  .player-identity-badge { grid-template-columns:104px minmax(0,1fr); margin-top:15px; padding:9px 16px 9px 9px; border-radius:19px; }.player-logo--identity { width:104px; border-radius:20px; }.player-identity-badge small { font-size:11px; }.player-identity-badge strong { font-size:16px; }
 }
+
+/* Intermission scores are cards, not narrow strips: a two-column layout gives
+   each player logo a dominant, fully visible place in the scoreboard. */
+.is-presentation .presentation-card--intermission .presentation-leaderboard { grid-template-columns:repeat(2,minmax(0,1fr)); grid-auto-rows:1fr; }
+.is-presentation .presentation-card--intermission .presentation-leader { position:relative; grid-template-columns:minmax(112px,42%) minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto; gap:8px 16px; min-height:0; padding:clamp(14px,2vh,24px); border-radius:24px; }
+.is-presentation .presentation-card--intermission .presentation-place { position:absolute; top:14px; right:14px; width:42px; height:42px; font-size:18px; }
+.is-presentation .presentation-card--intermission .player-logo--presentation { grid-row:1 / span 2; width:min(100%,150px); justify-self:center; border-radius:22px; }
+.is-presentation .presentation-card--intermission .presentation-leader strong { align-self:end; padding-right:38px; font-size:clamp(20px,2.5vh,30px); }
+.is-presentation .presentation-card--intermission .presentation-points { align-self:start; font-size:clamp(22px,2.9vh,34px); }
+.is-presentation .presenter-join-qr--corner canvas { width:144px!important; height:144px!important; }
 
 @keyframes kaplan-k-breathe {
   0%,100% { transform: translateY(-50%) rotate(-4.5deg) scale(1); }

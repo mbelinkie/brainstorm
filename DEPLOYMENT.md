@@ -4,7 +4,7 @@ The app is a small Node static server. It does not need a private Supabase key: 
 
 ## Database migrations
 
-Apply every file in `supabase/migrations` in numeric order before deploying a newer app build. Migration `0021_player_logos.sql` is required for player logo selection and adds the logo key to joins and leaderboard results.
+Apply every file in `supabase/migrations` in numeric order before deploying a newer app build. Migration `0021_player_logos.sql` is required for player logo selection, and `0026_late_join_catch_up.sql` adds server-authoritative late-join boosts.
 
 ## Required environment variables
 
