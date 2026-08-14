@@ -119,6 +119,9 @@ function publicRoomState() {
     question: playerQuestion,
     revealedCorrectOptionId: state.phase === "reveal" ? correctOptionId(hostQuestion) : null,
     revealedCorrectOptionIds: state.phase === "reveal" ? hostQuestion.correctOptionIds || (correctOptionId(hostQuestion) ? [correctOptionId(hostQuestion)] : []) : [],
+    revealedCorrectCategories: state.phase === "reveal" && hostQuestion.type === "categorize" ? hostQuestion.correctCategories || {} : {},
+    revealedCorrectPairs: state.phase === "reveal" && hostQuestion.type === "matching" ? hostQuestion.correctPairs || {} : {},
+    revealedTextAnswers: state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(hostQuestion.type) ? hostQuestion.acceptedAnswers || hostQuestion.blanks?.[0]?.acceptedAnswers || [] : [],
     revealedNumber: state.phase === "reveal" && hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null,
     revealImageAssetId: state.phase === "reveal" ? hostQuestion.revealImageAssetId || null : null,
     timerEndsAt: state.timerEndsAt || null,
@@ -248,6 +251,11 @@ let playerId = sessionStorage.getItem("musicTriviaPlayerId") || crypto.randomUUI
 sessionStorage.setItem("musicTriviaPlayerId", playerId);
 let playerName = sessionStorage.getItem("musicTriviaPlayerName") || "";
 let playerLogoKey = normalizePlayerLogoKey(sessionStorage.getItem("quizPlayerLogoKey"));
+let doorPlayerRecordId = sessionStorage.getItem(`quiz-door-player:${roomCode}`) || "";
+function rememberDoorPlayerRecord(id) {
+  doorPlayerRecordId = id;
+  sessionStorage.setItem(`quiz-door-player:${roomCode}`, id);
+}
 let lateJoinBonus = null;
 
 // A host may open the shareable presentation in a second tab. Keep this room
@@ -305,6 +313,9 @@ function playerRenderKey(roomState) {
     question: roomState?.question,
     revealedCorrectOptionId: roomState?.revealedCorrectOptionId,
     revealedCorrectOptionIds: roomState?.revealedCorrectOptionIds,
+    revealedCorrectCategories: roomState?.revealedCorrectCategories,
+    revealedCorrectPairs: roomState?.revealedCorrectPairs,
+    revealedTextAnswers: roomState?.revealedTextAnswers,
     revealedNumber: roomState?.revealedNumber,
     revealImageAssetId: roomState?.revealImageAssetId,
     doorBonus: roomState?.doorBonus,
@@ -561,7 +572,10 @@ function brandTopbar(host = false, presenter = false) {
   const roomControl = presenter
     ? '<div class="presenter-join-qr" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>Join</span></div>'
     : `<span class="room-badge">ROOM ${roomCode}</span>`;
-  return `<header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">K</span><span>BRAINSTORM</span></div>${host ? '<span class="host-badge">HOST VIEW</span>' : roomControl}</header>`;
+  const brandName = ["player", "presenter"].includes(view)
+    ? '<span aria-label="BRAINSTORM">BRAINST<span class="brand-brain" aria-hidden="true">🧠</span>RM</span>'
+    : "BRAINSTORM";
+  return `<header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">K</span>${brandName}</div>${host ? '<span class="host-badge">HOST VIEW</span>' : roomControl}</header>`;
 }
 
 function preflightChecklist() {
@@ -638,13 +652,13 @@ function orderBoard(question, player, presenter = false) {
 function matchingBoard(question, player, presenter = false) {
   const enabled = player && state.phase === "open";
   const showingMatches = !presenter || state.phase === "reveal";
-  const assignments = player ? selectedObject() : showingMatches ? question.correctPairs || {} : {};
+  const assignments = player ? selectedObject() : showingMatches ? (presenter ? state.revealedCorrectPairs || {} : question.correctPairs || {}) : {};
   const hasTargetImages = (question.options || []).some((option) => option.imageAssetId);
   const assignedClipIds = new Set(Object.keys(assignments).filter((clipId) => assignments[clipId]));
   const unassigned = (question.clips || []).filter((clip) => !assignedClipIds.has(clip.id));
   const helper = enabled ? (hasTargetImages ? "Drag each song title onto its matching movie poster." : "Match each item to a choice.") : showingMatches ? "Correct matches" : "Listen carefully—matches will be revealed shortly.";
   const activeClipIndex = (question.clips || []).findIndex((clip) => clip.id === state.activeClipId);
-  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching"><p class="drag-help">${helper}</p><div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const isActiveIntro = presenter && !showingMatches && index === activeClipIndex; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : "?"; return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? "No match yet" : "Listen closely"}</span>`}</div>`; }).join("")}</div></div>`;
+  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching"><p class="drag-help">${helper}</p><div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const isActiveIntro = presenter && !showingMatches && index === activeClipIndex; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "Listen closely"}</span>`}</div>`; }).join("")}</div></div>`;
 }
 
 function matchingSelectBoard(question) {
@@ -656,7 +670,7 @@ function matchingSelectBoard(question) {
 
 function categorizeBoard(question, player) {
   const enabled = player && state.phase === "open";
-  const assignments = player ? selectedObject() : question.correctCategories || {};
+  const assignments = player ? selectedObject() : (view === "presenter" ? state.revealedCorrectCategories || {} : question.correctCategories || {});
   const assignedItemIds = new Set(Object.keys(assignments).filter((id) => assignments[id]));
   const unassigned = (question.items || []).filter((item) => !assignedItemIds.has(item.id));
   return `<div class="drag-board" data-drag-board="categorize"><p class="drag-help">${enabled ? "Drag each card into one of the two categories." : "Correct categories"}</p><div class="drag-pool" data-drop-zone="categorize-pool">${unassigned.length ? unassigned.map((item) => dragCard(item, "categorize", enabled)).join("") : '<span class="drag-empty">All cards sorted</span>'}</div><div class="drag-buckets">${(question.categories || []).map((category) => `<section class="drag-bucket" data-drop-zone="categorize-bucket" data-category-id="${escapeHtml(category.id)}"><h3>${escapeHtml(category.label)}</h3><div>${(question.items || []).filter((item) => assignments[item.id] === category.id).map((item) => dragCard(item, "categorize", enabled, { assigned: true })).join("") || '<span class="drag-placeholder">Drop cards here</span>'}</div></section>`).join("")}</div></div>`;
@@ -665,7 +679,8 @@ function categorizeBoard(question, player) {
 function categorizeTapBoard(question) {
   const enabled = state.phase === "open";
   const assignments = selectedObject();
-  return `<div class="categorize-tap-board"><p class="drag-help">Tap a category for each item.</p><div class="categorize-key">${(question.categories || []).map((category) => `<span>${escapeHtml(category.label)}</span>`).join("")}</div>${(question.items || []).map((item) => `<section class="categorize-tap-row"><strong>${escapeHtml(item.label)}</strong><div>${(question.categories || []).map((category) => `<button type="button" data-categorize-item="${escapeHtml(item.id)}" data-category-id="${escapeHtml(category.id)}" class="${assignments[item.id] === category.id ? "is-selected" : ""}" ${enabled ? "" : "disabled"}>${escapeHtml(category.label)}</button>`).join("")}</div></section>`).join("")}</div>`;
+  const correct = state.phase === "reveal" ? state.revealedCorrectCategories || {} : {};
+  return `<div class="categorize-tap-board">${state.phase === "open" ? '<p class="drag-help">Tap a category for each item.</p>' : ""}${(question.items || []).map((item) => `<section class="categorize-tap-row"><strong>${escapeHtml(item.label)}</strong><div>${(question.categories || []).map((category) => `<button type="button" data-categorize-item="${escapeHtml(item.id)}" data-category-id="${escapeHtml(category.id)}" class="${assignments[item.id] === category.id ? "is-selected" : ""} ${state.phase === "reveal" && correct[item.id] === category.id ? "is-correct" : ""} ${state.phase === "reveal" && assignments[item.id] === category.id && correct[item.id] !== category.id ? "is-wrong" : ""}" ${enabled ? "" : "disabled"}>${escapeHtml(category.label)}</button>`).join("")}</div></section>`).join("")}</div>`;
 }
 
 function anonymousTextAnswerWall() {
@@ -682,7 +697,9 @@ function answerControl({ player = false, presenter = false } = {}) {
     const isNumber = ["numeric_estimate", "closest_number"].includes(question.type);
     const revealedNumber = player || presenter ? state.revealedNumber : hostQuestion.targetNumber;
     const reveal = question.type === "closest_number" && state.phase === "reveal" && Number.isFinite(Number(revealedNumber)) ? `<p class="number-reveal">Correct number: <strong>${escapeHtml(revealedNumber)}</strong></p>` : "";
-    return `<div class="player-answers"><label class="field"><span>${isNumber ? question.type === "closest_number" ? "Your closest guess" : "Your estimate" : "Your answer"}</span><input data-text-answer ${isNumber ? 'type="number" inputmode="decimal" step="any"' : ""} ${player && state.phase === "open" ? "" : "disabled"} value="${typeof selected === "string" ? selected : ""}" placeholder="${isNumber ? "Enter a number" : "Type your answer"}" /></label>${question.type === "closest_number" ? '<p class="closest-number-help">Closest valid guess wins. Tied closest guesses split the points.</p>' : ""}${reveal}</div>`;
+    const textCorrect = player && state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(question.type) && typeof selected === "string" && (state.revealedTextAnswers || []).some((answer) => String(answer).replace(/[^a-z0-9]+/gi, "").toLowerCase() === selected.replace(/[^a-z0-9]+/gi, "").toLowerCase());
+    const textResult = player && state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(question.type) ? `<p class="text-answer-result ${textCorrect ? "is-correct" : "is-wrong"}">${textCorrect ? "Correct — nice work." : "Not quite this time."}</p>` : "";
+    return `<div class="player-answers"><label class="field"><span>${isNumber ? question.type === "closest_number" ? "Your closest guess" : "Your estimate" : "Your answer"}</span><input data-text-answer ${isNumber ? 'type="number" inputmode="decimal" step="any"' : ""} ${player && state.phase === "open" ? "" : "disabled"} value="${typeof selected === "string" ? selected : ""}" placeholder="${isNumber ? "Enter a number" : "Type your answer"}" /></label>${question.type === "closest_number" ? '<p class="closest-number-help">Closest valid guess wins. Tied closest guesses split the points.</p>' : ""}${reveal}${textResult}</div>`;
   }
   if (question.type === "categorize") return player ? categorizeTapBoard(question) : categorizeBoard(question, player);
   if (question.type === "arrange_in_order") return orderBoard(question, player, presenter);
@@ -863,8 +880,8 @@ async function startPresentationPlayback() {
 async function applyPresentationAudioCommand() {
   const command = state.audioCommand;
   if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed || !command?.id || command.id === handledPresentationAudioCommand) return;
-  await preparePresentationAudio(command);
   handledPresentationAudioCommand = command.id;
+  await preparePresentationAudio(command);
   if (command.action === "pause") { presentationAudioPlayer.pause(); return; }
   if (command.action === "restart") presentationAudioPlayer.currentTime = 0;
   try { await startPresentationPlayback(); } catch (error) { console.warn("Presentation audio needs to be enabled once in the presentation tab.", error); }
@@ -940,7 +957,7 @@ function doorOdds(door) {
   return (door?.outcomes || []).map((outcome) => `${Number(outcome.chancePercent)}% ${formatMultiplier(outcome.multiplier)}`).join(" · ");
 }
 function activePlayerDoorResult() {
-  return (state.doorResults || []).find((entry) => entry.playerId === playerId) || null;
+  return (state.doorResults || []).find((entry) => entry.playerId === (doorPlayerRecordId || playerId)) || null;
 }
 function activeMultiplierBadge() {
   const result = activePlayerDoorResult();
@@ -959,7 +976,7 @@ function lateJoinBonusBadge() {
 function doorChoiceCards({ interactive = false, compact = false } = {}) {
   const config = doorBonusDefinition();
   const entries = state.phase === "door_reveal" ? (state.doorResults || []) : (state.doorPicks || []);
-  const selectedDoorId = (state.doorPicks || []).find((entry) => entry.playerId === playerId)?.doorId;
+  const selectedDoorId = (state.doorPicks || []).find((entry) => entry.playerId === (doorPlayerRecordId || playerId))?.doorId;
   return `<div class="door-grid ${compact ? "door-grid--compact" : ""}">${(config?.doors || []).map((door, doorIndex) => {
     const players = entries.filter((entry) => entry.doorId === door.id);
     const people = interactive ? "" : players.length ? `<div class="door-players">${players.map((entry, index) => `<span class="door-player ${state.phase === "door_reveal" ? Number(entry.multiplier) < 1 ? "is-penalty" : "is-boost" : ""}" style="--door-player-delay:${index * .06}s">${playerLogoMarkup({ logoKey: entry.logoKey }, "player-logo--door")}<b>${escapeHtml(entry.playerName)}</b>${state.phase === "door_reveal" ? `<strong>${formatMultiplier(entry.multiplier)}</strong>` : ""}</span>`).join("")}</div>` : `<p class="door-empty">No picks yet</p>`;
@@ -1066,7 +1083,7 @@ function playerScoreCards(players = state.players, limit = 6) {
 function renderPlayer() {
   if (params.has("room") && !playerName) {
     const logoChoices = PLAYER_LOGOS.map((logo) => `<label class="player-logo-choice"><input type="radio" name="player-logo" value="${logo.key}" aria-label="${logo.label}" ${playerLogoKey === logo.key ? "checked" : ""} /><span class="player-logo player-logo--${logo.key}" aria-hidden="true">${playerLogoArtwork(logo)}</span></label>`).join("");
-    app.innerHTML = shell(`<main class="player-main player-main--join">${brandTopbar()}<section class="player-card player-card--join"><header class="player-round"><p class="eyebrow">Join room ${roomCode}</p><h1>Ready to play?</h1></header><section class="player-question"><p>Enter your name, then choose a square player logo for the leaderboard.</p><div class="player-join-controls"><label class="field"><span>Display name</span><input data-player-name maxlength="32" autocomplete="nickname" placeholder="Your name" /></label><div class="submit-bar"><button class="btn btn-primary" data-join-room>Join quiz</button></div></div><fieldset class="player-logo-picker"><legend>Player logo</legend><div>${logoChoices}</div></fieldset></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--join">${brandTopbar()}<section class="player-card player-card--join"><section class="player-question"><div class="player-join-controls"><label class="field"><span>Display name</span><input data-player-name maxlength="32" autocomplete="nickname" placeholder="Your name" /></label><div class="submit-bar"><button class="btn btn-primary" data-join-room>Join quiz</button></div></div><fieldset class="player-logo-picker"><legend>Player logo</legend><div>${logoChoices}</div></fieldset></section></section></main>`, true);
     return;
   }
   if (state.presentationScreen === "title") {
@@ -1293,6 +1310,9 @@ function attachEvents() {
     try {
       const payload = params.has("room") ? await roomApi.chooseDoor({ roomCode, playerToken: playerId, doorId }) : { playerId, playerName, logoKey: playerLogoKey, doorId };
       payload.playerName ||= playerName; payload.logoKey ||= playerLogoKey;
+      if (payload.playerId) {
+        rememberDoorPlayerRecord(payload.playerId);
+      }
       state.doorPicks = [...(state.doorPicks || []).filter((entry) => entry.playerId !== playerId), payload];
       localChannel.postMessage({ type: "door-choice", payload });
       realtimeChannel?.send({ type: "broadcast", event: "door-choice", payload });
@@ -1318,7 +1338,7 @@ function attachEvents() {
   document.querySelector("[data-adjust-score]")?.addEventListener("click", async (event) => {
     const playerId = document.querySelector("[data-score-player]")?.value;
     const points = Number(document.querySelector("[data-score-points]")?.value);
-    const reason = document.querySelector("[data-score-reason]")?.value?.trim() || "Host manual adjustment";
+    const reason = document.querySelector("[data-score-reason]")?.value?.trim() || "";
     if (!playerId || !Number.isFinite(points) || points === 0) return;
     const button = event.currentTarget;
     button.disabled = true;

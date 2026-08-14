@@ -33,6 +33,8 @@
   transform: none;
 }
 
+.brand-brain { display:inline-block; margin:0 .025em; font-family:"Apple Color Emoji","Segoe UI Emoji",sans-serif; font-size:1.18em; line-height:0; vertical-align:-.08em; }
+
 /* Presenter ambient field */
 body.is-presentation {
   background:
@@ -555,12 +557,14 @@ body.is-presentation .player-shell::after { content: none; }
 }
 
 @media (max-width: 520px) {
-  .player-mini-leaderboard { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-  .player-mini-leaderboard li { position:relative; display:grid; grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) auto auto; justify-items:center; align-items:center; gap:3px; min-height:0; aspect-ratio:4 / 3; padding:12px 10px; border-radius:18px; }
-  .player-mini-leaderboard li>.player-mini-place { position:absolute; top:7px; right:7px; width:28px; height:28px; }
-  .player-mini-leaderboard .player-logo--mini { grid-column:1; grid-row:1; width:min(26vw,112px); max-height:100%; align-self:center; border-radius:18px; }
-  .player-mini-leaderboard strong { grid-column:1; grid-row:2; max-width:100%; overflow:hidden; padding:0 28px 0 4px; font-size:14px; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
-  .player-mini-leaderboard b { grid-column:1; grid-row:3; align-self:start; color:var(--k-yellow); font-size:16px; }.player-mini-leaderboard b small { margin-left:2px; color:rgba(255,255,255,.7); font-size:9px; }
+  /* Retained as the generous fallback; the compact row rule below wins. */
+  .player-mini-leaderboard .player-logo--mini { width:min(26vw,112px); }
+  .player-mini-leaderboard { grid-template-columns:1fr; gap:9px; }
+  .player-mini-leaderboard li { position:relative; display:grid; grid-template-columns:28px 48px minmax(0,1fr) auto; grid-template-rows:1fr; justify-items:stretch; align-items:center; gap:9px; min-height:68px; aspect-ratio:auto; padding:9px 11px; border-radius:15px; }
+  .player-mini-leaderboard li>.player-mini-place { position:static; width:28px; height:28px; }
+  .player-mini-leaderboard .player-logo--mini { grid-column:2; grid-row:1; width:48px; height:48px; max-height:none; align-self:center; border-radius:12px; }
+  .player-mini-leaderboard strong { grid-column:3; grid-row:1; max-width:100%; overflow:hidden; padding:0; font-size:15px; text-align:left; text-overflow:ellipsis; white-space:nowrap; }
+  .player-mini-leaderboard b { grid-column:4; grid-row:1; align-self:center; color:var(--k-yellow); font-size:16px; white-space:nowrap; }.player-mini-leaderboard b small { margin-left:2px; color:rgba(255,255,255,.7); font-size:9px; }
   .player-mini-leaderboard li.is-current-player { border-color:var(--k-yellow); background:rgba(255,200,46,.15); box-shadow:0 0 0 2px rgba(255,200,46,.12); }
   .player-identity-badge { grid-template-columns:104px minmax(0,1fr); margin-top:15px; padding:9px 16px 9px 9px; border-radius:19px; }.player-logo--identity { width:104px; border-radius:20px; }.player-identity-badge small { font-size:11px; }.player-identity-badge strong { font-size:16px; }
 }
