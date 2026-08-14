@@ -1,0 +1,89 @@
+{
+  "id": "music-trivia-night-001",
+  "version": 1,
+  "title": "Music Trivia Night",
+  "estimatedMinutes": 35,
+  "rounds": [
+    {
+      "id": "name-that-tune",
+      "title": "Name That Tune",
+      "intro": "Listen closely—this round is all about instant recognition.",
+      "questions": [
+        {
+          "id": "piano-opener",
+          "type": "single_choice",
+          "prompt": "Which song opens with this unmistakable piano line?",
+          "audioAssetId": "clip-01",
+          "options": [
+            { "id": "a", "label": "A Thousand Miles" },
+            { "id": "b", "label": "Clocks" },
+            { "id": "c", "label": "Someone Like You" },
+            { "id": "d", "label": "Piano Man" }
+          ],
+          "correctOptionIds": ["a"],
+          "points": 1,
+          "speedBonus": false,
+          "hostReveal": "It’s Vanessa Carlton’s ‘A Thousand Miles.’"
+        }
+      ]
+    },
+    {
+      "id": "movie-songs",
+      "title": "Movie Songs",
+      "intro": "The song is famous. The film may be even more famous.",
+      "questions": []
+    },
+    {
+      "id": "india-biggest-hits",
+      "title": "India’s Biggest Hits",
+      "intro": "A celebratory mix of massive hits across languages and eras.",
+      "questions": []
+    },
+    {
+      "id": "finish-the-lyric",
+      "title": "Finish the Lyric",
+      "intro": "The next line is yours to find.",
+      "questions": []
+    },
+    {
+      "id": "piano-intro-match",
+      "title": "Match the Piano Intro to the Song",
+      "intro": "Ten piano intros. Ten titles. Make every connection count.",
+      "questions": [
+        {
+          "id": "piano-final",
+          "type": "matching",
+          "prompt": "Match each numbered piano intro to its song title.",
+          "clips": [
+            { "id": "clip-1", "label": "Intro 1", "audioAssetId": "piano-01" },
+            { "id": "clip-2", "label": "Intro 2", "audioAssetId": "piano-02" },
+            { "id": "clip-3", "label": "Intro 3", "audioAssetId": "piano-03" },
+            { "id": "clip-4", "label": "Intro 4", "audioAssetId": "piano-04" },
+            { "id": "clip-5", "label": "Intro 5", "audioAssetId": "piano-05" },
+            { "id": "clip-6", "label": "Intro 6", "audioAssetId": "piano-06" },
+            { "id": "clip-7", "label": "Intro 7", "audioAssetId": "piano-07" },
+            { "id": "clip-8", "label": "Intro 8", "audioAssetId": "piano-08" },
+            { "id": "clip-9", "label": "Intro 9", "audioAssetId": "piano-09" },
+            { "id": "clip-10", "label": "Intro 10", "audioAssetId": "piano-10" }
+          ],
+          "options": [
+            { "id": "a", "label": "Song title A" },
+            { "id": "b", "label": "Song title B" },
+            { "id": "c", "label": "Song title C" },
+            { "id": "d", "label": "Song title D" },
+            { "id": "e", "label": "Song title E" },
+            { "id": "f", "label": "Song title F" },
+            { "id": "g", "label": "Song title G" },
+            { "id": "h", "label": "Song title H" },
+            { "id": "i", "label": "Song title I" },
+            { "id": "j", "label": "Song title J" }
+          ],
+          "correctPairs": {},
+          "pointsPerPair": 1,
+          "speedBonus": false,
+          "hostReveal": "Reveal one pair at a time, replaying each clip if useful."
+        }
+      ]
+    }
+  ]
+}

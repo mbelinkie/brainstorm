@@ -1,0 +1,630 @@
+/* Kaplan motion layer adapted from the supplied presenter and mobile designs.
+   This file intentionally loads after styles.css. */
+
+:root {
+  --k-purple: #240f6e;
+  --k-purple-deep: #17064d;
+  --k-purple-1: #503f8b;
+  --k-purple-2: #7c6ca7;
+  --k-purple-3: #a79fc5;
+  --k-blue: #005de8;
+  --k-blue-dark: #082ecf;
+  --k-blue-light: #c8e1fc;
+  --k-yellow: #ffc82e;
+  --k-green: #287d21;
+  --brand-k-opacity: .115;
+  --dot-opacity: .34;
+  --orbit-opacity: .20;
+  --motion-distance: 24px;
+  --motion-speed: 20s;
+  --dot-tile-w: 42px;
+  --dot-tile-h: 56px;
+  --dot-r: 7px;
+}
+
+/* Use the supplied mark everywhere the app previously drew a generic K. */
+.brand-mark {
+  border: 0;
+  border-radius: 0;
+  background: url("assets/kaplan-k.svg") center / contain no-repeat;
+  color: transparent;
+  filter: brightness(0) invert(1);
+  font-size: 0;
+  transform: none;
+}
+
+/* Presenter ambient field */
+body.is-presentation {
+  background:
+    radial-gradient(circle at 82% 14%, rgba(0,93,232,.24), transparent 34%),
+    radial-gradient(circle at 8% 92%, rgba(80,63,139,.30), transparent 36%),
+    var(--k-purple-deep);
+}
+
+.is-presentation .topbar {
+  position: relative;
+  z-index: 4;
+  background: rgba(23,6,77,.92);
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  font-family: Lato, var(--body);
+}
+
+.is-presentation h1,
+.is-presentation h2,
+.is-presentation h3 {
+  font-family: Newsreader, var(--heading);
+}
+
+.is-presentation .presentation-main {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: transparent;
+}
+
+.is-presentation .presentation-main::before {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  left: -6%;
+  top: 50%;
+  width: 65%;
+  aspect-ratio: 255.8 / 250.9;
+  background: var(--k-blue-light);
+  -webkit-mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  opacity: calc(var(--brand-k-opacity) * 1.6);
+  transform: translateY(-50%) rotate(-4.5deg);
+  pointer-events: none;
+  animation: kaplan-k-breathe var(--motion-speed) ease-in-out infinite;
+}
+
+.is-presentation .presentation-main--title::before {
+  left: -4%;
+  width: 68%;
+  opacity: calc(var(--brand-k-opacity) * 2.3);
+}
+
+/* On question layouts the content cards fill almost the entire viewport. A
+   main-level pattern can therefore paint across their stacking contexts in
+   some browsers. Keep that layer for the title only; question screens retain
+   motion in the round K/orbit and transition-card watermark. */
+.is-presentation .presentation-main:not(.presentation-main--title)::before,
+.is-presentation .presentation-main:not(.presentation-main--title)::after {
+  content: none;
+}
+
+.is-presentation .presentation-main::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -40px;
+  opacity: var(--dot-opacity);
+  background-image:
+    radial-gradient(circle, rgba(255,255,255,.72) var(--dot-r), transparent calc(var(--dot-r) + .5px)),
+    radial-gradient(circle, rgba(0,93,232,.85) var(--dot-r), transparent calc(var(--dot-r) + .5px));
+  background-position: 0 0, calc(var(--dot-tile-w) / 2) calc(var(--dot-tile-h) / 2);
+  background-size: var(--dot-tile-w) var(--dot-tile-h), var(--dot-tile-w) var(--dot-tile-h);
+  -webkit-mask-image: linear-gradient(110deg, transparent 6%, #000 36%, #000 80%, transparent);
+  mask-image: linear-gradient(110deg, transparent 6%, #000 36%, #000 80%, transparent);
+  pointer-events: none;
+  animation: kaplan-dot-drift calc(var(--motion-speed) * .42) linear infinite;
+}
+
+.is-presentation .presentation-main > .presentation-round,
+.is-presentation .presentation-main > .presentation-card,
+.is-presentation .presentation-main > .presentation-title-page {
+  position: relative;
+  z-index: 1;
+}
+
+/* The old title pseudo-element was also a dot field. The shared main layer now
+   supplies it, preventing a doubled pattern and leaving the K readable. */
+.is-presentation .presentation-title-page {
+  background: transparent;
+}
+.is-presentation .presentation-title-page::before { display: none; }
+
+/* Presenter round banner. ::before is the orbit; ::after is the exact K. */
+.is-presentation .presentation-round {
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 78% 40%, rgba(0,93,232,.22), transparent 32%),
+    linear-gradient(128deg, var(--k-purple), #2d1479 58%, #200b62);
+}
+
+.is-presentation .presentation-round::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  width: min(54vw,820px);
+  aspect-ratio: 1;
+  right: -16vw;
+  top: -25vw;
+  border: 2px solid rgba(255,255,255,var(--orbit-opacity));
+  border-radius: 50%;
+  box-shadow: 0 0 0 34px rgba(255,255,255,.035), 0 0 0 92px rgba(0,93,232,.04);
+  pointer-events: none;
+  animation: kaplan-orbit calc(var(--motion-speed) * 1.2) ease-in-out infinite;
+}
+
+.is-presentation .presentation-round::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  right: 12%;
+  top: 50%;
+  width: min(26vw,410px);
+  aspect-ratio: 255.8 / 250.9;
+  background: var(--k-blue-light);
+  -webkit-mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  opacity: calc(var(--brand-k-opacity) * .72);
+  transform: translateY(-50%) rotate(-4deg);
+  pointer-events: none;
+  animation: kaplan-halo calc(var(--motion-speed) * 1.05) ease-in-out infinite;
+}
+
+.is-presentation .presentation-round > * {
+  position: relative;
+  z-index: 1;
+}
+
+.is-presentation .presentation-round--reveal {
+  background:
+    radial-gradient(circle at 76% 42%, rgba(0,93,232,.32), transparent 34%),
+    linear-gradient(128deg, var(--k-purple), #341b83 62%, #200b62);
+}
+.is-presentation .presentation-round--reveal::before {
+  border-color: rgba(255,200,46,var(--orbit-opacity));
+}
+
+/* Keep the existing animated top stripe on question cards. Ambient color is
+   applied through the background instead of reusing that pseudo-element. */
+.is-presentation .presentation-card {
+  background:
+    radial-gradient(circle at 90% 10%,rgba(0,93,232,.10),transparent 36%),
+    #fff;
+}
+
+.is-presentation .presentation-card--intermission,
+.is-presentation .presentation-card--final {
+  background:
+    radial-gradient(circle at 84% 30%,rgba(0,93,232,.12),transparent 42%),
+    #fff;
+}
+
+.is-presentation .presentation-card--intermission::after,
+.is-presentation .presentation-card--final::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  right: -260px;
+  top: 50%;
+  width: 760px;
+  aspect-ratio: 255.8 / 250.9;
+  background: var(--k-purple);
+  opacity: .05;
+  -webkit-mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  transform: translateY(-50%) rotate(-4deg);
+  pointer-events: none;
+  animation: kaplan-halo calc(var(--motion-speed) * 1.05) ease-in-out infinite;
+}
+
+.is-presentation .presentation-card--intermission > *,
+.is-presentation .presentation-card--final > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Mobile ambient field. Overflow stays vertical so long and rare response
+   types can scroll instead of being clipped at phone height. */
+.player-shell {
+  position: relative;
+  isolation: isolate;
+  overflow-x: clip;
+  overflow-y: visible;
+  background:
+    radial-gradient(circle at 84% 10%,rgba(0,93,232,.26),transparent 40%),
+    radial-gradient(circle at 6% 94%,rgba(80,63,139,.30),transparent 42%),
+    var(--k-purple-deep);
+  color: #fff;
+}
+
+.player-shell::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  right: calc(50% - min(52vw,580px));
+  top: -7%;
+  width: min(108%,650px);
+  aspect-ratio: 255.8 / 250.9;
+  background: var(--k-blue-light);
+  -webkit-mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  mask: url("assets/kaplan-k-mask.svg") center / contain no-repeat;
+  opacity: calc(var(--brand-k-opacity) * 1.9);
+  transform: rotate(-4.5deg);
+  pointer-events: none;
+  animation: kaplan-mobile-k-breathe var(--motion-speed) ease-in-out infinite;
+}
+
+.player-shell::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--dot-opacity) * .55);
+  background-image:
+    radial-gradient(circle,rgba(255,255,255,.72) 3px,transparent 3.4px),
+    radial-gradient(circle,rgba(0,93,232,.85) 3px,transparent 3.4px);
+  background-position: 0 0,9px 12px;
+  background-size: 18px 24px,18px 24px;
+  -webkit-mask-image: linear-gradient(160deg,transparent 8%,#000 38%,#000 76%,transparent);
+  mask-image: linear-gradient(160deg,transparent 8%,#000 38%,#000 76%,transparent);
+  pointer-events: none;
+  animation: kaplan-mobile-dot-drift calc(var(--motion-speed) * .42) linear infinite;
+}
+
+/* Presenter rendering also uses player-shell as its outer transport wrapper.
+   Do not stack the mobile decoration on top of presenter cards. */
+body.is-presentation .player-shell::before,
+body.is-presentation .player-shell::after { content: none; }
+
+.player-main {
+  position: relative;
+  z-index: 1;
+}
+
+.player-main .topbar {
+  position: relative;
+  z-index: 3;
+  color: #fff;
+  font-family: var(--body);
+}
+
+.player-card {
+  position: relative;
+  z-index: 1;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 26px;
+  background: rgba(255,255,255,.07);
+  color: #fff;
+  box-shadow: 0 18px 48px rgba(7,2,24,.30);
+  backdrop-filter: blur(2px);
+}
+
+.player-round {
+  background: transparent;
+}
+.player-round .eyebrow { color: var(--k-yellow); }
+.player-round h1 { color: #fff; }
+
+/* Join and holding screens remain one calm dark composition. */
+.player-card--join .player-question,
+.player-card--holding .player-question,
+.player-card--intermission .player-question {
+  background: transparent;
+  color: #fff;
+}
+.player-card--join .player-question h2,
+.player-card--holding .player-question h2,
+.player-card--intermission .player-question h2 { color: #fff; }
+.player-card--join .player-question p:not(.eyebrow),
+.player-card--holding .player-question p:not(.eyebrow),
+.player-card--intermission .player-question p:not(.eyebrow) { color: rgba(200,225,252,.80); }
+.player-card--join .field { color: rgba(200,225,252,.82); }
+.player-card--join .field input {
+  border-color: rgba(255,255,255,.24);
+  background: rgba(255,255,255,.10);
+  color: #fff;
+}
+.player-card--join .field input::placeholder { color: rgba(255,255,255,.48); }
+.player-card--join .btn-primary { background: var(--k-yellow); color: var(--k-purple); }
+.player-card--join .submit-bar { background: transparent; }
+
+.player-waiting-pulse i { background: rgba(255,255,255,.30); }
+.player-waiting-pulse i:first-child { background: var(--k-yellow); }
+.player-mini-leaderboard li {
+  border: 1px solid rgba(255,255,255,.13);
+  background: rgba(255,255,255,.08);
+}
+.player-mini-leaderboard strong,
+.player-mini-leaderboard b { color: #fff; }
+
+/* Player logos use stable keys so temporary tiles can be replaced by square
+   PNGs in PLAYER_LOGOS without changing saved players or scoreboard markup. */
+.player-logo {
+  display: grid;
+  flex: 0 0 auto;
+  width: 44px;
+  aspect-ratio: 1;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid rgba(255,255,255,.72);
+  border-radius: 11px;
+  color: #fff;
+  box-shadow: 0 5px 13px rgba(20,7,66,.18);
+  font-family: Lato, sans-serif;
+  font-size: 23px;
+  font-weight: 900;
+  line-height: 1;
+}
+.player-logo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.player-logo--spark { background: linear-gradient(145deg,#005de8,#2ebef0); }
+.player-logo--peak { background: linear-gradient(145deg,#240f6e,#7c51d9); }
+.player-logo--gem { background: linear-gradient(145deg,#d6083b,#ff6788); }
+.player-logo--orbit { background: linear-gradient(145deg,#287d21,#76bd22); }
+.player-logo--plus { background: linear-gradient(145deg,#ef6c00,#ffc82e); color: var(--k-purple); }
+.player-logo--kaplan { background: linear-gradient(145deg,#005de8 0 50%,#240f6e 50%); }
+
+.player-logo-picker { min-width: 0; margin: 22px 0; padding: 0; border: 0; }
+.player-logo-picker legend { margin-bottom: 10px; color: rgba(200,225,252,.82); font-size: 13px; font-weight: 700; }
+.player-logo-picker>div { display: grid; grid-template-columns: repeat(10,minmax(0,1fr)); gap: 7px; }
+.player-logo-choice { position: relative; display: grid; min-width: 0; justify-items: center; gap: 5px; padding: 5px 2px 4px; border: 2px solid transparent; border-radius: 12px; color: rgba(255,255,255,.72); cursor: pointer; }
+.player-logo-choice:hover { background: rgba(255,255,255,.07); }
+.player-logo-choice:has(input:checked) { border-color: var(--k-yellow); background: rgba(255,200,46,.12); color: #fff; }
+.player-logo-choice:has(input:focus-visible) { outline: 3px solid #fff; outline-offset: 2px; }
+.player-logo-choice input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+.player-logo-choice b { max-width: 100%; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+
+.leader { grid-template-columns: 38px 38px minmax(0,1fr) auto; }
+.player-logo--host { width: 38px; border-radius: 9px; font-size: 19px; }
+.presentation-leader { grid-template-columns: 48px 52px minmax(0,1fr) auto; }
+.player-logo--presentation { width: 52px; border-color: #fff; border-radius: 13px; font-size: 27px; }
+.player-mini-leaderboard li { grid-template-columns: 28px 36px minmax(0,1fr) auto; }
+.player-mini-leaderboard li>.player-mini-place { width: 28px; height: 28px; }
+.player-logo--mini { width: 36px; border-width: 1px; border-radius: 9px; font-size: 18px; }
+.player-identity-badge { display:inline-grid; grid-template-columns:42px minmax(0,1fr); align-items:center; gap:9px; margin-top:17px; padding:7px 12px 7px 7px; border:1px solid rgba(255,255,255,.24); border-radius:14px; background:rgba(255,255,255,.11); color:#fff; }
+.player-identity-badge small,.player-identity-badge strong { display:block; line-height:1.15; }.player-identity-badge small { color:rgba(200,225,252,.78); font-size:10px; font-weight:700; }.player-identity-badge strong { max-width:200px; overflow:hidden; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }.player-logo--identity { width:42px; border-radius:10px; }
+
+/* Active questions follow the supplied mobile structure: white prompt card,
+   dark response area. The wrapper also supports every non-choice type. */
+.player-card--question { overflow: visible; }
+.player-card--question .player-question {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #fff;
+}
+
+.player-prompt-card {
+  margin: 0 20px;
+  padding: 26px 22px;
+  border-radius: 26px;
+  background: #fff;
+  color: var(--k-purple);
+  box-shadow: 0 18px 40px rgba(7,2,24,.34);
+}
+.player-prompt-card h2 { color: var(--k-purple); }
+.player-prompt-card .eyebrow { color: var(--k-purple-2); }
+
+.player-response-panel {
+  padding: 0 20px 26px;
+  color: #fff;
+}
+.player-response-panel .answer-grid,
+.player-response-panel .player-answers,
+.player-response-panel .drag-board,
+.player-response-panel .matching-select-board,
+.player-response-panel .categorize-tap-board { margin-top: 16px; }
+
+.player-response-panel .answer {
+  min-height: 72px;
+  border: 1px solid rgba(255,255,255,.20);
+  border-radius: 18px;
+  background: rgba(255,255,255,.10);
+  color: #fff;
+  font-size: 17px;
+}
+.player-response-panel .answer .key {
+  background: rgba(255,255,255,.14);
+  color: var(--k-blue-light);
+}
+.player-response-panel .answer.is-selected {
+  border-color: var(--k-yellow);
+  background: var(--k-yellow);
+  color: var(--k-purple);
+}
+.player-response-panel .answer.is-selected .key {
+  background: var(--k-purple);
+  color: var(--k-yellow);
+}
+.player-response-panel .answer.is-correct {
+  border-color: #79c66f;
+  background: rgba(40,125,33,.80);
+  color: #fff;
+}
+.player-response-panel .answer.is-wrong {
+  border-color: #ff8cab;
+  background: rgba(214,8,59,.65);
+  color: #fff;
+}
+
+.player-response-panel .field { color: rgba(200,225,252,.84); }
+.player-response-panel .field input,
+.player-response-panel .field select,
+.player-response-panel select {
+  border-color: rgba(255,255,255,.22);
+  background: #fff;
+  color: var(--k-purple);
+}
+.player-response-panel .closest-number-help {
+  background: rgba(255,255,255,.10);
+  color: var(--k-blue-light);
+}
+.player-response-panel .number-reveal {
+  background: rgba(40,125,33,.75);
+  color: #fff;
+}
+
+/* Rare response types: retain light inner work surfaces for dense labels and
+   drag/tap controls while keeping them inside the new dark response area. */
+.player-response-panel .drag-help { color: rgba(200,225,252,.82); }
+.player-response-panel .drag-sort-list,
+.player-response-panel .drag-pool,
+.player-response-panel .drag-slot,
+.player-response-panel .drag-bucket,
+.player-response-panel .matching-select-row,
+.player-response-panel .categorize-tap-row {
+  border-color: rgba(255,255,255,.25);
+  background: rgba(255,255,255,.09);
+}
+.player-response-panel .drag-card {
+  border-color: rgba(255,255,255,.36);
+  background: #fff;
+  color: var(--k-purple);
+}
+.player-response-panel .drag-position { background: var(--k-yellow); color: var(--k-purple); }
+.player-response-panel .drag-slot-label,
+.player-response-panel .drag-bucket h3,
+.player-response-panel .matching-select-row strong,
+.player-response-panel .categorize-tap-row strong { color: #fff; }
+.player-response-panel .drag-placeholder,
+.player-response-panel .drag-empty { color: rgba(200,225,252,.72); }
+.player-response-panel .categorize-key span {
+  border-color: rgba(255,255,255,.20);
+  background: rgba(255,255,255,.10);
+  color: var(--k-blue-light);
+}
+.player-response-panel [data-categorize-item] {
+  min-height: 44px;
+  border-color: rgba(255,255,255,.28);
+  background: rgba(255,255,255,.10);
+  color: #fff;
+}
+.player-response-panel [data-categorize-item].is-selected {
+  border-color: var(--k-yellow);
+  background: var(--k-yellow);
+  color: var(--k-purple);
+}
+
+/* Image selection would otherwise inherit the global one-column phone rule
+   and become excessively tall. Two columns preserve readable crops. */
+.player-card--image_selection .answer-grid {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+}
+.player-card--image_selection .answer {
+  min-height: 0;
+  align-items: flex-start;
+  padding: 10px;
+}
+.player-card--image_selection .answer-image {
+  max-height: 132px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.player-response-panel .question-image,
+.player-response-panel .reveal-image {
+  border-color: rgba(255,255,255,.24);
+  background: #fff;
+}
+.player-response-panel .reveal-image figcaption { color: var(--k-purple); }
+
+.player-response-panel .submit-bar {
+  bottom: 0;
+  margin: 18px -20px -26px;
+  padding: 15px 20px calc(16px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(255,255,255,.12);
+  background: rgba(23,6,77,.90);
+  backdrop-filter: blur(10px);
+}
+.player-response-panel .submitted { color: var(--k-blue-light); }
+.player-response-panel .submitted.locked { color: #ffb2c6; }
+.player-response-panel .btn-primary { background: var(--k-yellow); color: var(--k-purple); }
+
+@media (max-width: 520px) {
+  .player-shell::before { right: -42%; top: 58%; width: 120%; }
+  .player-shell::after { opacity: calc(var(--dot-opacity) * .45); }
+  .player-card { border-right: 0; border-left: 0; }
+  .player-card--join,
+  .player-card--holding,
+  .player-card--intermission { border-radius: 26px 26px 0 0; }
+  .player-prompt-card { margin: 0 20px; padding: 24px 20px; }
+  .player-response-panel { padding-inline: 20px; }
+}
+
+@media (max-width: 520px) {
+  .player-logo-picker>div { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; max-height: 290px; padding-right: 4px; overflow-y: auto; overscroll-behavior: contain; }
+  .player-logo-choice { grid-template-columns: 58px minmax(0,1fr); align-items: center; justify-items: start; gap: 12px; padding: 8px; }
+  .player-logo-choice .player-logo { width: 58px; }
+  .player-logo-choice b { font-size: 14px; }
+}
+
+@media (max-width: 520px) {
+  .player-mini-leaderboard { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .player-mini-leaderboard li { position:relative; grid-template-columns:44px minmax(0,1fr); grid-template-rows:auto auto; align-items:center; gap:7px 10px; min-height:104px; padding:11px; border-radius:16px; }
+  .player-mini-leaderboard li>.player-mini-place { position:absolute; top:7px; right:7px; width:28px; height:28px; }
+  .player-mini-leaderboard .player-logo--mini { grid-column:1; grid-row:1 / span 2; width:44px; align-self:center; border-radius:11px; }
+  .player-mini-leaderboard strong { grid-column:2; grid-row:1; align-self:end; overflow:hidden; padding-right:25px; font-size:14px; text-overflow:ellipsis; white-space:nowrap; }
+  .player-mini-leaderboard b { grid-column:2; grid-row:2; align-self:start; color:var(--k-yellow); font-size:16px; }.player-mini-leaderboard b small { margin-left:2px; color:rgba(255,255,255,.7); font-size:9px; }
+  .player-mini-leaderboard li.is-current-player { border-color:var(--k-yellow); background:rgba(255,200,46,.15); box-shadow:0 0 0 2px rgba(255,200,46,.12); }
+  .player-identity-badge { grid-template-columns:48px minmax(0,1fr); margin-top:15px; padding:8px 13px 8px 8px; }.player-logo--identity { width:48px; border-radius:12px; }.player-identity-badge strong { font-size:14px; }
+}
+
+@keyframes kaplan-k-breathe {
+  0%,100% { transform: translateY(-50%) rotate(-4.5deg) scale(1); }
+  50% {
+    transform: translateY(calc(-50% - var(--motion-distance)))
+      translateX(calc(var(--motion-distance) * .8)) rotate(-1deg) scale(1.055);
+  }
+}
+
+@keyframes kaplan-mobile-k-breathe {
+  0%,100% { transform: rotate(-4.5deg) scale(1); }
+  50% {
+    transform: translate(calc(var(--motion-distance) * .36),calc(var(--motion-distance) * -.36))
+      rotate(-1deg) scale(1.06);
+  }
+}
+
+@keyframes kaplan-dot-drift {
+  to {
+    background-position: var(--dot-tile-w) var(--dot-tile-h),
+      calc(var(--dot-tile-w) * 1.5) calc(var(--dot-tile-h) * 1.5);
+  }
+}
+@keyframes kaplan-mobile-dot-drift { to { background-position: 18px 24px,27px 36px; } }
+
+@keyframes kaplan-orbit {
+  0%,100% { transform: translate3d(0,0,0) rotate(0) scale(1); }
+  50% {
+    transform: translate3d(calc(var(--motion-distance) * -1.4),calc(var(--motion-distance) * 1.1),0)
+      rotate(18deg) scale(1.09);
+  }
+}
+
+@keyframes kaplan-halo {
+  0%,100% { transform: translateY(-50%) rotate(-10deg) scale(1); }
+  50% { transform: translate(-34px,calc(-50% - 20px)) rotate(6deg) scale(1.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-presentation .presentation-main::before,
+  .is-presentation .presentation-main::after,
+  .is-presentation .presentation-round::before,
+  .is-presentation .presentation-round::after,
+  .is-presentation .presentation-card--intermission::after,
+  .is-presentation .presentation-card--final::after,
+  .player-shell::before,
+  .player-shell::after { animation: none !important; }
+}
+
+html.presenter-motion-paused .presentation-main::before,
+html.presenter-motion-paused .presentation-main::after,
+html.presenter-motion-paused .presentation-round::before,
+html.presenter-motion-paused .presentation-round::after,
+html.presenter-motion-paused .presentation-card--intermission::after,
+html.presenter-motion-paused .presentation-card--final::after,
+html.presenter-motion-paused .player-shell::before,
+html.presenter-motion-paused .player-shell::after {
+  animation-play-state: paused !important;
+}
+
+/* The presenter-only fullscreen affordance stays invisible until the cursor
+   enters its top-right trigger area, keeping the shared screen clean. */
+.presentation-fullscreen-corner { position: fixed; z-index: 60; top: 0; right: 0; display: grid; width: 104px; height: 104px; padding: 14px; place-items: start end; }
+.presentation-fullscreen-toggle { width: 42px; height: 42px; border: 1px solid rgba(255,255,255,.34); border-radius: 12px; background: rgba(20,8,68,.74); color: #fff; box-shadow: 0 8px 20px rgba(7,2,24,.24); cursor: pointer; font-size: 24px; line-height: 1; opacity: 0; pointer-events: none; transform: translateY(-6px); transition: opacity .18s ease, transform .18s ease; }
+.presentation-fullscreen-corner:hover .presentation-fullscreen-toggle, .presentation-fullscreen-corner:focus-within .presentation-fullscreen-toggle { opacity: 1; pointer-events: auto; transform: none; }

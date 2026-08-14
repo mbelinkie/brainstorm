@@ -1,0 +1,42 @@
+-- Add automatic scoring for two-category sorting questions. This replaces the
+-- scorer with the existing behavior plus a `categorize` branch.
+
+create or replace function public.lock_and_score_live_question(p_room_code text, p_host_secret text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  active_session public.sessions; quiz_definition jsonb; active_question jsonb;
+  answer_row record; awarded_points numeric(7,2); answer_text text;
+  correct_pair_count integer; score_count integer := 0;
+begin
+  select * into active_session from public.sessions where room_code = upper(trim(p_room_code)) and host_secret_hash = public.token_hash(p_host_secret) for update;
+  if not found then raise exception 'Host authorization failed'; end if;
+  if active_session.phase <> 'question_open' then raise exception 'The active question is not open'; end if;
+  select definition into quiz_definition from public.quiz_versions where id = active_session.quiz_version_id;
+  select question_item into active_question from jsonb_array_elements(quiz_definition -> 'rounds') as round_item cross join lateral jsonb_array_elements(round_item -> 'questions') as question_item where question_item ->> 'id' = active_session.state ->> 'questionId' limit 1;
+  if active_question is null then raise exception 'Active question is missing from this quiz version'; end if;
+
+  update public.submissions set is_locked = true, updated_at = now() where session_id = active_session.id and question_id = active_session.state ->> 'questionId';
+  for answer_row in select * from public.submissions where session_id = active_session.id and question_id = active_session.state ->> 'questionId' loop
+    awarded_points := 0; answer_text := answer_row.answer #>> '{}';
+    if active_question ->> 'type' in ('single_choice', 'true_false', 'image_selection') then
+      if coalesce(active_question -> 'correctOptionIds', '[]'::jsonb) @> jsonb_build_array(answer_text) then awarded_points := coalesce((active_question ->> 'points')::numeric, 1); end if;
+    elsif active_question ->> 'type' = 'multiple_choice' then
+      if (select array_agg(value order by value) from jsonb_array_elements_text(coalesce(answer_row.answer, '[]'::jsonb)) as value) = (select array_agg(value order by value) from jsonb_array_elements_text(coalesce(active_question -> 'correctOptionIds', '[]'::jsonb)) as value) then awarded_points := coalesce((active_question -> 'scoring' ->> 'points')::numeric, (active_question ->> 'points')::numeric, 1); end if;
+    elsif active_question ->> 'type' = 'matching' then
+      select count(*) into correct_pair_count from jsonb_each_text(coalesce(active_question -> 'correctPairs', '{}'::jsonb)) expected_pair where answer_row.answer ->> expected_pair.key = expected_pair.value;
+      awarded_points := correct_pair_count * coalesce((active_question ->> 'pointsPerPair')::numeric, 1);
+    elsif active_question ->> 'type' in ('short_answer', 'fill_in_the_blank') then
+      if exists (select 1 from jsonb_array_elements_text(case when active_question ? 'acceptedAnswers' then active_question -> 'acceptedAnswers' else coalesce(active_question -> 'blanks' -> 0 -> 'acceptedAnswers', '[]'::jsonb) end) as expected_answer where regexp_replace(lower(expected_answer), '[^a-z0-9]+', '', 'g') = regexp_replace(lower(coalesce(answer_text, '')), '[^a-z0-9]+', '', 'g')) then awarded_points := coalesce((active_question ->> 'points')::numeric, 1); end if;
+    elsif active_question ->> 'type' = 'arrange_in_order' then
+      select count(*) into correct_pair_count from jsonb_array_elements_text(coalesce(active_question -> 'correctOrder', '[]'::jsonb)) with ordinality expected_item(item_id, position) where answer_row.answer ->> expected_item.item_id = expected_item.position::text;
+      if correct_pair_count = jsonb_array_length(coalesce(active_question -> 'correctOrder', '[]'::jsonb)) then awarded_points := coalesce((active_question -> 'scoring' ->> 'points')::numeric, (active_question ->> 'points')::numeric, 1); end if;
+    elsif active_question ->> 'type' = 'categorize' then
+      select count(*) into correct_pair_count from jsonb_each_text(coalesce(active_question -> 'correctCategories', '{}'::jsonb)) expected_category where answer_row.answer ->> expected_category.key = expected_category.value;
+      if correct_pair_count = jsonb_object_length(coalesce(active_question -> 'correctCategories', '{}'::jsonb)) then awarded_points := coalesce((active_question ->> 'points')::numeric, 1); end if;
+    end if;
+    if awarded_points > 0 then insert into public.score_events (session_id, player_id, question_id, points, reason, created_by) values (active_session.id, answer_row.player_id, active_session.state ->> 'questionId', awarded_points, 'Automatic scoring', 'system'); score_count := score_count + 1; end if;
+  end loop;
+  update public.sessions set phase = 'question_locked', revision = revision + 1, updated_at = now() where id = active_session.id returning * into active_session;
+  return jsonb_build_object('roomCode', active_session.room_code, 'revision', active_session.revision, 'phase', active_session.phase, 'scoredResponses', score_count);
+end;
+$$;

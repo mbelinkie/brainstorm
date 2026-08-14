@@ -1,0 +1,9 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { validateQuiz } from "../quiz-validation.js";
+
+const validQuiz = { id: "quiz", title: "Quiz", rounds: [{ id: "round-1", title: "Round", questions: [{ id: "question-1", type: "single_choice", prompt: "Question?", points: 1, options: [{ id: "a", label: "A" }, { id: "b", label: "B" }], correctOptionIds: ["a"] }] }] };
+test("valid choice quiz passes author validation", () => assert.deepEqual(validateQuiz(validQuiz), []));
+test("duplicate question IDs and bad answer keys fail validation", () => { const invalid = structuredClone(validQuiz); invalid.rounds[0].questions.push({ ...invalid.rounds[0].questions[0], correctOptionIds: ["missing"] }); const errors = validateQuiz(invalid); assert.match(errors.join(" "), /duplicate question ID/); assert.match(errors.join(" "), /invalid answer key/); });
+test("missing title, prompt, or points block publication", () => { const invalid = structuredClone(validQuiz); invalid.title = ""; invalid.rounds[0].questions[0].prompt = ""; invalid.rounds[0].questions[0].points = 0; const errors = validateQuiz(invalid); assert.match(errors.join(" "), /Quiz title is required/); assert.match(errors.join(" "), /needs a player prompt/); assert.match(errors.join(" "), /needs positive points/); });
+test("closest-number questions require a finite target", () => { const quiz = structuredClone(validQuiz); quiz.rounds[0].questions[0] = { id: "closest", type: "closest_number", prompt: "How many?", points: 3, targetNumber: 42 }; assert.deepEqual(validateQuiz(quiz), []); quiz.rounds[0].questions[0].targetNumber = "not a number"; assert.match(validateQuiz(quiz).join(" "), /valid target number/); });

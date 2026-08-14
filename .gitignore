@@ -1,0 +1,15 @@
+.env.local
+.env.*.local
+.DS_Store
+
+# Dependencies and generated deploy/runtime files
+node_modules/
+.deploy-assets/
+.codex-tmp/
+.wrangler/
+.next/
+dist/
+
+# Raw source media stays on the authoring machine (published, optimized media
+# is stored in Supabase and referenced by the committed quiz definitions).
+music quiz originals/

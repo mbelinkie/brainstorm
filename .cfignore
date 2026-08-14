@@ -1,0 +1,11 @@
+.env.local
+.git
+.DS_Store
+node_modules
+*.docx
+*.md
+*.zip
+Dockerfile
+.dockerignore
+server.mjs
+supabase

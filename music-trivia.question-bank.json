@@ -1,0 +1,224 @@
+{
+  "id": "music-trivia-live-content-bank-001",
+  "version": 1,
+  "status": "editorial-draft-ready-for-asset-production",
+  "title": "Music Trivia Live: Complete Five-Round Question Bank",
+  "estimatedMinutes": 42,
+  "audience": "10–20 work colleagues; broad, mixed music knowledge",
+  "deliveryRules": {
+    "audioPlayback": "Host/shared-screen only. Do not send or autoplay audio on player phones.",
+    "hostInstruction": "Share the Chrome tab with tab audio enabled; play each audio item after opening the question.",
+    "clipProduction": "Use legally licensed, internally cleared, or permissioned clips. Suggested windows are editorial cues, not supplied audio.",
+    "lyrics": "Prompts intentionally contain only short excerpts or blanks; do not expand them into full lines or verses. Obtain lyric-display rights if required."
+  },
+  "scoringSummary": {
+    "rounds1to4": "25 base points (Rounds 1, 3, and 4 are five points each; Round 2 is a 10-point featured round)",
+    "finale": "10 points (one per correctly matched piano intro)",
+    "totalBasePoints": 35,
+    "tieBreak": "Use the optional nearest-number tie-break only if needed after the finale."
+  },
+  "factSources": [
+    {
+      "id": "oscars-1998",
+      "title": "70th Academy Awards",
+      "url": "https://www.oscars.org/oscars/ceremonies/1998",
+      "usedFor": "Titanic / My Heart Will Go On original-song fact"
+    },
+    {
+      "id": "oscars-2019",
+      "title": "91st Academy Awards",
+      "url": "https://www.oscars.org/oscars/ceremonies/2019",
+      "usedFor": "A Star Is Born / Shallow original-song fact"
+    },
+    {
+      "id": "oscars-2009",
+      "title": "81st Academy Awards",
+      "url": "https://www.oscars.org/oscars/ceremonies/2009",
+      "usedFor": "Slumdog Millionaire / Jai Ho original-song fact"
+    },
+    {
+      "id": "oscars-2023",
+      "title": "95th Academy Awards",
+      "url": "https://www.oscars.org/oscars/ceremonies/2023",
+      "usedFor": "RRR / Naatu Naatu original-song fact"
+    },
+    {
+      "id": "youtube-charts-india",
+      "title": "YouTube Charts — Top Songs, India",
+      "url": "https://charts.youtube.com/charts/TopSongs/in",
+      "usedFor": "Host preflight check of current Indian listening context; no time-sensitive chart position is scored"
+    }
+  ],
+  "rounds": [
+    {
+      "id": "name-that-tune",
+      "title": "Round 1 — Name That Tune",
+      "intro": "Five short, host-played clips. Trust the first song that pops into your head.",
+      "hostPacing": "Open each item, play the clip once, allow one replay on request, then lock after 20–25 seconds.",
+      "questions": [
+        {
+          "id": "ntt-01",
+          "type": "single_choice",
+          "prompt": "Which song features this legendary guitar solo?",
+          "audio": {"assetId": "ntt-01", "suggestedWindow": "guitar solo opening, approximately 8–10 seconds", "cue": "Use the opening of Eddie Van Halen’s guitar solo from Beat It.", "replayLimit": 1},
+          "options": [{"id":"a","label":"Beat It"},{"id":"b","label":"Jump"},{"id":"c","label":"Purple Rain"},{"id":"d","label":"Back in Black"}],
+          "correctOptionIds": ["a"], "points": 1,
+          "hostReveal": "Beat It — Michael Jackson. The solo is played by Eddie Van Halen.",
+          "accessibility": "Display ‘Audio clip 1’ only; do not expose filenames or artist metadata before reveal."
+        },
+        {
+          "id": "ntt-02",
+          "type": "single_choice",
+          "prompt": "Which song opens with this instantly recognizable banjo-driven hook?",
+          "audio": {"assetId": "ntt-02", "suggestedWindow": "0:00–0:08", "cue": "Use the opening banjo/guitar hook from Old Town Road before vocals.", "replayLimit": 1},
+          "options": [{"id":"a","label":"Old Town Road"},{"id":"b","label":"Texas Hold ’Em"},{"id":"c","label":"Save a Horse (Ride a Cowboy)"},{"id":"d","label":"Cruise"}],
+          "correctOptionIds": ["a"], "points": 1,
+          "hostReveal": "Old Town Road — Lil Nas X.", "accessibility": "Offer one replay; no player-device playback."
+        },
+        {
+          "id": "ntt-03",
+          "type": "short_answer",
+          "prompt": "Type the title of this dance-floor classic.",
+          "audio": {"assetId": "ntt-03", "suggestedWindow": "0:34–0:44", "cue": "Use the instrumental build immediately before the first big chorus.", "replayLimit": 1},
+          "acceptedAnswers": ["Uptown Funk", "Uptown Funk!"], "normalization": "case-and-punctuation-insensitive", "points": 1,
+          "hostReviewGuidance": "Accept only the song title; do not require Mark Ronson or Bruno Mars.",
+          "hostReveal": "Uptown Funk — Mark Ronson featuring Bruno Mars."
+        },
+        {
+          "id": "ntt-04",
+          "type": "image_selection",
+          "prompt": "Which album is this song from?",
+          "audio": {"assetId": "ntt-04", "suggestedWindow": "0:00–0:10", "cue": "Use the opening synth hook from Blinding Lights.", "replayLimit": 1},
+          "imageAssetGuidance": "Use licensed album-cover images, displayed at equal size and with accurate alt text.",
+          "options": [{"id":"a","label":"After Hours","imageAssetId":"ntt-04-a","alt":"The Weeknd album cover for After Hours"},{"id":"b","label":"Dawn FM","imageAssetId":"ntt-04-b","alt":"The Weeknd album cover for Dawn FM"},{"id":"c","label":"Starboy","imageAssetId":"ntt-04-c","alt":"The Weeknd album cover for Starboy"},{"id":"d","label":"Beauty Behind the Madness","imageAssetId":"ntt-04-d","alt":"The Weeknd album cover for Beauty Behind the Madness"}],
+          "correctOptionIds": ["a"], "points": 1,
+          "hostReveal": "Blinding Lights is from The Weeknd’s After Hours."
+        },
+        {
+          "id": "ntt-05",
+          "type": "multiple_choice",
+          "prompt": "Which TWO artists perform on this recording? Select both.",
+          "audio": {"assetId": "ntt-05", "suggestedWindow": "0:47–1:02", "cue": "Use a chorus passage featuring both vocalists from ‘Shallow’.", "replayLimit": 1},
+          "options": [{"id":"a","label":"Lady Gaga"},{"id":"b","label":"Bradley Cooper"},{"id":"c","label":"Miley Cyrus"},{"id":"d","label":"Sam Smith"},{"id":"e","label":"P!nk"},{"id":"f","label":"Adam Levine"}],
+          "correctOptionIds": ["a","b"], "scoring": {"mode":"exact_match","points":1},
+          "hostReveal": "Lady Gaga and Bradley Cooper perform Shallow from A Star Is Born."
+        }
+      ]
+    },
+    {
+      "id": "movie-songs",
+      "title": "Round 2 — Movie Songs",
+      "intro": "Songs that became inseparable from the films that put them on screen.",
+      "hostPacing": "This is a poster-forward round. Use licensed poster artwork or studio-supplied assets; no audio is needed.",
+      "questions": [
+        {
+          "id": "movie-01",
+          "type": "matching",
+          "prompt": "Match each hit song to the film where it became a hit.",
+          "clips":[{"id":"song-1","label":"(I’ve Had) The Time of My Life"},{"id":"song-2","label":"Kiss from a Rose"},{"id":"song-3","label":"Don’t You (Forget About Me)"},{"id":"song-4","label":"Stayin’ Alive"},{"id":"song-5","label":"Take My Breath Away"}],
+          "options":[{"id":"a","label":"Top Gun","imageAssetId":"movie-01-a","alt":"Top Gun poster"},{"id":"b","label":"The Breakfast Club","imageAssetId":"movie-01-b","alt":"The Breakfast Club poster"},{"id":"c","label":"Batman Forever","imageAssetId":"movie-01-c","alt":"Batman Forever poster"},{"id":"d","label":"Saturday Night Fever","imageAssetId":"movie-01-d","alt":"Saturday Night Fever poster"},{"id":"e","label":"Dirty Dancing","imageAssetId":"movie-01-e","alt":"Dirty Dancing poster"}],
+          "correctPairs":{"song-1":"e","song-2":"c","song-3":"b","song-4":"d","song-5":"a"},
+          "pointsPerPair":0.8,"maximumPoints":4,"scoring":{"mode":"proportional_partial_credit","maximumPoints":4},
+          "hostReveal":"Dirty Dancing → (I’ve Had) The Time of My Life; Batman Forever → Kiss from a Rose; The Breakfast Club → Don’t You (Forget About Me); Saturday Night Fever → Stayin’ Alive; Top Gun → Take My Breath Away."
+        },
+        {
+          "id": "movie-02",
+          "type": "image_selection",
+          "prompt": "Four of these films featured a song that won the Oscar for Best Original Song. Which one did not?",
+          "imageAssetGuidance": "Use licensed movie-poster images, displayed at equal size with accurate alt text.",
+          "options": [{"id":"a","label":"New York, New York","imageAssetId":"movie-02-a","alt":"New York, New York poster"},{"id":"b","label":"Shaft","imageAssetId":"movie-02-b","alt":"Shaft poster"},{"id":"c","label":"Skyfall","imageAssetId":"movie-02-c","alt":"Skyfall poster"},{"id":"d","label":"Beauty and the Beast","imageAssetId":"movie-02-d","alt":"Beauty and the Beast poster"},{"id":"e","label":"Fame","imageAssetId":"movie-02-e","alt":"Fame poster"}],
+          "correctOptionIds":["a"], "points":1,
+          "hostReveal":"New York, New York is the surprise snub: its theme song was not nominated. Theme from Shaft, Skyfall, Beauty and the Beast, and Fame all won Best Original Song."
+        },
+        {
+          "id": "movie-03",
+          "type": "categorize",
+          "prompt": "For each actor and film, sort it into SANG IT or DIDN’T SING IT.",
+          "categories":[{"id":"sang","label":"SANG IT"},{"id":"did-not-sing","label":"DIDN’T SING IT"}],
+          "items":[{"id":"1","label":"Rami Malek — Bohemian Rhapsody"},{"id":"2","label":"Taron Egerton — Rocketman"},{"id":"3","label":"Audrey Hepburn — My Fair Lady"},{"id":"4","label":"Hugh Jackman — The Greatest Showman"},{"id":"5","label":"Zac Efron — High School Musical"},{"id":"6","label":"Joaquin Phoenix — Walk the Line"},{"id":"7","label":"Christopher Plummer — The Sound of Music"},{"id":"8","label":"Anne Hathaway — Les Misérables"},{"id":"9","label":"Jamie Foxx — Ray"},{"id":"10","label":"Lady Gaga & Bradley Cooper — A Star Is Born"}],
+          "correctCategories":{"1":"did-not-sing","2":"sang","3":"did-not-sing","4":"sang","5":"did-not-sing","6":"sang","7":"did-not-sing","8":"sang","9":"did-not-sing","10":"sang"},
+          "points":5,"maximumPoints":5,"scoring":{"mode":"proportional_partial_credit","pointsPerCorrectItem":0.5,"maximumPoints":5},
+          "hostReveal":"SANG IT: Taron Egerton, Hugh Jackman, Joaquin Phoenix, Anne Hathaway, Lady Gaga & Bradley Cooper. DIDN’T SING IT: Rami Malek, Audrey Hepburn, Zac Efron, Christopher Plummer, Jamie Foxx.",
+          "hostRevealNotes":"Egerton performed every vocal in Rocketman. Phoenix and Witherspoon sang live in Walk the Line. Hathaway and the A Star Is Born leads recorded live on set. Malek’s vocals were a blend led by Freddie Mercury and Marc Martel; Hepburn was dubbed by Marni Nixon; Efron’s first High School Musical vocals were largely Drew Seeley; Plummer was dubbed by Bill Lee; Foxx lip-synced to Ray Charles while playing piano himself."
+        }
+      ]
+    },
+    {
+      "id": "india-biggest-hits",
+      "title": "Round 3 — India’s Biggest Hits",
+      "intro": "A welcoming, globally connected introduction to Indian music—built for people who may be hearing these stories for the first time.",
+      "hostPacing":"Read each question clearly and use the reveals to add context rather than assuming prior knowledge.",
+      "questions":[
+        {
+          "id":"india-01", "type":"single_choice", "prompt":"The song ‘Jai Ho’ won the Academy Award for Best Original Song in 2009. Which film was it from?",
+          "options":[{"id":"a","label":"Eat Pray Love"},{"id":"b","label":"Slumdog Millionaire"},{"id":"c","label":"Life of Pi"},{"id":"d","label":"The Best Exotic Marigold Hotel"}],
+          "correctOptionIds":["b"],"points":1,"hostReveal":"Slumdog Millionaire. Composer A. R. Rahman won Oscars that night for both Original Song and Original Score.","factSourceIds":["oscars-2009"]
+        },
+        {
+          "id":"india-02", "type":"single_choice", "prompt":"In 2023, ‘Naatu Naatu’ made history as the first song from an Indian production to win Best Original Song at the Oscars. Which film featured it?",
+          "options":[{"id":"a","label":"Lagaan"},{"id":"b","label":"Baahubali 2: The Conclusion"},{"id":"c","label":"RRR"},{"id":"d","label":"Monkey Man"}],
+          "correctOptionIds":["c"],"points":1,"hostReveal":"RRR. It’s a Telugu-language film—not Bollywood—and its global awards run was especially meaningful in South India.","factSourceIds":["oscars-2023"]
+        },
+        {
+          "id":"india-03", "type":"single_choice", "prompt":"This 2003 global club hit paired British-Indian producer Panjabi MC with Jay-Z. Its instantly recognizable bassline is based on the theme song of which 1980s American TV show?",
+          "options":[{"id":"a","label":"Magnum, P.I."},{"id":"b","label":"Miami Vice"},{"id":"c","label":"The A-Team"},{"id":"d","label":"Knight Rider"}],
+          "correctOptionIds":["d"],"points":1,"hostReveal":"Knight Rider. The original Mundian To Bach Ke was a Punjabi bhangra track; the Jay-Z version was released as Beware of the Boys."
+        },
+        {
+          "id":"india-04", "type":"single_choice", "prompt":"Sitar legend Ravi Shankar played both Woodstock and the Monterey Pop Festival. His daughter’s 2002 debut album won five Grammys and sold more than 20 million copies. Who is she?",
+          "options":[{"id":"a","label":"Sade"},{"id":"b","label":"Norah Jones"},{"id":"c","label":"Corinne Bailey Rae"},{"id":"d","label":"Alicia Keys"}],
+          "correctOptionIds":["b"],"points":1,"hostReveal":"Norah Jones. Her half-sister, Anoushka Shankar, is also a Grammy-nominated sitarist."
+        },
+        {
+          "id":"india-05", "type":"single_choice", "prompt":"In 2023, this Punjabi singer and actor became the first Punjabi-language artist to perform at Coachella, taking the stage in a turban and kurta. Who is he?",
+          "options":[{"id":"a","label":"Guru Randhawa"},{"id":"b","label":"Badshah"},{"id":"c","label":"Diljit Dosanjh"},{"id":"d","label":"Arijit Singh"}],
+          "correctOptionIds":["c"],"points":1,"hostReveal":"Diljit Dosanjh. He later brought Punjabi music to The Tonight Show and completed a major 2024 tour."
+        }
+      ]
+    },
+    {
+      "id":"finish-the-lyric", "title":"Round 4 — Finish the Lyric", "intro":"Tiny, familiar fragments only. Type the missing word or short phrase.",
+      "hostPacing":"Keep each prompt visible for 15–20 seconds. Read it aloud once, but never sing or display a full lyric line.",
+      "questions":[
+        {"id":"lyric-01","type":"fill_in_the_blank","prompt":"Adele: ‘Hello from the ___ side.’","blanks":[{"id":"blank-1","acceptedAnswers":["other"],"normalization":"case-and-punctuation-insensitive"}],"points":1,"hostReveal":"Other — from Hello.","copyrightNote":"Short fragment: four displayed lyric words plus one blank."},
+        {"id":"lyric-02","type":"fill_in_the_blank","prompt":"Britney Spears: ‘Oh baby, baby, how was I supposed to ___.’","blanks":[{"id":"blank-1","acceptedAnswers":["know"],"normalization":"case-and-punctuation-insensitive"}],"points":1,"hostReveal":"Know — from ...Baby One More Time.","copyrightNote":"Short fragment only."},
+        {"id":"lyric-03","type":"fill_in_the_blank","prompt":"Rihanna: ‘We found love in a ___ place.’","blanks":[{"id":"blank-1","acceptedAnswers":["hopeless"],"normalization":"case-and-punctuation-insensitive"}],"points":1,"hostReveal":"Hopeless — from We Found Love.","copyrightNote":"Short fragment only."},
+        {"id":"lyric-04","type":"fill_in_the_blank","prompt":"The Killers: ‘I’ve got soul, but I’m not a ___.’","blanks":[{"id":"blank-1","acceptedAnswers":["soldier"],"normalization":"case-and-punctuation-insensitive"}],"points":1,"hostReveal":"Soldier — from All These Things That I’ve Done.","copyrightNote":"Short fragment only."},
+        {"id":"lyric-05","type":"fill_in_the_blank","prompt":"Radiohead: ‘I’m a creep, I’m a ___.’","blanks":[{"id":"blank-1","acceptedAnswers":["weirdo"],"normalization":"case-and-punctuation-insensitive"}],"points":1,"hostReveal":"Weirdo — from Creep.","copyrightNote":"Short fragment only."}
+      ]
+    },
+    {
+      "id":"piano-intro-match", "title":"Round 5 — Piano Intro Finale", "intro":"Ten piano intros, ten titles, one full-board submission. Match every clip before time is up.",
+      "featuredFinale":true, "hostPacing":"Play each clip in numerical order once (about 5–7 seconds each), then allow a 90-second open matching window. Replay individual clips on request. Lock all answers together; reveal one pair at a time.",
+      "questions":[
+        {
+          "id":"piano-final","type":"matching","prompt":"Match each numbered piano intro to its song title.","pointsPerPair":1,"maximumPoints":10,"speedBonus":false,
+          "clips":[
+            {"id":"clip-1","label":"Intro 1","audioAssetId":"piano-01","suggestedWindow":"0:00–0:07","songForProduction":"Pink Pony Club","cue":"Opening piano figure."},
+            {"id":"clip-2","label":"Intro 2","audioAssetId":"piano-02","suggestedWindow":"0:00–0:07","songForProduction":"Clocks","cue":"Opening piano ostinato."},
+            {"id":"clip-3","label":"Intro 3","audioAssetId":"piano-03","suggestedWindow":"0:00–0:07","songForProduction":"Don’t Look Back in Anger","cue":"Opening piano motif."},
+            {"id":"clip-4","label":"Intro 4","audioAssetId":"piano-04","suggestedWindow":"0:00–0:07","songForProduction":"Linus and Lucy","cue":"Opening piano theme."},
+            {"id":"clip-5","label":"Intro 5","audioAssetId":"piano-05","suggestedWindow":"0:00–0:07","songForProduction":"I Will Survive","cue":"Opening piano progression."},
+            {"id":"clip-6","label":"Intro 6","audioAssetId":"piano-06","suggestedWindow":"0:00–0:07","songForProduction":"Piano Man","cue":"Opening piano-led figure."},
+            {"id":"clip-7","label":"Intro 7","audioAssetId":"piano-07","suggestedWindow":"0:00–0:07","songForProduction":"A Thousand Miles","cue":"Opening piano figure."},
+            {"id":"clip-8","label":"Intro 8","audioAssetId":"piano-08","suggestedWindow":"0:00–0:07","songForProduction":"Let It Be","cue":"Opening piano chords."},
+            {"id":"clip-9","label":"Intro 9","audioAssetId":"piano-09","suggestedWindow":"0:00–0:07","songForProduction":"Someone Like You","cue":"Opening piano motif."},
+            {"id":"clip-10","label":"Intro 10","audioAssetId":"piano-10","suggestedWindow":"0:00–0:07","songForProduction":"Don’t Stop Believin’","cue":"Opening piano figure."}
+          ],
+          "options":[
+            {"id":"a","label":"Pink Pony Club"},{"id":"b","label":"Clocks"},{"id":"c","label":"Don’t Look Back in Anger"},{"id":"d","label":"Linus and Lucy"},{"id":"e","label":"I Will Survive"},
+            {"id":"f","label":"Piano Man"},{"id":"g","label":"A Thousand Miles"},{"id":"h","label":"Let It Be"},{"id":"i","label":"Someone Like You"},{"id":"j","label":"Don’t Stop Believin’"}
+          ],
+          "correctPairs":{"clip-1":"a","clip-2":"b","clip-3":"c","clip-4":"d","clip-5":"e","clip-6":"f","clip-7":"g","clip-8":"h","clip-9":"i","clip-10":"j"},
+          "hostReveal":"Reveal in clip order: 1 Pink Pony Club; 2 Clocks; 3 Don’t Look Back in Anger; 4 Linus and Lucy; 5 I Will Survive; 6 Piano Man; 7 A Thousand Miles; 8 Let It Be; 9 Someone Like You; 10 Don’t Stop Believin’.",
+          "assetProductionNote":"Prefer cleared original recordings or newly commissioned/licensed piano performances. Ensure every clip begins cleanly, is loudness-normalized, and has a 100–200 ms fade in/out. Opaque asset IDs prevent accidental title leakage."
+        }
+      ]
+    }
+  ],
+  "optionalTieBreak": {
+    "type":"numeric_estimate", "prompt":"Without looking it up: in what year was the first commercial compact disc released? Closest answer wins; over/under does not matter.", "answer":1982,
+    "hostReveal":"1982. Use only to break a tie after all 30 base points are scored.", "hostNote":"Accept 1982; do not score it as a standard round question."
+  },
+  "preflightChecklist":["Verify every audio asset is cleared and mapped to the opaque ID in this file.","Preview clips on the exact shared-screen laptop and confirm tab audio is included in Google Meet.","Load rights-cleared headshots for both image-selection questions and test their mobile crops.","Confirm matching UI allows each finale title to be assigned only once.","Have the host rehearse the reveal notes and one-replay policy."]
+}

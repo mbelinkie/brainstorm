@@ -1,0 +1,17 @@
+{
+  "name": "quiz-control",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "test": "node --test test/*.test.js",
+    "deploy": "node prepare-deploy.mjs && set -a; source .env.local; set +a; wrangler deploy"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3"
+  },
+  "devDependencies": {
+    "wrangler": "^4.121.0"
+  }
+}
