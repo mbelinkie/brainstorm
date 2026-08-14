@@ -838,22 +838,20 @@ async function preparePresentationAudio(command = state.audioCommand) {
 }
 
 async function armPresentationAudio() {
-  await preparePresentationAudio();
-  const usedSilentPrimer = !presentationAudioPlayer?.src;
-  if (usedSilentPrimer) {
-    presentationAudioPlayer.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
-    presentationAudioPlayer.load();
-  }
+  // Start playback immediately inside the click gesture. Waiting for a hosted
+  // asset fetch first can make browsers reject the play request (and can leave
+  // this setup screen pending indefinitely if that fetch is slow or stalled).
+  const silentPrimer = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+  presentationAudioPlayer.src = silentPrimer;
+  presentationAudioPlayer.load();
   presentationAudioPlayer.volume = 0;
   await presentationAudioPlayer.play();
   presentationAudioPlayer.pause();
   presentationAudioPlayer.currentTime = 0;
   presentationAudioPlayer.volume = 1;
-  if (usedSilentPrimer) {
-    presentationAudioPlayer.removeAttribute("src");
-    presentationAudioPlayer.load();
-    presentationAudioSourceKey = null;
-  }
+  presentationAudioPlayer.removeAttribute("src");
+  presentationAudioPlayer.load();
+  presentationAudioSourceKey = null;
   presentationAudioArmed = true;
   // If a play command arrived before the one-time browser gesture, apply it
   // immediately after arming instead of making the host click Play again.
