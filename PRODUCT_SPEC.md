@@ -4,7 +4,7 @@ Status: Active build record
 Audience: Product/design/engineering  
 Initial use: Live work trivia for approximately 10–20 players over Google Meet
 
-Last updated: 2026-08-12
+Last updated: 2026-08-14
 
 ## Build status
 
@@ -51,6 +51,13 @@ Last updated: 2026-08-12
 - Audio can be referenced by an optional host-only URL or played from a prepared external host source. Authors can upload private clips; the host retrieves them through an authorized application proxy. Hosted clips have play/pause, restart, volume, elapsed-time controls, and ready/unavailable status. Trimming, normalization, and richer media management remain.
 - Hosts have a lobby QR join code and 15/20/30/45/60-second question timers that synchronize to players and automatically request the authoritative lock when the host tab reaches zero. There is no host review queue, partial credit for sorting, or participant removal. The host can download final standings and detailed score-event audit CSVs, and record auditable manual score adjustments.
 - A complete music-content pass is still needed: real licensed/authorized clips, consistent album art, and final cue windows.
+
+### Development and version control
+
+- The local project folder is the working copy; GitHub (`mbelinkie/kq`) is the authoritative backup and version history for source, documentation, tests, deployment configuration, and database migrations.
+- Raw media originals remain local-only in `music quiz originals/`. Secrets remain local-only in `.env.local`. Neither belongs in GitHub.
+- Working agreement: push each completed task to GitHub unless a reason not to push is explicitly flagged. Do not push partial experiments, unreviewed work, credentials, or raw media originals.
+- Before work starts on another machine, clone the repository once and pull the latest `main` branch. Commit and push completed work before switching machines.
 
 ## Recommended next steps
 
