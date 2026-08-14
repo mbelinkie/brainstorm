@@ -107,6 +107,19 @@ test("player title and intermission screens hide the active question until the h
   assert.match(renderPlayer, /The next question will appear here when it starts/);
 });
 
+test("manual score changes redraw player scoreboards and notify player screens", () => {
+  const playerKey = app.slice(app.indexOf("function playerRenderKey"), app.indexOf("function presenterRenderKey"));
+  const shell = app.slice(app.indexOf("function shell"), app.indexOf("function brandTopbar"));
+  assert.match(playerKey, /players: roomState\?\.players/);
+  assert.match(playerKey, /scoreNotification: roomState\?\.scoreNotification/);
+  assert.match(shell, /isPlayer && view === "player" \? scoreCelebration\(\) : ""/);
+});
+
+test("player and presenter branding uses plain BRAINSTORM text", () => {
+  const brand = app.slice(app.indexOf("function brandTopbar"), app.indexOf("function preflightChecklist"));
+  assert.doesNotMatch(brand, /🧠|brand-brain/);
+});
+
 test("question-stage and reveal artwork render only in Presentation", () => {
   const publicState = app.slice(app.indexOf("function publicRoomState"), app.indexOf("function setHostQuestion"));
   const renderHost = app.slice(app.indexOf("function renderHost"), app.indexOf("function scoreCelebration"));

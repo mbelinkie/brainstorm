@@ -25,6 +25,20 @@ function mediaFailure(stage, upstreamStatus = 0) {
   });
 }
 
+const hostTextAnswersCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-host-secret",
+  "access-control-max-age": "86400"
+};
+
+function hostTextAnswersResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...hostTextAnswersCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
 async function verifyQuizAuthor(env, token) {
   const headers = { ...supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true }), Authorization: `Bearer ${token}` };
   const response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/is_quiz_author`, { method: "POST", headers, body: "{}" });
@@ -34,7 +48,27 @@ async function verifyQuizAuthor(env, token) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+if (request.method === "GET" && url.pathname === "/__version") {
+      const metadata = env.CF_VERSION_METADATA || {};
+
+      return Response.json(
+        {
+          commit: metadata.tag || null,
+          versionId: metadata.id || null,
+          deployedAt: metadata.timestamp || null
+        },
+        {
+          headers: {
+            "cache-control": "no-store"
+          }
+        }
+      );
+    }
     if (request.method === "OPTIONS" && url.pathname.startsWith("/author-media/")) return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, OPTIONS", "access-control-allow-headers": "authorization", "access-control-max-age": "86400" } });
+    // This endpoint is called by the presentation hosted on the custom site,
+    // while the API runs on workers.dev. Its custom host credential headers
+    // require a successful CORS preflight before the browser will issue GET.
+    if (request.method === "OPTIONS" && url.pathname === "/host-text-answers") return new Response(null, { status: 204, headers: hostTextAnswersCorsHeaders });
     if (request.method === "GET" && url.pathname === "/media-health") {
       if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ ok: false, stage: "configuration" }, { status: 503 });
       const check = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?select=id&limit=1`, { headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY) });
@@ -44,14 +78,14 @@ export default {
     if (request.method === "GET" && url.pathname === "/host-text-answers") {
       const roomCode = request.headers.get("x-quiz-room");
       const hostSecret = request.headers.get("x-quiz-host-secret");
-      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return hostTextAnswersResponse({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
       const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
       const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
-      if (!stateResponse.ok) return Response.json({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
+      if (!stateResponse.ok) return hostTextAnswersResponse({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
       const roomState = await stateResponse.json();
-      if (!['question_locked', 'answer_reveal'].includes(roomState.phase)) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
+      if (!['question_locked', 'answer_reveal'].includes(roomState.phase)) return hostTextAnswersResponse({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
       const question = roomState.state?.question || {};
-      if (!['short_answer', 'fill_in_the_blank'].includes(question.type) || !roomState.state?.questionId) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
+      if (!['short_answer', 'fill_in_the_blank'].includes(question.type) || !roomState.state?.questionId) return hostTextAnswersResponse({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
       // The preceding RPC has verified the host secret. Query the active
       // session and its submissions with the Worker's service credential so
       // this wall cannot be empty because an optional display-only RPC is out
@@ -60,19 +94,19 @@ export default {
       if (!sessionResponse.ok) {
         const failure = await sessionResponse.json().catch(() => ({}));
         console.error("Answer wall session lookup failed", { upstreamStatus: sessionResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
-        return Response.json({ error: "Could not load the active room.", stage: "session-lookup", upstreamStatus: sessionResponse.status, upstreamCode: String(failure?.code || "").slice(0, 40), upstreamMessage: String(failure?.message || "").slice(0, 160) }, { status: 502, headers: { "cache-control": "no-store" } });
+        return hostTextAnswersResponse({ error: "Could not load the active room.", stage: "session-lookup", upstreamStatus: sessionResponse.status, upstreamCode: String(failure?.code || "").slice(0, 40), upstreamMessage: String(failure?.message || "").slice(0, 160) }, { status: 502, headers: { "cache-control": "no-store" } });
       }
       const [session] = await sessionResponse.json();
-      if (!session?.id) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
+      if (!session?.id) return hostTextAnswersResponse({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
       const answersResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/submissions?session_id=eq.${encodeURIComponent(session.id)}&question_id=eq.${encodeURIComponent(roomState.state.questionId)}&select=answer,submitted_at&order=submitted_at.asc`, { headers });
       if (!answersResponse.ok) {
         const failure = await answersResponse.json().catch(() => ({}));
         console.error("Answer wall submission lookup failed", { upstreamStatus: answersResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
-        return Response.json({ error: "Could not load answers.", stage: "submission-lookup", upstreamStatus: answersResponse.status, upstreamCode: String(failure?.code || "").slice(0, 40), upstreamMessage: String(failure?.message || "").slice(0, 160) }, { status: 502, headers: { "cache-control": "no-store" } });
+        return hostTextAnswersResponse({ error: "Could not load answers.", stage: "submission-lookup", upstreamStatus: answersResponse.status, upstreamCode: String(failure?.code || "").slice(0, 40), upstreamMessage: String(failure?.message || "").slice(0, 160) }, { status: 502, headers: { "cache-control": "no-store" } });
       }
       const answerData = await answersResponse.json();
       const answers = Array.isArray(answerData) ? answerData.map((submission) => typeof submission?.answer === "string" ? submission.answer.trim().slice(0, 180) : "").filter(Boolean) : [];
-      return Response.json({ answers }, { headers: { "cache-control": "private, no-store" } });
+      return hostTextAnswersResponse({ answers }, { headers: { "cache-control": "private, no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/media-assistant/search") {
       const openAiKey = env.OPENAI_QUIZ || env.OPENAI_API_KEY;

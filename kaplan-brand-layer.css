@@ -33,8 +33,6 @@
   transform: none;
 }
 
-.brand-brain { display:inline-block; margin:0 .025em; font-family:"Apple Color Emoji","Segoe UI Emoji",sans-serif; font-size:1.18em; line-height:0; vertical-align:-.08em; }
-
 /* Presenter ambient field */
 body.is-presentation {
   background:

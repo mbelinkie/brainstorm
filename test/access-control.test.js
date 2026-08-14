@@ -55,3 +55,10 @@ test("anonymous text-answer wall is host authorized and excludes player identity
   assert.match(worker, /rest\/v1\/submissions\?session_id/);
   assert.doesNotMatch(worker.slice(worker.indexOf('url.pathname === "/host-text-answers"'), worker.indexOf('url.pathname === "/media-assistant/search"')), /display_name|player_id/);
 });
+
+test("anonymous text-answer endpoint supports the cross-origin custom-header request", () => {
+  const worker = fs.readFileSync(new URL("../cloudflare-worker.js", import.meta.url), "utf8");
+  assert.match(worker, /request\.method === "OPTIONS" && url\.pathname === "\/host-text-answers"/);
+  assert.match(worker, /"access-control-allow-headers": "x-quiz-room, x-quiz-host-secret"/);
+  assert.match(worker, /function hostTextAnswersResponse/);
+});

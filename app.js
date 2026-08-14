@@ -345,7 +345,12 @@ function playerRenderKey(roomState) {
     doorResults: roomState?.doorResults,
     targetRoundIndex: roomState?.targetRoundIndex,
     timerEndsAt: roomState?.timerEndsAt,
-    timerDurationSeconds: roomState?.timerDurationSeconds
+    timerDurationSeconds: roomState?.timerDurationSeconds,
+    // Scores can change without a phase or question change (for example, a
+    // host's manual adjustment). Include this public scoreboard data so every
+    // player redraws when a score or its accompanying notification arrives.
+    players: roomState?.players,
+    scoreNotification: roomState?.scoreNotification
   });
 }
 
@@ -586,15 +591,19 @@ function startTimerTicker() {
 }
 
 function shell(content, isPlayer = false) {
-  return `<section class="${isPlayer ? "player-shell" : "shell"}">${content}</section>`;
+  // The host publishes manual-score notices as part of the public room state.
+  // Render them inside every player shell so the award is visible whether the
+  // player is answering, waiting, or looking at the final scoreboard.
+  const playerNotification = isPlayer && view === "player" ? scoreCelebration() : "";
+  return `<section class="${isPlayer ? "player-shell" : "shell"}">${content}${playerNotification}</section>`;
 }
 
 function brandTopbar(host = false, presenter = false, showRoom = true) {
   const roomControl = presenter
-    ? '<div class="presenter-join-qr" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>Join</span></div>'
+    ? `<div class="presenter-join-qr" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>${escapeHtml(roomCode)}</span></div>`
     : showRoom ? `<span class="room-badge">ROOM ${roomCode}</span>` : "";
   const brandName = ["player", "presenter"].includes(view)
-    ? '<span aria-label="BRAINSTORM">BRAINST<span class="brand-brain" aria-hidden="true">🧠</span>RM</span>'
+    ? "BRAINSTORM"
     : "BRAINSTORM";
   return `<header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">K</span>${brandName}</div>${host ? '<span class="host-badge">HOST VIEW</span>' : roomControl}</header>`;
 }
