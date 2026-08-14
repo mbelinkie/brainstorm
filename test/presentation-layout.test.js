@@ -54,6 +54,8 @@ test("presenter timer is a prominent shared-screen control", () => {
 test("presentation reserves one title QR and uses a large corner QR with two-column intermission cards", () => {
   assert.match(app, /const isPresenterCornerQr = Boolean\(qrCanvas\.closest\("\.presenter-join-qr--corner"\)\)/);
   assert.match(app, /const width = isPresenterCornerQr \? 144 : 150/);
+  assert.match(app, /function presentationCornerJoinQr\(\) \{[\s\S]*<span>\$\{escapeHtml\(roomCode\)\}<\/span>/);
+  assert.match(app, /brandTopbar\(false, false, state\.presentationScreen === "title"\)/);
   assert.match(app, /return `<section class="presentation-card presentation-card--intermission">\$\{presentationLeaderboard\(\)\}<\/section>`/);
   assert.match(brand, /presentation-card--intermission \.presentation-leaderboard \{ grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(brand, /presentation-card--intermission \.player-logo--presentation \{[^}]*width:min\(100%,150px\)/);

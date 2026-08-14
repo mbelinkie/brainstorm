@@ -589,10 +589,10 @@ function shell(content, isPlayer = false) {
   return `<section class="${isPlayer ? "player-shell" : "shell"}">${content}</section>`;
 }
 
-function brandTopbar(host = false, presenter = false) {
+function brandTopbar(host = false, presenter = false, showRoom = true) {
   const roomControl = presenter
     ? '<div class="presenter-join-qr" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>Join</span></div>'
-    : `<span class="room-badge">ROOM ${roomCode}</span>`;
+    : showRoom ? `<span class="room-badge">ROOM ${roomCode}</span>` : "";
   const brandName = ["player", "presenter"].includes(view)
     ? '<span aria-label="BRAINSTORM">BRAINST<span class="brand-brain" aria-hidden="true">🧠</span>RM</span>'
     : "BRAINSTORM";
@@ -1117,7 +1117,7 @@ function presentationTitlePage() {
 }
 
 function presentationCornerJoinQr() {
-  return `<div class="presenter-join-qr presenter-join-qr--corner" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>Join</span></div>`;
+  return `<div class="presenter-join-qr presenter-join-qr--corner" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>${escapeHtml(roomCode)}</span></div>`;
 }
 
 function renderPresenter() {
@@ -1140,7 +1140,9 @@ function renderPresenter() {
   const heading = state.presentationScreen === "title" ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1>${state.phase === "open" ? timerDisplay() : ""}</section>`;
   const fullscreenControl = '<div class="presentation-fullscreen-corner"><button class="presentation-fullscreen-toggle" data-toggle-fullscreen aria-label="Toggle fullscreen presentation" title="Toggle fullscreen">⛶</button></div>';
   const cornerJoinQr = state.presentationScreen === "title" ? "" : presentationCornerJoinQr();
-  app.innerHTML = shell(`${brandTopbar()}<main class="presentation-main ${state.presentationScreen === "title" ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
+  // The title page already has its own join code. On every other presentation
+  // screen, replace the room badge with the corner QR and its room ID.
+  app.innerHTML = shell(`${brandTopbar(false, false, state.presentationScreen === "title")}<main class="presentation-main ${state.presentationScreen === "title" ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
