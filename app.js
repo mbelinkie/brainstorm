@@ -719,7 +719,14 @@ function anonymousTextAnswerWall() {
 
 function updateAnonymousTextAnswerWall() {
   const wall = document.querySelector("[data-anonymous-answer-wall]");
-  if (wall) wall.outerHTML = anonymousTextAnswerWall();
+  if (!wall) return;
+  const template = document.createElement("template");
+  template.innerHTML = anonymousTextAnswerWall();
+  const nextWall = template.content.firstElementChild;
+  // Background recovery attempts must not restart the answer-chip animation
+  // when nothing visible has changed.
+  if (!nextWall || wall.innerHTML === nextWall.innerHTML) return;
+  wall.replaceWith(nextWall);
 }
 
 function hasRealtimeTextAnswers(questionId = state.questionId || state.question?.id) {
@@ -777,13 +784,20 @@ async function refreshAnonymousTextAnswers() {
       }, 350 * anonymousTextAnswerRetries);
     }
   } catch (error) {
-    anonymousTextAnswersError = true;
     recordDiagnostic("anonymous-answer-wall", error, { roomCode, questionId: state.questionId });
     console.warn("Could not load anonymous text answers.", error);
     const realtimeAnswersAvailable = hasRealtimeTextAnswers();
-    if (realtimeAnswersAvailable) anonymousTextAnswerRetries = 0;
+    const shouldRetry = !realtimeAnswersAvailable && anonymousTextAnswerRetries < 3;
+    if (realtimeAnswersAvailable) {
+      anonymousTextAnswersError = false;
+      anonymousTextAnswerRetries = 0;
+    } else if (!shouldRetry) {
+      anonymousTextAnswersError = true;
+    }
+    // Keep intermediate failures invisible. The existing wall remains stable
+    // while recovery runs, and changes only for real answers or a final error.
     updateAnonymousTextAnswerWall();
-    if (!realtimeAnswersAvailable && anonymousTextAnswerRetries < 3) {
+    if (shouldRetry) {
       anonymousTextAnswerRetries += 1;
       setTimeout(() => {
         anonymousTextAnswersKey = "";

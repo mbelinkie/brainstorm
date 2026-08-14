@@ -86,7 +86,8 @@ test("presenter text questions render anonymous answers instead of a disabled pl
   assert.match(app, /questionId: state\.questionId \|\| state\.question\?\.id/);
   assert.match(app, /type: "presentation-submission"/);
   assert.match(app, /function updateAnonymousTextAnswerWall/);
-  assert.match(app, /if \(wall\) wall\.outerHTML = anonymousTextAnswerWall\(\)/);
+  assert.match(app, /wall\.innerHTML === nextWall\.innerHTML/);
+  assert.match(app, /wall\.replaceWith\(nextWall\)/);
   assert.match(app, /!realtimeAnswersAvailable && anonymousTextAnswerRetries < 3/);
   const answerRefresh = app.slice(app.indexOf("async function refreshAnonymousTextAnswers"), app.indexOf("function revealImage"));
   assert.doesNotMatch(answerRefresh, /\brender\(\)/);
