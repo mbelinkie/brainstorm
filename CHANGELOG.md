@@ -2,6 +2,13 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-14
+
+- Added a server-authoritative between-round door bonus: players choose one of three authored doors, Presentation groups names and player icons beneath each choice, and the host reveals persisted randomized rewards for everyone at once.
+- Added balanced default doors with equal 1.20× expected value: Safe (100% 1.2×), Gamble (50% 1.6× / 50% 0.8×), and Hail Mary (25% 3.0× / 75% 0.6×).
+- Added authoring controls for door names, icons, outcome probabilities, and multipliers, including validation, expected-value guidance, and one-click default restoration.
+- Applied resolved multipliers to automatic points for the following round only, preserved base points and multiplier in the score audit export, and added persistent phone badges throughout the boosted round.
+
 ## 2026-08-13
 
 - Added an optional persistent question image for single-choice and fill-in-the-blank questions. It appears while answering and is replaced by the optional answer-reveal image on reveal.

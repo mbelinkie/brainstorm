@@ -51,6 +51,12 @@ const typeLabel = (type) => type.replaceAll("_", " ");
 const validNumericLiteral = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
 const validAssetId = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 const titlePage = () => (bank.titlePage ||= {});
+const DEFAULT_BETWEEN_ROUND_BONUS = Object.freeze({ enabled: true, doors: [
+  { id: "safe", name: "Safe Door", icon: "shield", outcomes: [{ chancePercent: 100, multiplier: 1.2 }] },
+  { id: "gamble", name: "Gamble Door", icon: "dice", outcomes: [{ chancePercent: 50, multiplier: 1.6 }, { chancePercent: 50, multiplier: 0.8 }] },
+  { id: "hail-mary", name: "Hail Mary Door", icon: "lightning", outcomes: [{ chancePercent: 25, multiplier: 3 }, { chancePercent: 75, multiplier: 0.6 }] }
+] });
+const bonusConfig = () => (bank.betweenRoundBonus ||= clone(DEFAULT_BETWEEN_ROUND_BONUS));
 
 function imageActionControls(target, uploadInput) {
   return `<div class="option-image-actions image-split" data-image-split><button class="button button-quiet image-paste-button" data-paste-image="${escapeHtml(target)}" type="button">Paste image</button><button class="button button-quiet image-menu-button" data-image-menu type="button" aria-label="More image options" aria-expanded="false">⌄</button><div class="image-action-menu" role="menu"><label class="image-menu-item" role="menuitem">Upload image${uploadInput}</label><button class="image-menu-item" data-find-image="${escapeHtml(target)}" type="button" role="menuitem">Find image</button></div></div>`;
@@ -133,6 +139,26 @@ function validateQuiz(candidate) {
   if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
+  if (candidate.betweenRoundBonus?.enabled) {
+    const doors = candidate.betweenRoundBonus.doors;
+    if (!Array.isArray(doors) || doors.length !== 3) errors.push("Between-round bonus needs exactly three doors.");
+    else {
+      const doorIds = new Set();
+      doors.forEach((door, doorIndex) => {
+        const label = `Bonus door ${doorIndex + 1}`;
+        if (!requiredText(door?.id) || !requiredText(door?.name)) errors.push(`${label} needs an ID and name.`);
+        else if (doorIds.has(door.id)) errors.push(`${label} has a duplicate ID.`);
+        else doorIds.add(door.id);
+        if (!requiredText(door?.icon)) errors.push(`${label} needs an icon.`);
+        if (!Array.isArray(door?.outcomes) || door.outcomes.length === 0) errors.push(`${label} needs at least one outcome.`);
+        else {
+          const chanceTotal = door.outcomes.reduce((sum, outcome) => sum + Number(outcome?.chancePercent || 0), 0);
+          if (Math.abs(chanceTotal - 100) > 0.001) errors.push(`${label} outcome chances must total 100%.`);
+          if (door.outcomes.some((outcome) => !Number.isFinite(Number(outcome?.chancePercent)) || Number(outcome.chancePercent) <= 0 || !Number.isFinite(Number(outcome?.multiplier)) || Number(outcome.multiplier) <= 0 || Number(outcome.multiplier) > 10)) errors.push(`${label} needs positive chances and multipliers no greater than 10×.`);
+        }
+      });
+    }
+  }
   if (!Array.isArray(candidate.rounds) || candidate.rounds.length === 0) return [...errors, "Add at least one round."];
 
   const roundIds = new Set();
@@ -312,6 +338,19 @@ function audioEditor(item) {
   return `<section class="section"><div class="section-head"><span class="section-label">Presentation audio cue</span><label class="button button-quiet">Trim and upload clip<input data-upload-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">Choose a source file, trim it in the browser, and optionally fade in or out. The presentation view plays the uploaded clip.</p>${privateAudioPreview(audio.mediaAssetId, audio.suggestedWindow || "Preview audio", "question")}<div class="field-grid">${field("Opaque asset ID", "audio.assetId", audio.assetId || "")}${field("Suggested window", "audio.suggestedWindow", audio.suggestedWindow || "")}</div>${field("Audio URL (optional fallback)", "audio.url", audio.url || "", { type: "url" })}${field("Production cue", "audio.cue", audio.cue || "", { textarea: true })}</section>`;
 }
 
+function betweenRoundBonusEditor() {
+  const config = bonusConfig();
+  const iconOptions = [
+    ["shield", "Shield"], ["dice", "Dice"], ["lightning", "Lightning"],
+    ["star", "Star"], ["key", "Key"], ["flame", "Flame"]
+  ];
+  const doorCards = (config.doors || []).map((door, doorIndex) => {
+    const expected = (door.outcomes || []).reduce((sum, outcome) => sum + Number(outcome.chancePercent || 0) / 100 * Number(outcome.multiplier || 0), 0);
+    return `<article class="bonus-author-door"><div class="bonus-author-door-head"><span class="bonus-author-icon bonus-author-icon--${escapeHtml(door.icon)}" aria-hidden="true"></span><strong>Door ${doorIndex + 1}</strong><span>Expected ${expected.toFixed(2)}×</span></div><div class="field-grid"><div class="field"><label>Door name</label><input data-bonus-door-name="${doorIndex}" value="${escapeHtml(door.name)}" maxlength="32" /></div><div class="field"><label>Icon</label><select data-bonus-door-icon="${doorIndex}">${iconOptions.map(([value, label]) => `<option value="${value}" ${door.icon === value ? "selected" : ""}>${label}</option>`).join("")}</select></div></div><div class="bonus-outcomes"><span class="section-label">Possible outcomes</span>${(door.outcomes || []).map((outcome, outcomeIndex) => `<div class="bonus-outcome-row"><label>Chance <span><input data-bonus-chance="${doorIndex}:${outcomeIndex}" type="number" min="0.01" max="100" step="0.01" value="${escapeHtml(outcome.chancePercent)}" />%</span></label><label>Multiplier <span><input data-bonus-multiplier="${doorIndex}:${outcomeIndex}" type="number" min="0.01" max="10" step="0.01" value="${escapeHtml(outcome.multiplier)}" />×</span></label>${door.outcomes.length > 1 ? `<button class="icon-button" data-remove-bonus-outcome="${doorIndex}:${outcomeIndex}" type="button" aria-label="Remove outcome">×</button>` : ""}</div>`).join("")}<button class="button button-quiet bonus-add-outcome" data-add-bonus-outcome="${doorIndex}" type="button">+ Add outcome</button></div></article>`;
+  }).join("");
+  return `<section class="section between-round-bonus-editor"><div class="section-head"><div><span class="section-label">Between-round door bonus</span><p class="audio-editor-help">Players choose a door before each new round. Rewards affect automatic points in that next round only.</p></div><label class="bonus-enabled"><input data-bonus-enabled type="checkbox" ${config.enabled ? "checked" : ""} /> Enabled</label></div><div class="bonus-author-grid ${config.enabled ? "" : "is-disabled"}">${doorCards}</div><div class="bonus-author-footer"><span>Balanced defaults target an expected 1.20× for every door.</span><button class="button button-quiet" data-reset-bonus type="button">Restore balanced defaults</button></div></section>`;
+}
+
 function titlePageEditor() {
   const opening = titlePage();
   const audio = opening.audio || {};
@@ -325,7 +364,7 @@ function renderEditor() {
   $("#question-location").textContent = `${round.title} · Question ${selection.questionIndex + 1}`;
   $("#editor-title").textContent = item.id || "Question editor";
   $("#form-editor").innerHTML = `
-    ${selection.roundIndex === 0 && selection.questionIndex === 0 ? titlePageEditor() : ""}<section class="section"><span class="section-label">Quiz and round details</span><div class="field-grid">${field("Quiz title", "quiz-title", bank.title)}${field("Round title", "round-title", round.title)}</div></section>
+    ${selection.roundIndex === 0 && selection.questionIndex === 0 ? `${titlePageEditor()}${betweenRoundBonusEditor()}` : ""}<section class="section"><span class="section-label">Quiz and round details</span><div class="field-grid">${field("Quiz title", "quiz-title", bank.title)}${field("Round title", "round-title", round.title)}</div></section>
     <div class="field-grid">${field("Question ID", "id", item.id)}<div class="field"><label>Question type</label><select data-field="type" aria-label="Question type">${["single_choice","multiple_choice","true_false","image_selection","arrange_in_order","categorize","fill_in_the_blank","short_answer","closest_number","matching"].map((type) => `<option value="${type}" ${item.type === type ? "selected" : ""}>${escapeHtml(typeLabel(type))}</option>`).join("")}</select></div></div>
     ${field("Player prompt", "prompt", item.prompt, { textarea: true })}
     <div class="field-grid">${field(item.type === "matching" ? "Points per pair" : "Points", item.type === "matching" ? "pointsPerPair" : "points", item.type === "matching" ? item.pointsPerPair : item.points, { type: "number" })}${field("Host reveal", "hostReveal", item.hostReveal || "", { textarea: true })}</div>
@@ -358,6 +397,13 @@ function updateField(key, value) {
 }
 
 function bindEditorEvents() {
+  $("[data-bonus-enabled]")?.addEventListener("change", (event) => { bonusConfig().enabled = event.target.checked; markChanged(); renderEditor(); });
+  document.querySelectorAll("[data-bonus-door-name]").forEach((input) => input.addEventListener("input", () => { bonusConfig().doors[Number(input.dataset.bonusDoorName)].name = input.value; markChanged(); }));
+  document.querySelectorAll("[data-bonus-door-icon]").forEach((select) => select.addEventListener("change", () => { bonusConfig().doors[Number(select.dataset.bonusDoorIcon)].icon = select.value; markChanged(); renderEditor(); }));
+  document.querySelectorAll("[data-bonus-chance], [data-bonus-multiplier]").forEach((input) => input.addEventListener("change", () => { const [doorIndex, outcomeIndex] = String(input.dataset.bonusChance || input.dataset.bonusMultiplier).split(":").map(Number); const fieldName = input.dataset.bonusChance ? "chancePercent" : "multiplier"; bonusConfig().doors[doorIndex].outcomes[outcomeIndex][fieldName] = Number(input.value); markChanged(); renderEditor(); }));
+  document.querySelectorAll("[data-add-bonus-outcome]").forEach((button) => button.addEventListener("click", () => { bonusConfig().doors[Number(button.dataset.addBonusOutcome)].outcomes.push({ chancePercent: 10, multiplier: 1 }); markChanged(); renderEditor(); }));
+  document.querySelectorAll("[data-remove-bonus-outcome]").forEach((button) => button.addEventListener("click", () => { const [doorIndex, outcomeIndex] = button.dataset.removeBonusOutcome.split(":").map(Number); bonusConfig().doors[doorIndex].outcomes.splice(outcomeIndex, 1); markChanged(); renderEditor(); }));
+  $("[data-reset-bonus]")?.addEventListener("click", () => { bank.betweenRoundBonus = clone(DEFAULT_BETWEEN_ROUND_BONUS); markChanged(); renderEditor(); });
   document.querySelectorAll("[data-field]").forEach((input) => {
     if (["quiz-title", "round-title"].includes(input.dataset.field)) return;
     const commit = () => { input.dataset.field === "type" ? changeQuestionType(input.value) : updateField(input.dataset.field, input.value); renderEditor(); renderPreview(); };
@@ -476,6 +522,7 @@ function newQuiz() {
   bank = {
     id: `quiz-${crypto.randomUUID().slice(0, 8)}`,
     title: "Untitled quiz",
+    betweenRoundBonus: clone(DEFAULT_BETWEEN_ROUND_BONUS),
     rounds: [{
       id: "round-1",
       title: "Round 1",
@@ -1036,8 +1083,10 @@ function formatBytes(bytes) {
 function renderMediaLibrary() {
   const status = $("#media-library-status");
   const list = $("#media-library-list");
+  const normalizeButton = ensureNormalizeLibraryButton();
   if (!status || !list) return;
-  if (!currentUser) { status.textContent = "Sign in to view uploaded private media."; list.innerHTML = ""; return; }
+  if (!currentUser) { status.textContent = "Sign in to view uploaded private media."; list.innerHTML = ""; normalizeButton.disabled = true; return; }
+  normalizeButton.disabled = !mediaAssets.some((asset) => asset.kind === "audio");
   status.textContent = mediaAssets.length ? `${mediaAssets.length} private asset${mediaAssets.length === 1 ? "" : "s"}` : "No private media uploaded yet.";
   mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   mediaPreviewUrls = [];
@@ -1050,6 +1099,59 @@ function renderMediaLibrary() {
   document.querySelectorAll("[data-rename-media]").forEach((button) => button.addEventListener("click", () => promptRenameMediaAsset(button.dataset.renameMedia)));
   document.querySelectorAll("[data-delete-media]").forEach((button) => button.addEventListener("click", () => deleteUnusedMediaAsset(button.dataset.deleteMedia)));
   document.querySelectorAll("[data-media-preview]").forEach((element) => loadMediaPreview(element));
+}
+
+function ensureNormalizeLibraryButton() {
+  let button = $("#normalize-library-audio");
+  if (button) return button;
+  button = document.createElement("button");
+  button.id = "normalize-library-audio";
+  button.type = "button";
+  button.className = "button button-quiet";
+  button.textContent = "Level all audio";
+  button.title = "Replace every private audio clip with a loudness-leveled WAV while keeping its quiz asset ID.";
+  button.addEventListener("click", () => normalizeExistingLibraryAudio().catch((error) => {
+    alert(`Could not loudness-level the media library: ${error.message}`);
+    $("#save-state").textContent = "Media-library loudness leveling failed";
+    button.disabled = !mediaAssets.some((asset) => asset.kind === "audio");
+  }));
+  $("#refresh-media")?.before(button);
+  return button;
+}
+
+async function normalizeExistingLibraryAudio() {
+  const assets = mediaAssets.filter((asset) => asset.kind === "audio");
+  if (!assets.length) { $("#save-state").textContent = "No private audio clips to level"; return; }
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error("Your author sign-in has expired. Sign in again, then retry.");
+  const button = ensureNormalizeLibraryButton();
+  button.disabled = true;
+  const context = new AudioContext();
+  try {
+    for (let index = 0; index < assets.length; index += 1) {
+      const asset = assets[index];
+      $("#save-state").textContent = `Loudness-leveling private audio ${index + 1} of ${assets.length}…`;
+      const response = await fetch(`${workerOrigin}/author-media/${encodeURIComponent(asset.id)}`, { headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error(`Could not download “${asset.display_name || asset.id}” (${response.status}).`);
+      const decoded = await context.decodeAudioData(await response.arrayBuffer());
+      const normalization = normalizeAudioBuffer(decoded);
+      const blob = audioBufferToWav(decoded);
+      if (blob.size > 26214400) throw new Error(`“${asset.display_name || asset.id}” would exceed the 25 MB upload limit after rendering.`);
+      const { error } = await supabase.storage.from("quiz-media").update(asset.storage_path, blob, { contentType: "audio/wav" });
+      if (error) throw error;
+      asset.mime_type = "audio/wav";
+      asset.byte_size = blob.size;
+      const oldPreview = uploadedAudioPreviewUrls.get(asset.id);
+      if (oldPreview) URL.revokeObjectURL(oldPreview);
+      uploadedAudioPreviewUrls.set(asset.id, URL.createObjectURL(blob));
+      console.info("Loudness-leveled private audio", { assetId: asset.id, normalization });
+    }
+    $("#save-state").textContent = `Loudness-leveled ${assets.length} private audio clip${assets.length === 1 ? "" : "s"}. Existing quiz versions keep their asset IDs.`;
+    renderMediaLibrary();
+  } finally {
+    await context.close();
+    button.disabled = !mediaAssets.some((asset) => asset.kind === "audio");
+  }
 }
 
 async function loadMediaPreview(element) {
@@ -1102,11 +1204,36 @@ async function nameMediaAsset(assetId, name) {
   if (error) console.warn("Could not save media name", error);
 }
 
+function requestMediaAssetName(existingName) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "image-finder";
+  dialog.innerHTML = `<form method="dialog"><div class="cropper-head"><div><p class="eyebrow">Private media</p><h2>Rename asset</h2></div><button class="icon-button" type="button" data-cancel aria-label="Cancel rename">×</button></div><label class="field"><span>Name</span><input data-name maxlength="180" /></label><small>Leave the name blank to use the source title or asset ID.</small><div class="cropper-actions"><span></span><button class="button button-quiet" type="button" data-cancel>Cancel</button><button class="button button-primary" type="submit">Save name</button></div></form>`;
+  document.body.append(dialog);
+  const input = dialog.querySelector("[data-name]");
+  input.value = existingName;
+  return new Promise((resolve) => {
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      dialog.close();
+      dialog.remove();
+      resolve(value);
+    };
+    dialog.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); finish(input.value.trim()); });
+    dialog.querySelectorAll("[data-cancel]").forEach((button) => button.addEventListener("click", () => finish(null)));
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(null); });
+    dialog.showModal();
+    input.focus();
+    input.select();
+  });
+}
+
 async function promptRenameMediaAsset(assetId) {
   const asset = mediaAssets.find((entry) => entry.id === assetId);
   if (!asset) return;
   const existingName = asset.display_name || asset.source_title || "";
-  const nextName = prompt("Name this private media asset (leave blank to use the source title or asset ID):", existingName);
+  const nextName = await requestMediaAssetName(existingName);
   if (nextName === null || nextName === existingName) return;
   try {
     const { error } = await supabase.rpc("rename_media_asset", { p_asset_id: assetId, p_display_name: nextName });

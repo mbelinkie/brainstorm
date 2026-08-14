@@ -47,13 +47,13 @@ export default {
       if (!['question_locked', 'answer_reveal'].includes(roomState.phase)) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
       const question = roomState.state?.question || {};
       if (!['short_answer', 'fill_in_the_blank'].includes(question.type) || !roomState.state?.questionId) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
-      const sessionResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/sessions?room_code=eq.${encodeURIComponent(String(roomCode).trim().toUpperCase())}&select=id&limit=1`, { headers });
-      if (!sessionResponse.ok) return Response.json({ error: "Could not find this room." }, { status: 502, headers: { "cache-control": "no-store" } });
-      const [session] = await sessionResponse.json();
-      if (!session?.id) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
-      const answersResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/submissions?session_id=eq.${encodeURIComponent(session.id)}&question_id=eq.${encodeURIComponent(roomState.state.questionId)}&select=answer,submitted_at&order=submitted_at.asc`, { headers });
+      // Keep the session lookup and answer read inside one database function.
+      // The prior two direct REST table queries could fail independently and
+      // surfaced as a generic 502 to the presenter.
+      const answersResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_text_answers`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
       if (!answersResponse.ok) return Response.json({ error: "Could not load answers." }, { status: 502, headers: { "cache-control": "no-store" } });
-      const answers = (await answersResponse.json()).map((entry) => typeof entry.answer === "string" ? entry.answer.trim().slice(0, 180) : "").filter(Boolean);
+      const answerData = await answersResponse.json();
+      const answers = Array.isArray(answerData) ? answerData.map((answer) => String(answer).trim().slice(0, 180)).filter(Boolean) : [];
       return Response.json({ answers }, { headers: { "cache-control": "private, no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/media-assistant/search") {

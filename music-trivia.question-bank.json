@@ -3,6 +3,14 @@
   "version": 1,
   "status": "editorial-draft-ready-for-asset-production",
   "title": "Music Trivia Live: Complete Five-Round Question Bank",
+  "betweenRoundBonus": {
+    "enabled": true,
+    "doors": [
+      {"id":"safe","name":"Safe Door","icon":"shield","outcomes":[{"chancePercent":100,"multiplier":1.2}]},
+      {"id":"gamble","name":"Gamble Door","icon":"dice","outcomes":[{"chancePercent":50,"multiplier":1.6},{"chancePercent":50,"multiplier":0.8}]},
+      {"id":"hail-mary","name":"Hail Mary Door","icon":"lightning","outcomes":[{"chancePercent":25,"multiplier":3.0},{"chancePercent":75,"multiplier":0.6}]}
+    ]
+  },
   "estimatedMinutes": 42,
   "audience": "10–20 work colleagues; broad, mixed music knowledge",
   "deliveryRules": {

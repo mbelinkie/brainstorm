@@ -48,6 +48,6 @@ test("media routes bypass the static-asset handler", () => {
 test("anonymous text-answer wall is host authorized and excludes player identity", () => {
   assert.match(worker, /\/host-text-answers/);
   assert.match(worker, /get_host_live_room_state/);
-  assert.match(worker, /select=answer,submitted_at/);
+  assert.match(worker, /get_host_text_answers/);
   assert.doesNotMatch(worker.slice(worker.indexOf('url.pathname === "/host-text-answers"'), worker.indexOf('url.pathname === "/media-assistant/search"')), /display_name|player_id/);
 });

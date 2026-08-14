@@ -54,6 +54,18 @@ export const roomApi = {
     return call("lock_and_score_live_question", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
+  chooseDoor({ roomCode, playerToken, doorId }) {
+    return call("choose_live_door", { p_room_code: roomCode, p_player_token: playerToken, p_door_id: doorId });
+  },
+
+  getHostDoorChoices({ roomCode, hostSecret }) {
+    return call("get_host_live_door_choices", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
+  revealDoorRewards({ roomCode, hostSecret }) {
+    return call("reveal_live_door_rewards", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
   adjustScore({ roomCode, hostSecret, playerId, points, reason }) {
     return call("adjust_live_score", { p_room_code: roomCode, p_host_secret: hostSecret, p_player_id: playerId, p_points: points, p_reason: reason });
   },

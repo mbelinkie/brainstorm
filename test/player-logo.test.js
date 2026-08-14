@@ -14,6 +14,17 @@ test("players select a square logo before joining", () => {
   assert.match(api, /p_logo_key: logoKey/);
 });
 
+test("mobile logo selection uses one column with large artwork", () => {
+  assert.match(css, /\.player-logo-picker>div\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)/);
+  assert.match(css, /\.player-logo-choice \.player-logo\s*\{[^}]*width:\s*min\(62vw,260px\)/);
+  assert.doesNotMatch(app, /logo\.label\.replace\("Avatar ", ""\)/);
+});
+
+test("player screens give identity and scoreboard logos more room", () => {
+  assert.match(css, /\.player-logo--identity\s*\{[^}]*width:\s*72px/);
+  assert.match(css, /\.player-mini-leaderboard \.player-logo--mini\s*\{[^}]*width:\s*64px/);
+});
+
 test("all scoreboard variants render player logos", () => {
   assert.match(app, /player-logo--host/);
   assert.match(app, /player-logo--presentation/);

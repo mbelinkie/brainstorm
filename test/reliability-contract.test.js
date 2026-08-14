@@ -83,6 +83,13 @@ test("presenter text questions render anonymous answers instead of a disabled pl
   assert.match(app, /host-text-answers/);
 });
 
+test("auto-submit skips a selection after its question has closed or changed", () => {
+  const autoSubmit = app.slice(app.indexOf("function queueAutoSubmission"), app.indexOf("function updateMatchingSelectAvailability"));
+  assert.match(autoSubmit, /state\.phase !== "open"/);
+  assert.match(autoSubmit, /serverRevision/);
+  assert.match(autoSubmit, /state\.revision \|\| 0\) !== serverRevision/);
+});
+
 test("player title and intermission screens hide the active question until the host starts it", () => {
   const renderPlayer = app.slice(app.indexOf("function renderPlayer"), app.indexOf("function render()"));
   assert.match(renderPlayer, /presentationScreen === "title"/);
@@ -121,7 +128,16 @@ test("all correct choices are highlighted on multi-select reveal", () => {
 });
 
 test("player ignores presentation-only audio state changes", () => {
-  const key = app.slice(app.indexOf("function playerRenderKey"), app.indexOf("function emit"));
+  const key = app.slice(app.indexOf("function playerRenderKey"), app.indexOf("function presenterRenderKey"));
   assert.doesNotMatch(key, /audioCommand/);
   assert.doesNotMatch(key, /activeClipId/);
+});
+
+test("presenter applies audio-only updates without remounting the shared screen", () => {
+  const receive = app.slice(app.indexOf("function receive"), app.indexOf("function playerRenderKey"));
+  const key = app.slice(app.indexOf("function presenterRenderKey"), app.indexOf("localChannel.onmessage"));
+  assert.match(receive, /priorPresenterRenderKey/);
+  assert.match(receive, /applyPresentationAudioCommand\(\)/);
+  assert.match(key, /audioCommand, revision, submitted/);
+  assert.match(key, /JSON\.stringify\(visualState\)/);
 });

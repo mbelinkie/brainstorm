@@ -26,8 +26,10 @@ Last updated: 2026-08-14
 - Supabase (US East Free plan) provides protected RPCs, Postgres persistence, Realtime Broadcast, Auth, and server-side scoring.
 - Host creates a six-character room; players join with a room code and display name.
 - The host alone advances lobby → open → lock → reveal → next question → complete. Player phones never receive future questions, answer keys, host reveal notes, or host-only media information.
+- Between non-final rounds, enabled quizzes enter a host-controlled door-choice and reward-reveal phase. A resolved multiplier applies to automatic points in the immediately following round only.
 - Sessions recover after a host refresh using the stored room state and fixed quiz version.
 - Score totals derive from server-written score events and appear in a shared leaderboard.
+- Door choices and randomized outcomes are persisted and resolved by protected server functions so refreshes cannot reroll rewards.
 
 ### Current question support
 

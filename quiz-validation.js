@@ -7,6 +7,26 @@ export function validateQuiz(candidate) {
   if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
+  if (candidate.betweenRoundBonus?.enabled) {
+    const doors = candidate.betweenRoundBonus.doors;
+    if (!Array.isArray(doors) || doors.length !== 3) errors.push("Between-round bonus needs exactly three doors.");
+    else {
+      const doorIds = new Set();
+      doors.forEach((door, doorIndex) => {
+        const label = `Bonus door ${doorIndex + 1}`;
+        if (!requiredText(door?.id) || !requiredText(door?.name)) errors.push(`${label} needs an ID and name.`);
+        else if (doorIds.has(door.id)) errors.push(`${label} has a duplicate ID.`);
+        else doorIds.add(door.id);
+        if (!requiredText(door?.icon)) errors.push(`${label} needs an icon.`);
+        if (!Array.isArray(door?.outcomes) || door.outcomes.length === 0) errors.push(`${label} needs at least one outcome.`);
+        else {
+          const chanceTotal = door.outcomes.reduce((sum, outcome) => sum + Number(outcome?.chancePercent || 0), 0);
+          if (Math.abs(chanceTotal - 100) > 0.001) errors.push(`${label} outcome chances must total 100%.`);
+          if (door.outcomes.some((outcome) => !Number.isFinite(Number(outcome?.chancePercent)) || Number(outcome.chancePercent) <= 0 || !Number.isFinite(Number(outcome?.multiplier)) || Number(outcome.multiplier) <= 0 || Number(outcome.multiplier) > 10)) errors.push(`${label} needs positive chances and multipliers no greater than 10×.`);
+        }
+      });
+    }
+  }
   if (!Array.isArray(candidate.rounds) || candidate.rounds.length === 0) return [...errors, "Add at least one round."];
   const roundIds = new Set(); const questionIds = new Set();
   for (const [roundIndex, round] of candidate.rounds.entries()) {
@@ -20,7 +40,7 @@ export function validateQuiz(candidate) {
       if (!item || typeof item !== "object") { errors.push(`${label} must be an object.`); continue; }
       if (!requiredText(item.id)) errors.push(`${label} needs an ID.`); else if (questionIds.has(item.id)) errors.push(`${label} has a duplicate question ID: ${item.id}.`); else questionIds.add(item.id);
       if (!requiredText(item.prompt)) errors.push(`${label} needs a player prompt.`);
-      if (!Number.isFinite(Number(item.points ?? item.scoring?.points)) || Number(item.points ?? item.scoring?.points) <= 0) errors.push(`${label} needs positive points.`);
+      if (item.type !== "matching" && (!Number.isFinite(Number(item.points ?? item.scoring?.points)) || Number(item.points ?? item.scoring?.points) <= 0)) errors.push(`${label} needs positive points.`);
       if (item.type === "closest_number" && !validNumericLiteral(item.targetNumber)) errors.push(`${label} needs a valid target number.`);
       if (["single_choice", "multiple_choice", "true_false", "image_selection"].includes(item.type)) {
         const optionIds = new Set((item.options || []).map((option) => option?.id));
