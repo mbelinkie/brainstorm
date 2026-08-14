@@ -33,7 +33,9 @@ test("presentation cards expose question-type and side-media layout hooks", () =
 });
 
 test("presenter images fill their pane without duplicate captions", () => {
-  assert.match(app, /\$\{presenter \? "" : "<figcaption>Answer reveal/);
+  const imageRenderers = app.slice(app.indexOf("function revealImage"), app.indexOf("function answerReady"));
+  assert.match(imageRenderers, /if \(!presenter/);
+  assert.doesNotMatch(imageRenderers, /figcaption/);
   assert.match(styles, /presentation-card--with-side-image .*position:absolute.*object-fit:cover/);
   assert.match(styles, /presentation-card \.question-image figcaption.*display:none/);
   assert.match(styles, /presentation-card--with-reveal-image \.reveal-image img\{height:100%/);

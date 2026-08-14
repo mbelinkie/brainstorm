@@ -19,9 +19,9 @@ test("answer-reveal images are excluded from the ordinary player question payloa
   assert.equal(JSON.stringify(player).includes("private-reveal-asset"), false);
 });
 
-test("ordinary question images are included without exposing reveal images", () => {
+test("presentation-only question and reveal images are excluded from player questions", () => {
   const player = toPlayerQuestion({ id: "q-image", type: "single_choice", prompt: "Who is this?", questionImageAssetId: "question-asset", revealImageAssetId: "reveal-asset", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] });
-  assert.equal(player.questionImageAssetId, "question-asset");
+  assert.equal(JSON.stringify(player).includes("question-asset"), false);
   assert.equal(JSON.stringify(player).includes("reveal-asset"), false);
 });
 

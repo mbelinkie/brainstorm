@@ -81,6 +81,15 @@ test("presenter text questions render anonymous answers instead of a disabled pl
   assert.match(app, /function anonymousTextAnswerWall/);
   assert.match(app, /presenter && \["short_answer", "fill_in_the_blank"\]/);
   assert.match(app, /host-text-answers/);
+  assert.match(app, /Typed answers could not be loaded\. Retrying/);
+  assert.match(app, /realtimeTextAnswers\.set\(payload\.playerId/);
+  assert.match(app, /questionId: state\.questionId \|\| state\.question\?\.id/);
+  assert.match(app, /type: "presentation-submission"/);
+  assert.match(app, /function updateAnonymousTextAnswerWall/);
+  assert.match(app, /if \(wall\) wall\.outerHTML = anonymousTextAnswerWall\(\)/);
+  assert.match(app, /!realtimeAnswersAvailable && anonymousTextAnswerRetries < 3/);
+  const answerRefresh = app.slice(app.indexOf("async function refreshAnonymousTextAnswers"), app.indexOf("function revealImage"));
+  assert.doesNotMatch(answerRefresh, /\brender\(\)/);
 });
 
 test("auto-submit skips a selection after its question has closed or changed", () => {
@@ -95,6 +104,17 @@ test("player title and intermission screens hide the active question until the h
   assert.match(renderPlayer, /presentationScreen === "title"/);
   assert.match(renderPlayer, /presentationScreen === "intermission"/);
   assert.match(renderPlayer, /The next question will appear here when it starts/);
+});
+
+test("question-stage and reveal artwork render only in Presentation", () => {
+  const publicState = app.slice(app.indexOf("function publicRoomState"), app.indexOf("function setHostQuestion"));
+  const renderHost = app.slice(app.indexOf("function renderHost"), app.indexOf("function scoreCelebration"));
+  const renderPlayer = app.slice(app.indexOf("function renderPlayer"), app.indexOf("function render()"));
+  assert.doesNotMatch(publicState, /questionImageAssetId|revealImageAssetId/);
+  assert.doesNotMatch(renderHost, /questionImage\(|revealImage\(/);
+  assert.doesNotMatch(renderPlayer, /questionImage\(|revealImage\(/);
+  assert.match(app, /questionImage\(\{ presenter: true \}\)/);
+  assert.match(app, /revealImage\(\{ presenter: true \}\)/);
 });
 
 test("reveal performs locking and scoring in one host action", () => {

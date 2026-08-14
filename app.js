@@ -27,9 +27,12 @@ let presentationAudioSourceKey = null;
 let loadedPrivateAudioAssetId = null;
 let presentationAudioArmed = false;
 let anonymousTextAnswers = [];
+let anonymousTextAnswersError = false;
 let anonymousTextAnswersKey = "";
 let anonymousTextAnswersPendingKey = "";
 let anonymousTextAnswerRetries = 0;
+let realtimeTextAnswers = new Map();
+let realtimeTextAnswersQuestionId = "";
 let autoSubmitTimer = null;
 let submissionSequence = Promise.resolve();
 const quizWorkerOrigin = config.workerOrigin || location.origin;
@@ -123,7 +126,6 @@ function publicRoomState() {
     revealedCorrectPairs: state.phase === "reveal" && hostQuestion.type === "matching" ? hostQuestion.correctPairs || {} : {},
     revealedTextAnswers: state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(hostQuestion.type) ? hostQuestion.acceptedAnswers || hostQuestion.blanks?.[0]?.acceptedAnswers || [] : [],
     revealedNumber: state.phase === "reveal" && hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null,
-    revealImageAssetId: state.phase === "reveal" ? hostQuestion.revealImageAssetId || null : null,
     timerEndsAt: state.timerEndsAt || null,
     timerDurationSeconds: state.timerDurationSeconds || null,
     activeClipId: state.activeClipId || null,
@@ -278,9 +280,25 @@ let selected = null;
 const app = document.querySelector("#app");
 
 function acceptSubmission(payload) {
-  if (view !== "host" || state.phase !== "open" || !payload?.playerId) return;
+  if (state.phase !== "open" || !payload?.playerId) return;
+  const questionId = state.questionId || state.question?.id;
+  if (view === "presenter") {
+    if (!['short_answer', 'fill_in_the_blank'].includes(state.question?.type) || payload.questionId !== questionId || typeof payload.answer !== "string" || !payload.answer.trim()) return;
+    if (realtimeTextAnswersQuestionId !== questionId) {
+      realtimeTextAnswers = new Map();
+      realtimeTextAnswersQuestionId = questionId;
+    }
+    realtimeTextAnswers.set(payload.playerId, payload.answer.trim().slice(0, 180));
+    anonymousTextAnswersError = false;
+    return;
+  }
+  if (view !== "host") return;
   state.submitted[payload.playerId] = payload.answer;
   if (!state.players.find((player) => player.id === payload.playerId)) state.players.push({ id: payload.playerId, name: payload.playerName || "Guest", logoKey: normalizePlayerLogoKey(payload.playerLogoKey), points: 0 });
+  // The Host and Presentation usually share a browser profile. Supabase can
+  // deliver a player broadcast to only one of those duplicate realtime
+  // clients, so bridge the confirmed host receipt to the presentation tab.
+  localChannel.postMessage({ type: "presentation-submission", payload });
   // A submission only changes the Host's received count. Rebroadcasting the
   // full room state here remounts the presentation for every phone tap.
   render();
@@ -291,7 +309,11 @@ function receive(message) {
   if (data?.type === "state") {
     const incomingQuestionId = data.state?.questionId || data.state?.question?.id;
     const previousQuestionId = state.questionId || state.question?.id;
-    if (incomingQuestionId && incomingQuestionId !== previousQuestionId) selected = null;
+    if (incomingQuestionId && incomingQuestionId !== previousQuestionId) {
+      selected = null;
+      realtimeTextAnswers = new Map();
+      realtimeTextAnswersQuestionId = incomingQuestionId;
+    }
     const priorPlayerRenderKey = view === "player" ? playerRenderKey(state) : null;
     const priorPresenterRenderKey = view === "presenter" ? presenterRenderKey(state) : null;
     state = data.state;
@@ -301,6 +323,7 @@ function receive(message) {
     else if (view === "presenter" && presentationAudioArmed) applyPresentationAudioCommand().catch((error) => console.warn("Presentation clip unavailable.", error));
   }
   if (data?.type === "submission") acceptSubmission(data.payload);
+  if (data?.type === "presentation-submission" && view === "presenter") acceptSubmission(data.payload);
   if (data?.type === "presence") acceptPlayerPresence(data.payload);
   if (data?.type === "door-choice") acceptDoorChoice(data.payload);
 }
@@ -317,7 +340,6 @@ function playerRenderKey(roomState) {
     revealedCorrectPairs: roomState?.revealedCorrectPairs,
     revealedTextAnswers: roomState?.revealedTextAnswers,
     revealedNumber: roomState?.revealedNumber,
-    revealImageAssetId: roomState?.revealImageAssetId,
     doorBonus: roomState?.doorBonus,
     doorPicks: roomState?.doorPicks,
     doorResults: roomState?.doorResults,
@@ -364,7 +386,7 @@ async function persistHostState() {
 }
 
 function sendSubmission(answer) {
-  const payload = { playerId, playerName, playerLogoKey, answer };
+  const payload = { playerId, playerName, playerLogoKey, questionId: state.questionId || state.question?.id, answer };
   localChannel.postMessage({ type: "submission", payload });
   realtimeChannel?.send({ type: "broadcast", event: "submission", payload });
 }
@@ -448,7 +470,6 @@ async function setPhase(phase) {
     state.revealedCorrectOptionId = correctOptionId(hostQuestion);
     state.revealedCorrectOptionIds = hostQuestion.correctOptionIds || (state.revealedCorrectOptionId ? [state.revealedCorrectOptionId] : []);
     state.revealedNumber = hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null;
-    state.revealImageAssetId = hostQuestion.revealImageAssetId || null;
   }
   await persistHostState();
   emit();
@@ -685,8 +706,24 @@ function categorizeTapBoard(question) {
 
 function anonymousTextAnswerWall() {
   if (!['locked', 'reveal'].includes(state.phase)) return '<p class="anonymous-answer-pending">Typed answers will appear anonymously once the host locks the question.</p>';
-  if (!anonymousTextAnswers.length) return '<p class="anonymous-answer-pending">No typed answers were submitted.</p>';
-  return `<section class="anonymous-answer-wall" aria-label="Anonymous player answers"><p class="eyebrow">Anonymous answers</p><div>${anonymousTextAnswers.map((answer) => `<span>${escapeHtml(answer)}</span>`).join("")}</div></section>`;
+  const questionId = state.questionId || state.question?.id;
+  const liveAnswers = realtimeTextAnswersQuestionId === questionId ? [...realtimeTextAnswers.values()] : [];
+  const answers = liveAnswers.length ? liveAnswers : anonymousTextAnswers;
+  const content = answers.length
+    ? `<section class="anonymous-answer-wall" aria-label="Anonymous player answers"><p class="eyebrow">Anonymous answers</p><div>${answers.map((answer) => `<span>${escapeHtml(answer)}</span>`).join("")}</div></section>`
+    : anonymousTextAnswersError
+      ? '<p class="anonymous-answer-pending">Typed answers could not be loaded. Retrying…</p>'
+      : '<p class="anonymous-answer-pending">No typed answers were submitted.</p>';
+  return `<div class="anonymous-answer-slot" data-anonymous-answer-wall aria-live="polite">${content}</div>`;
+}
+
+function updateAnonymousTextAnswerWall() {
+  const wall = document.querySelector("[data-anonymous-answer-wall]");
+  if (wall) wall.outerHTML = anonymousTextAnswerWall();
+}
+
+function hasRealtimeTextAnswers(questionId = state.questionId || state.question?.id) {
+  return realtimeTextAnswersQuestionId === questionId && realtimeTextAnswers.size > 0;
 }
 
 function answerControl({ player = false, presenter = false } = {}) {
@@ -710,6 +747,7 @@ function answerControl({ player = false, presenter = false } = {}) {
 async function refreshAnonymousTextAnswers() {
   if (view !== "presenter" || !params.has("room") || !['short_answer', 'fill_in_the_blank'].includes(state.question?.type) || !['locked', 'reveal'].includes(state.phase)) {
     anonymousTextAnswers = [];
+    anonymousTextAnswersError = false;
     anonymousTextAnswersKey = "";
     anonymousTextAnswerRetries = 0;
     return;
@@ -725,10 +763,12 @@ async function refreshAnonymousTextAnswers() {
     const result = await response.json();
     if (anonymousTextAnswersPendingKey !== key) return;
     anonymousTextAnswers = Array.isArray(result.answers) ? result.answers : [];
+    anonymousTextAnswersError = false;
     anonymousTextAnswersKey = key;
-    if (anonymousTextAnswers.length) anonymousTextAnswerRetries = 0;
-    render();
-    if (!anonymousTextAnswers.length && anonymousTextAnswerRetries < 3) {
+    const realtimeAnswersAvailable = hasRealtimeTextAnswers();
+    if (anonymousTextAnswers.length || realtimeAnswersAvailable) anonymousTextAnswerRetries = 0;
+    updateAnonymousTextAnswerWall();
+    if (!anonymousTextAnswers.length && !realtimeAnswersAvailable && anonymousTextAnswerRetries < 3) {
       anonymousTextAnswerRetries += 1;
       setTimeout(() => {
         if (anonymousTextAnswersKey !== key || !["locked", "reveal"].includes(state.phase)) return;
@@ -737,26 +777,42 @@ async function refreshAnonymousTextAnswers() {
       }, 350 * anonymousTextAnswerRetries);
     }
   } catch (error) {
+    anonymousTextAnswersError = true;
     recordDiagnostic("anonymous-answer-wall", error, { roomCode, questionId: state.questionId });
     console.warn("Could not load anonymous text answers.", error);
+    const realtimeAnswersAvailable = hasRealtimeTextAnswers();
+    if (realtimeAnswersAvailable) anonymousTextAnswerRetries = 0;
+    updateAnonymousTextAnswerWall();
+    if (!realtimeAnswersAvailable && anonymousTextAnswerRetries < 3) {
+      anonymousTextAnswerRetries += 1;
+      setTimeout(() => {
+        anonymousTextAnswersKey = "";
+        refreshAnonymousTextAnswers();
+      }, 350 * anonymousTextAnswerRetries);
+    }
   } finally {
     if (anonymousTextAnswersPendingKey === key) anonymousTextAnswersPendingKey = "";
   }
 }
 
-function revealImage({ player = false, presenter = false } = {}) {
-  if (state.phase !== "reveal") return "";
-  const assetId = player || presenter ? state.revealImageAssetId : hostQuestion.revealImageAssetId;
-  if (!assetId) return "";
-  return `<figure class="reveal-image"><img data-private-image="${escapeHtml(assetId)}" alt="Answer reveal image" />${presenter ? "" : "<figcaption>Answer reveal</figcaption>"}</figure>`;
+function presenterQuestionDefinition() {
+  return questionDefinitionById(state.questionId || state.question?.id) || hostQuestion;
 }
 
-function questionImage({ player = false, presenter = false } = {}) {
-  const question = player || presenter ? state.question : hostQuestion;
-  if (state.phase === "reveal" && (player || presenter ? state.revealImageAssetId : hostQuestion.revealImageAssetId)) return "";
+function revealImage({ presenter = false } = {}) {
+  if (!presenter || state.phase !== "reveal") return "";
+  const assetId = presenterQuestionDefinition()?.revealImageAssetId;
+  if (!assetId) return "";
+  return `<figure class="reveal-image"><img data-private-image="${escapeHtml(assetId)}" alt="Answer reveal image" /></figure>`;
+}
+
+function questionImage({ presenter = false } = {}) {
+  if (!presenter) return "";
+  const question = presenterQuestionDefinition();
+  if (state.phase === "reveal" && question?.revealImageAssetId) return "";
   const assetId = question?.questionImageAssetId;
   if (!assetId) return "";
-  return `<figure class="question-image"><img data-private-image="${escapeHtml(assetId)}" alt="Question image" />${presenter ? "" : "<figcaption>Question image</figcaption>"}</figure>`;
+  return `<figure class="question-image"><img data-private-image="${escapeHtml(assetId)}" alt="Question image" /></figure>`;
 }
 
 function answerReady(question = state.question) {
@@ -1000,7 +1056,7 @@ function renderHost() {
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
   const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>` : "";
   const presentationAction = isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : "";
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${audioPanel()}${matchingClipControls()}${answerControl()}${revealImage()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -1055,6 +1111,7 @@ function renderPresenter() {
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const soundGate = isHostedRoom && quizHasAudio && !presentationAudioArmed ? '<aside class="presentation-sound-gate"><div><p class="eyebrow">One-time setup</p><h2>Enable presentation sound</h2><p>Click once before sharing this tab. The setup disappears; all playback controls remain in Host view.</p><button class="btn btn-primary" data-arm-presentation-audio>Enable sound</button><span data-arm-audio-status role="status"></span></div></aside>' : "";
+  const presenterQuestion = presenterQuestionDefinition();
   const card = state.presentationScreen === "title"
     ? presentationTitlePage()
     : ["door_choice", "door_reveal"].includes(state.phase)
@@ -1063,7 +1120,7 @@ function renderPresenter() {
     ? `<section class="presentation-card presentation-card--final"><div class="winner-confetti" aria-hidden="true">${Array.from({ length: 28 }, (_, index) => `<i style="--confetti-index:${index}"></i>`).join("")}</div><p class="eyebrow">Final leaderboard</p><h2>Thanks for playing.</h2>${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
       ? presenterIntermission()
-    : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(state.revealImageAssetId || state.question?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite">${state.phase === "reveal" ? "" : `<p class="eyebrow">${state.phase === "locked" ? "Answers are in" : `Question ${questionNumber}`}</p>`}<h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
+    : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(presenterQuestion?.revealImageAssetId || presenterQuestion?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite">${state.phase === "reveal" ? "" : `<p class="eyebrow">${state.phase === "locked" ? "Answers are in" : `Question ${questionNumber}`}</p>`}<h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
   const displayedRound = ["door_choice", "door_reveal"].includes(state.phase) ? Number(state.targetRoundIndex) + 1 : state.question?.round || 1;
   const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Brainstorm";
   const heading = state.presentationScreen === "title" ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1>${state.phase === "open" ? timerDisplay() : ""}</section>`;
@@ -1105,7 +1162,7 @@ function renderPlayer() {
   const manualSubmit = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"].includes(state.question?.type);
   const phaseMessage = state.phase === "locked" ? "Answers are locked." : state.phase === "reveal" ? "Answer revealed." : state.phase === "complete" ? "Thanks for playing—the final leaderboard is on the shared screen." : isSubmitted ? (manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal.") : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically.";
   const playerType = escapeHtml(state.question?.type || "question");
-  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : questionImage({player:true})}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}${revealImage({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
+  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : ""}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
 }
 
 function render() {

@@ -1,7 +1,12 @@
 function supabaseAdminHeaders(secret, { json = false } = {}) {
   // Modern Supabase server keys are opaque API keys, not user-session JWTs.
-  // The hosted gateway translates this credential to the service_role role.
-  const headers = { apikey: secret };
+  // The hosted gateway translates those credentials to the service_role role.
+  // Legacy service-role keys are JWTs and must also be the bearer token for
+  // direct table reads to run as service_role instead of the anonymous role.
+  const headers = {
+    apikey: secret,
+    ...(String(secret).split(".").length === 3 ? { Authorization: `Bearer ${secret}` } : {})
+  };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }
@@ -47,13 +52,26 @@ export default {
       if (!['question_locked', 'answer_reveal'].includes(roomState.phase)) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
       const question = roomState.state?.question || {};
       if (!['short_answer', 'fill_in_the_blank'].includes(question.type) || !roomState.state?.questionId) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
-      // Keep the session lookup and answer read inside one database function.
-      // The prior two direct REST table queries could fail independently and
-      // surfaced as a generic 502 to the presenter.
-      const answersResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_text_answers`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
-      if (!answersResponse.ok) return Response.json({ error: "Could not load answers." }, { status: 502, headers: { "cache-control": "no-store" } });
+      // The preceding RPC has verified the host secret. Query the active
+      // session and its submissions with the Worker's service credential so
+      // this wall cannot be empty because an optional display-only RPC is out
+      // of date or has a stricter state filter than the live room itself.
+      const sessionResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/sessions?room_code=eq.${encodeURIComponent(roomCode.trim().toUpperCase())}&select=id`, { headers });
+      if (!sessionResponse.ok) {
+        const failure = await sessionResponse.json().catch(() => ({}));
+        console.error("Answer wall session lookup failed", { upstreamStatus: sessionResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
+        return Response.json({ error: "Could not load the active room.", stage: "session-lookup", upstreamStatus: sessionResponse.status, upstreamCode: String(failure?.code || "").slice(0, 40), upstreamMessage: String(failure?.message || "").slice(0, 160) }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+      const [session] = await sessionResponse.json();
+      if (!session?.id) return Response.json({ answers: [] }, { headers: { "cache-control": "private, no-store" } });
+      const answersResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/submissions?session_id=eq.${encodeURIComponent(session.id)}&question_id=eq.${encodeURIComponent(roomState.state.questionId)}&select=answer,submitted_at&order=submitted_at.asc`, { headers });
+      if (!answersResponse.ok) {
+        const failure = await answersResponse.json().catch(() => ({}));
+        console.error("Answer wall submission lookup failed", { upstreamStatus: answersResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
+        return Response.json({ error: "Could not load answers.", stage: "submission-lookup", upstreamStatus: answersResponse.status, upstreamCode: String(failure?.code || "").slice(0, 40), upstreamMessage: String(failure?.message || "").slice(0, 160) }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
       const answerData = await answersResponse.json();
-      const answers = Array.isArray(answerData) ? answerData.map((answer) => String(answer).trim().slice(0, 180)).filter(Boolean) : [];
+      const answers = Array.isArray(answerData) ? answerData.map((submission) => typeof submission?.answer === "string" ? submission.answer.trim().slice(0, 180) : "").filter(Boolean) : [];
       return Response.json({ answers }, { headers: { "cache-control": "private, no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/media-assistant/search") {
@@ -113,17 +131,7 @@ export default {
       const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
       const authorization = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/can_access_live_media`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_asset_id: assetId, p_host_secret: hostSecret, p_player_token: playerToken }) });
       if (!authorization.ok) return mediaFailure("authorization-request", authorization.status);
-      let authorized = await authorization.json() === true;
-      // Older deployed database functions do not yet recognize the new
-      // questionImageAssetId field. Authenticate the player through the
-      // existing room-state RPC and allow only the current question's image.
-      if (!authorized && playerToken) {
-        const roomStateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_player_token: playerToken }) });
-        if (roomStateResponse.ok) {
-          const roomState = await roomStateResponse.json();
-          authorized = roomState?.state?.question?.questionImageAssetId === assetId;
-        }
-      }
+      const authorized = await authorization.json() === true;
       if (!authorized) return mediaFailure("authorization-denied");
 
       const assetResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?id=eq.${encodeURIComponent(assetId)}&select=storage_path,mime_type`, { headers });

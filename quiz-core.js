@@ -3,7 +3,6 @@
 
 export function toPlayerQuestion(question = {}) {
   const playerQuestion = { id: question.id, type: question.type, prompt: question.prompt };
-  if (question.questionImageAssetId) playerQuestion.questionImageAssetId = question.questionImageAssetId;
   if (question.options !== undefined) playerQuestion.options = question.options.map(({ id, label, imageAssetId }) => ({ id, label, ...(imageAssetId ? { imageAssetId } : {}) }));
   for (const key of ["items", "categories"]) if (question[key] !== undefined) playerQuestion[key] = question[key];
   if (question.clips !== undefined) playerQuestion.clips = question.clips.map(({ id, label }) => ({ id, label }));
