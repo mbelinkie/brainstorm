@@ -224,6 +224,7 @@ Question types should use one scoring interface and one lifecycle, even though t
    - One or more answer fields
    - Normalized comparison and accepted variants
    - Appropriate for short lyric fragments; avoid storing/displaying large lyric excerpts
+   - Audio variant supports multiple independently scored, autosaved title fields linked to numbered clips
 
 7. **Arrange in order / sort**
    - Touch-friendly vertical reorder
@@ -249,14 +250,14 @@ Question types should use one scoring interface and one lifecycle, even though t
 - Wager question
 - Team answer mode
 
-## 6. Piano-intro matching round
+## 6. Piano-intro finale
 
-This is a featured round, not ten unrelated questions.
+This is a featured round, not ten unrelated questions. It can use either the reusable 10×10 matching format or multiple title-only fill-in fields.
 
 ### Big-screen view
 
 - Lists Clips 1–10 with one Play button at a time
-- Shows song options A–J throughout the round
+- Shows song options A–J for matching, or numbered listening tiles for multiple fill-in
 - Host can play clips in sequence or replay a selected clip
 - No correct mapping is shown until lock/reveal
 - Response counter shows `submitted / connected`
@@ -264,15 +265,14 @@ This is a featured round, not ten unrelated questions.
 ### Player phone view
 
 - Shows ten rows: Clip 1 through Clip 10
-- Each row selects one song from A–J
-- Once a song is used, it is marked as assigned and can be moved
-- “Unmatched” state is visually obvious
-- Submit button is enabled only when all ten are matched, unless incomplete submission is allowed
+- Matching rows select one song from A–J and prevent duplicate assignments
+- Multiple-fill rows accept a song title and save silently as the player types
+- The row for the currently playing clip is highlighted without interrupting typing
 - Players can edit until the host locks the round
 
 ### Scoring
 
-- Default: one point per correct pair
+- Matching defaults to one point per correct pair; multiple fill-in awards the authored points per correct blank
 - Optional completion bonus
 - No speed bonus by default; the round rewards recognition, not network latency
 

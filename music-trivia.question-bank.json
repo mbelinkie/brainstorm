@@ -107,7 +107,7 @@
           "type": "multiple_choice",
           "prompt": "Which TWO artists perform on this recording? Select both.",
           "audio": {"assetId": "ntt-05", "suggestedWindow": "0:47–1:02", "cue": "Use a chorus passage featuring both vocalists from ‘Shallow’.", "replayLimit": 1},
-          "options": [{"id":"a","label":"Lady Gaga"},{"id":"b","label":"Bradley Cooper"},{"id":"c","label":"Miley Cyrus"},{"id":"d","label":"Sam Smith"},{"id":"e","label":"P!nk"},{"id":"f","label":"Adam Levine"}],
+          "options": [{"id":"a","label":"Lady Gaga"},{"id":"c","label":"Miley Cyrus"},{"id":"d","label":"Sam Smith"},{"id":"e","label":"P!nk"},{"id":"f","label":"Adam Levine"},{"id":"g","label":"Katy Perry"},{"id":"h","label":"John Legend"},{"id":"i","label":"Kelly Clarkson"},{"id":"b","label":"Bradley Cooper"}],
           "correctOptionIds": ["a","b"], "scoring": {"mode":"exact_match","points":1},
           "hostReveal": "Lady Gaga and Bradley Cooper perform Shallow from A Star Is Born."
         }
@@ -196,28 +196,23 @@
       ]
     },
     {
-      "id":"piano-intro-match", "title":"Round 5 — Piano Intro Finale", "intro":"Ten piano intros, ten titles, one full-board submission. Match every clip before time is up.",
-      "featuredFinale":true, "hostPacing":"Play each clip in numerical order once (about 5–7 seconds each), then allow a 90-second open matching window. Replay individual clips on request. Lock all answers together; reveal one pair at a time.",
+      "id":"piano-intro-match", "title":"Round 5 — Piano Intro Finale", "intro":"Ten piano intros, ten song titles. Name every clip before time is up.",
+      "featuredFinale":true, "hostPacing":"Play each clip in numerical order once (about 5–7 seconds each), then allow a 90-second answer window. Replay individual clips on request. Lock all answers together; reveal one title at a time.",
       "questions":[
         {
-          "id":"piano-final","type":"matching","prompt":"Match each numbered piano intro to its song title.","pointsPerPair":1,"maximumPoints":10,"speedBonus":false,
+          "id":"piano-final","type":"multi_fill_in_the_blank","prompt":"Name each song from its numbered piano intro. Enter the song title only.","pointsPerBlank":5,"maximumPoints":50,"speedBonus":false,
           "clips":[
-            {"id":"clip-1","label":"Intro 1","audioAssetId":"piano-01","suggestedWindow":"0:00–0:07","songForProduction":"Pink Pony Club","cue":"Opening piano figure."},
-            {"id":"clip-2","label":"Intro 2","audioAssetId":"piano-02","suggestedWindow":"0:00–0:07","songForProduction":"Clocks","cue":"Opening piano ostinato."},
-            {"id":"clip-3","label":"Intro 3","audioAssetId":"piano-03","suggestedWindow":"0:00–0:07","songForProduction":"Don’t Look Back in Anger","cue":"Opening piano motif."},
-            {"id":"clip-4","label":"Intro 4","audioAssetId":"piano-04","suggestedWindow":"0:00–0:07","songForProduction":"Linus and Lucy","cue":"Opening piano theme."},
-            {"id":"clip-5","label":"Intro 5","audioAssetId":"piano-05","suggestedWindow":"0:00–0:07","songForProduction":"I Will Survive","cue":"Opening piano progression."},
-            {"id":"clip-6","label":"Intro 6","audioAssetId":"piano-06","suggestedWindow":"0:00–0:07","songForProduction":"Piano Man","cue":"Opening piano-led figure."},
-            {"id":"clip-7","label":"Intro 7","audioAssetId":"piano-07","suggestedWindow":"0:00–0:07","songForProduction":"A Thousand Miles","cue":"Opening piano figure."},
-            {"id":"clip-8","label":"Intro 8","audioAssetId":"piano-08","suggestedWindow":"0:00–0:07","songForProduction":"Let It Be","cue":"Opening piano chords."},
-            {"id":"clip-9","label":"Intro 9","audioAssetId":"piano-09","suggestedWindow":"0:00–0:07","songForProduction":"Someone Like You","cue":"Opening piano motif."},
-            {"id":"clip-10","label":"Intro 10","audioAssetId":"piano-10","suggestedWindow":"0:00–0:07","songForProduction":"Don’t Stop Believin’","cue":"Opening piano figure."}
+            {"id":"clip-1","label":"Intro 1","audioAssetId":"piano-01","suggestedWindow":"0:00–0:07","songForProduction":"Pink Pony Club","acceptedAnswers":["Pink Pony Club"],"cue":"Opening piano figure."},
+            {"id":"clip-2","label":"Intro 2","audioAssetId":"piano-02","suggestedWindow":"0:00–0:07","songForProduction":"Clocks","acceptedAnswers":["Clocks"],"cue":"Opening piano ostinato."},
+            {"id":"clip-3","label":"Intro 3","audioAssetId":"piano-03","suggestedWindow":"0:00–0:07","songForProduction":"Don’t Look Back in Anger","acceptedAnswers":["Don't Look Back in Anger","Don’t Look Back in Anger"],"cue":"Opening piano motif."},
+            {"id":"clip-4","label":"Intro 4","audioAssetId":"piano-04","suggestedWindow":"0:00–0:07","songForProduction":"Linus and Lucy","acceptedAnswers":["Linus and Lucy"],"cue":"Opening piano theme."},
+            {"id":"clip-5","label":"Intro 5","audioAssetId":"piano-05","suggestedWindow":"0:00–0:07","songForProduction":"I Will Survive","acceptedAnswers":["I Will Survive"],"cue":"Opening piano progression."},
+            {"id":"clip-6","label":"Intro 6","audioAssetId":"piano-06","suggestedWindow":"0:00–0:07","songForProduction":"Piano Man","acceptedAnswers":["Piano Man"],"cue":"Opening piano-led figure."},
+            {"id":"clip-7","label":"Intro 7","audioAssetId":"piano-07","suggestedWindow":"0:00–0:07","songForProduction":"A Thousand Miles","acceptedAnswers":["A Thousand Miles"],"cue":"Opening piano figure."},
+            {"id":"clip-8","label":"Intro 8","audioAssetId":"piano-08","suggestedWindow":"0:00–0:07","songForProduction":"Let It Be","acceptedAnswers":["Let It Be"],"cue":"Opening piano chords."},
+            {"id":"clip-9","label":"Intro 9","audioAssetId":"piano-09","suggestedWindow":"0:00–0:07","songForProduction":"Someone Like You","acceptedAnswers":["Someone Like You"],"cue":"Opening piano motif."},
+            {"id":"clip-10","label":"Intro 10","audioAssetId":"piano-10","suggestedWindow":"0:00–0:07","songForProduction":"Don’t Stop Believin’","acceptedAnswers":["Don't Stop Believin'","Don’t Stop Believin’"],"cue":"Opening piano figure."}
           ],
-          "options":[
-            {"id":"a","label":"Pink Pony Club"},{"id":"b","label":"Clocks"},{"id":"c","label":"Don’t Look Back in Anger"},{"id":"d","label":"Linus and Lucy"},{"id":"e","label":"I Will Survive"},
-            {"id":"f","label":"Piano Man"},{"id":"g","label":"A Thousand Miles"},{"id":"h","label":"Let It Be"},{"id":"i","label":"Someone Like You"},{"id":"j","label":"Don’t Stop Believin’"}
-          ],
-          "correctPairs":{"clip-1":"a","clip-2":"b","clip-3":"c","clip-4":"d","clip-5":"e","clip-6":"f","clip-7":"g","clip-8":"h","clip-9":"i","clip-10":"j"},
           "hostReveal":"Reveal in clip order: 1 Pink Pony Club; 2 Clocks; 3 Don’t Look Back in Anger; 4 Linus and Lucy; 5 I Will Survive; 6 Piano Man; 7 A Thousand Miles; 8 Let It Be; 9 Someone Like You; 10 Don’t Stop Believin’.",
           "assetProductionNote":"Prefer cleared original recordings or newly commissioned/licensed piano performances. Ensure every clip begins cleanly, is loudness-normalized, and has a 100–200 ms fade in/out. Opaque asset IDs prevent accidental title leakage."
         }
@@ -228,5 +223,5 @@
     "type":"numeric_estimate", "prompt":"Without looking it up: in what year was the first commercial compact disc released? Closest answer wins; over/under does not matter.", "answer":1982,
     "hostReveal":"1982. Use only to break a tie after all 30 base points are scored.", "hostNote":"Accept 1982; do not score it as a standard round question."
   },
-  "preflightChecklist":["Verify every audio asset is cleared and mapped to the opaque ID in this file.","Preview clips on the exact shared-screen laptop and confirm tab audio is included in Google Meet.","Load rights-cleared headshots for both image-selection questions and test their mobile crops.","Confirm matching UI allows each finale title to be assigned only once.","Have the host rehearse the reveal notes and one-replay policy."]
+  "preflightChecklist":["Verify every audio asset is cleared and mapped to the opaque ID in this file.","Preview clips on the exact shared-screen laptop and confirm tab audio is included in Google Meet.","Load rights-cleared headshots for both image-selection questions and test their mobile crops.","Confirm every finale answer field saves as players type.","Have the host rehearse the reveal notes and one-replay policy."]
 }

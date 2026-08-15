@@ -4,6 +4,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-08-14
 
+- Added a reusable multiple-fill-in-the-blank audio format with per-blank partial credit, ten autosaved title fields, clip-following player and Presentation highlights, reveal feedback, and author-managed accepted spellings. Clip highlights now clear when playback ends for both this format and existing matching questions.
 - Added a server-authoritative between-round door bonus: players choose one of three authored doors, Presentation groups names and player icons beneath each choice, and the host reveals persisted randomized rewards for everyone at once.
 - Added balanced default doors with equal 1.20× expected value: Safe (100% 1.2×), Gamble (50% 1.6× / 50% 0.8×), and Hail Mary (25% 3.0× / 75% 0.6×).
 - Added authoring controls for door names, icons, outcome probabilities, and multipliers, including validation, expected-value guidance, and one-click default restoration.

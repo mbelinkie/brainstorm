@@ -14,6 +14,13 @@ test("closest-number targets remain private before reveal", () => {
   assert.deepEqual(player, { id: "q-number", type: "closest_number", prompt: "How many?" });
 });
 
+test("multi-blank accepted titles remain private before reveal", () => {
+  const player = toPlayerQuestion({ id: "q-audio-blanks", type: "multi_fill_in_the_blank", prompt: "Name each title", pointsPerBlank: 5, clips: [{ id: "clip-1", label: "Intro 1", mediaAssetId: "private-audio", acceptedAnswers: ["Secret Song", "Secrit Song"] }] });
+  assert.deepEqual(player, { id: "q-audio-blanks", type: "multi_fill_in_the_blank", prompt: "Name each title", pointsPerBlank: 5, clips: [{ id: "clip-1", label: "Intro 1" }] });
+  assert.equal(JSON.stringify(player).includes("Secret Song"), false);
+  assert.equal(JSON.stringify(player).includes("private-audio"), false);
+});
+
 test("answer-reveal images are excluded from the ordinary player question payload", () => {
   const player = toPlayerQuestion({ id: "q-reveal", type: "short_answer", prompt: "Name it", revealImageAssetId: "private-reveal-asset" });
   assert.equal(JSON.stringify(player).includes("private-reveal-asset"), false);

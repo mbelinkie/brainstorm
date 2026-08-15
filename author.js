@@ -51,7 +51,8 @@ const typeLabel = (type) => type.replaceAll("_", " ");
 const validNumericLiteral = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
 const validAssetId = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 const titlePage = () => (bank.titlePage ||= {});
-const DEFAULT_BETWEEN_ROUND_BONUS = Object.freeze({ enabled: true, doors: [
+const finaleConfig = () => (bank.finale ||= { audio: {} });
+const DEFAULT_BETWEEN_ROUND_BONUS = Object.freeze({ enabled: true, audio: {}, doors: [
   { id: "safe", name: "Safe Door", icon: "shield", outcomes: [{ chancePercent: 100, multiplier: 1.2 }] },
   { id: "gamble", name: "Gamble Door", icon: "dice", outcomes: [{ chancePercent: 50, multiplier: 1.6 }, { chancePercent: 50, multiplier: 0.8 }] },
   { id: "hail-mary", name: "Hail Mary Door", icon: "lightning", outcomes: [{ chancePercent: 25, multiplier: 3 }, { chancePercent: 75, multiplier: 0.6 }] }
@@ -132,13 +133,14 @@ function restoredDraft() {
 
 function validateQuiz(candidate) {
   const errors = [];
-  const supportedTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection", "short_answer", "fill_in_the_blank", "arrange_in_order", "categorize", "matching", "closest_number"]);
+  const supportedTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection", "short_answer", "fill_in_the_blank", "multi_fill_in_the_blank", "arrange_in_order", "categorize", "matching", "closest_number"]);
   const requiredText = (value) => typeof value === "string" && value.trim();
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return ["Quiz must be a JSON object."];
   if (!requiredText(candidate.id)) errors.push("Quiz ID is required.");
   if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
+  for (const [key, audio] of Object.entries(candidate.finale?.audio || {})) if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Finale ${key} has an invalid private audio asset ID.`);
   if (candidate.betweenRoundBonus?.enabled) {
     const doors = candidate.betweenRoundBonus.doors;
     if (!Array.isArray(doors) || doors.length !== 3) errors.push("Between-round bonus needs exactly three doors.");
@@ -184,7 +186,7 @@ function validateQuiz(candidate) {
       // Image asset IDs may be opaque local placeholders (for planned artwork) or
       // UUIDs issued by the private-media library. Both are valid authoring states.
       const questionPoints = item.points ?? item.scoring?.points;
-      if (item.type !== "matching" && (!Number.isFinite(Number(questionPoints)) || Number(questionPoints) <= 0)) errors.push(`${label} needs positive points.`);
+      if (!["matching", "multi_fill_in_the_blank"].includes(item.type) && (!Number.isFinite(Number(questionPoints)) || Number(questionPoints) <= 0)) errors.push(`${label} needs positive points.`);
 
       const optionTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection"]);
       if (optionTypes.has(item.type)) {
@@ -209,6 +211,7 @@ function validateQuiz(candidate) {
         const clipIds = (item.clips || []).map((entry) => entry?.id);
         if (!Number.isFinite(Number(item.pointsPerPair)) || Number(item.pointsPerPair) <= 0 || !Array.isArray(item.options) || item.options.length < 2 || item.options.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !item.correctPairs || clipIds.some((id) => !optionIds.has(item.correctPairs[id]))) errors.push(`${label} needs complete clips, options, pair key, and positive points per pair.`);
       }
+      if (item.type === "multi_fill_in_the_blank" && (!Number.isFinite(Number(item.pointsPerBlank)) || Number(item.pointsPerBlank) <= 0 || !Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((clip) => !requiredText(clip?.id) || !requiredText(clip?.label) || !Array.isArray(clip.acceptedAnswers) || clip.acceptedAnswers.every((answer) => !requiredText(answer))))) errors.push(`${label} needs labeled clips, accepted answers for every clip, and positive points per blank.`);
     });
   });
   return errors;
@@ -231,6 +234,7 @@ function changeQuestionType(type) {
   if (type === "arrange_in_order") Object.assign(base, { items: [{ id: "one", label: "First item" }, { id: "two", label: "Second item" }], correctOrder: ["one", "two"] });
   if (type === "categorize") Object.assign(base, { categories: [{ id: "category-a", label: "Category A" }, { id: "category-b", label: "Category B" }], items: [{ id: "item-1", label: "First item" }, { id: "item-2", label: "Second item" }], correctCategories: { "item-1": "category-a", "item-2": "category-b" } });
   if (type === "matching") Object.assign(base, { pointsPerPair: 1, options: [{ id: "movie-a", label: "Movie A" }, { id: "movie-b", label: "Movie B" }], clips: [{ id: "song-1", label: "Song title A" }, { id: "song-2", label: "Song title B" }], correctPairs: { "song-1": "movie-a", "song-2": "movie-b" } });
+  if (type === "multi_fill_in_the_blank") Object.assign(base, { pointsPerBlank: 1, clips: [{ id: "clip-1", label: "Intro 1", acceptedAnswers: ["Song title A"] }, { id: "clip-2", label: "Intro 2", acceptedAnswers: ["Song title B"] }] });
   bank.rounds[selection.roundIndex].questions[selection.questionIndex] = base;
   markChanged();
 }
@@ -268,7 +272,7 @@ function renderQuizHealth() {
   const errors = validateQuiz(bank);
   const typeCount = new Set(questions.map((item) => item.type)).size;
   const privateImages = questions.reduce((count, item) => count + (item.options || []).filter((option) => option.imageAssetId).length + (item.questionImageAssetId ? 1 : 0) + (item.revealImageAssetId ? 1 : 0), 0) + (bank.titlePage?.imageAssetId ? 1 : 0);
-  const privateAudio = questions.filter((item) => item.audio?.mediaAssetId).length + (bank.titlePage?.audio?.mediaAssetId ? 1 : 0);
+  const privateAudio = questions.filter((item) => item.audio?.mediaAssetId).length + (bank.titlePage?.audio?.mediaAssetId ? 1 : 0) + Object.values(bank.finale?.audio || {}).filter((audio) => audio?.mediaAssetId).length;
   target.innerHTML = `<p class="eyebrow">Quiz health</p><strong>${questions.length} questions · ${typeCount} formats</strong><span>${privateAudio} private audio clip${privateAudio === 1 ? "" : "s"} · ${privateImages} private image${privateImages === 1 ? "" : "s"}</span><span class="${errors.length ? "health-warning" : "health-good"}">${errors.length ? `${errors.length} issue${errors.length === 1 ? "" : "s"} to fix before publishing` : "Ready to publish"}</span>`;
 }
 
@@ -321,6 +325,9 @@ function answerEditor(item) {
   if (item.type === "matching") {
     return `<section class="section"><span class="section-label">Draggables, audio, and answer key</span><p class="audio-editor-help">Each draggable owns a clip. Upload once, trim it, then use the compact player to verify it. The host chooses an intro to play; its tile lights up in Presentation.</p>${(item.clips || []).map((clip, index) => `<div class="matching-clip-author"><div class="pair-row"><span class="choice-key">${index + 1}</span><input data-clip-label="${index}" value="${escapeHtml(clip.label)}" aria-label="Draggable label" /><label class="button button-quiet option-upload">Trim and upload clip<input data-upload-clip-audio="${index}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><select data-pair="${index}">${item.options.map((option) => `<option value="${option.id}" ${item.correctPairs?.[clip.id] === option.id ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></div>${privateAudioPreview(clip.mediaAssetId, `${clip.label} preview`, `clip:${index}`)}</div>`).join("")}</section>`;
   }
+  if (item.type === "multi_fill_in_the_blank") {
+    return `<section class="section"><span class="section-label">Audio clips and accepted song titles</span><p class="audio-editor-help">Each numbered field owns one clip. Enter comma-separated accepted spellings; players see only the number and a title field.</p>${(item.clips || []).map((clip, index) => `<div class="matching-clip-author"><div class="pair-row"><span class="choice-key">${index + 1}</span><input data-clip-label="${index}" value="${escapeHtml(clip.label)}" aria-label="Clip label" /><label class="button button-quiet option-upload">Trim and upload clip<input data-upload-clip-audio="${index}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><input data-clip-accepted="${index}" value="${escapeHtml((clip.acceptedAnswers || []).join(", "))}" aria-label="Accepted titles for ${escapeHtml(clip.label)}" /></div>${privateAudioPreview(clip.mediaAssetId, `${clip.label} preview`, `clip:${index}`)}</div>`).join("")}</section>`;
+  }
   return revealImageEditor(item);
 }
 
@@ -338,6 +345,19 @@ function audioEditor(item) {
   return `<section class="section"><div class="section-head"><span class="section-label">Presentation audio cue</span><label class="button button-quiet">Trim and upload clip<input data-upload-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">Choose a source file, trim it in the browser, and optionally fade in or out. The presentation view plays the uploaded clip.</p>${privateAudioPreview(audio.mediaAssetId, audio.suggestedWindow || "Preview audio", "question")}<div class="field-grid">${field("Opaque asset ID", "audio.assetId", audio.assetId || "")}${field("Suggested window", "audio.suggestedWindow", audio.suggestedWindow || "")}</div>${field("Audio URL (optional fallback)", "audio.url", audio.url || "", { type: "url" })}${field("Production cue", "audio.cue", audio.cue || "", { textarea: true })}</section>`;
 }
 
+function betweenRoundSoundEditor(config) {
+  const slots = [
+    ["roundEnd", "End-of-round transition", "A short sting when the End of Round card arrives."],
+    ["scoreboard", "Scoreboard transition", "A short sting as the scoreboard is revealed."],
+    ["doorChoice", "Door selection", "Suspenseful music that begins when players choose a door."],
+    ["roundStart", "Next-round transition", "A short sting when the Round card arrives."]
+  ];
+  return `<section class="between-round-sounds"><div><span class="section-label">Auto-triggered presentation sound</span><p class="audio-editor-help">Every slot is optional. These clips play only in the shared Presentation tab after its one-time sound setup; player phones stay silent.</p></div><div class="between-round-sound-grid">${slots.map(([key, label, help]) => {
+    const audio = config.audio?.[key] || {};
+    return `<article class="between-round-sound"><strong>${label}</strong><p>${help}</p>${privateAudioPreview(audio.mediaAssetId, `${label} preview`, `between:${key}`)}<label class="button button-quiet option-upload">Trim and upload clip<input data-upload-between-round-audio="${key}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><label class="field"><span>Reuse private audio</span><select data-existing-between-round-audio="${key}"><option value="">No auto sound</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></label>${audio.mediaAssetId ? `<button class="button button-danger asset-unlink" data-remove-between-round-audio="${key}" type="button">Remove sound</button>` : ""}</article>`;
+  }).join("")}</div></section>`;
+}
+
 function betweenRoundBonusEditor() {
   const config = bonusConfig();
   const iconOptions = [
@@ -348,13 +368,22 @@ function betweenRoundBonusEditor() {
     const expected = (door.outcomes || []).reduce((sum, outcome) => sum + Number(outcome.chancePercent || 0) / 100 * Number(outcome.multiplier || 0), 0);
     return `<article class="bonus-author-door"><div class="bonus-author-door-head"><span class="bonus-author-icon bonus-author-icon--${escapeHtml(door.icon)}" aria-hidden="true"></span><strong>Door ${doorIndex + 1}</strong><span>Expected ${expected.toFixed(2)}×</span></div><div class="field-grid"><div class="field"><label>Door name</label><input data-bonus-door-name="${doorIndex}" value="${escapeHtml(door.name)}" maxlength="32" /></div><div class="field"><label>Icon</label><select data-bonus-door-icon="${doorIndex}">${iconOptions.map(([value, label]) => `<option value="${value}" ${door.icon === value ? "selected" : ""}>${label}</option>`).join("")}</select></div></div><div class="bonus-outcomes"><span class="section-label">Possible outcomes</span>${(door.outcomes || []).map((outcome, outcomeIndex) => `<div class="bonus-outcome-row"><label>Chance <span><input data-bonus-chance="${doorIndex}:${outcomeIndex}" type="number" min="0.01" max="100" step="0.01" value="${escapeHtml(outcome.chancePercent)}" />%</span></label><label>Multiplier <span><input data-bonus-multiplier="${doorIndex}:${outcomeIndex}" type="number" min="0.01" max="10" step="0.01" value="${escapeHtml(outcome.multiplier)}" />×</span></label>${door.outcomes.length > 1 ? `<button class="icon-button" data-remove-bonus-outcome="${doorIndex}:${outcomeIndex}" type="button" aria-label="Remove outcome">×</button>` : ""}</div>`).join("")}<button class="button button-quiet bonus-add-outcome" data-add-bonus-outcome="${doorIndex}" type="button">+ Add outcome</button></div></article>`;
   }).join("");
-  return `<section class="section between-round-bonus-editor"><div class="section-head"><div><span class="section-label">Between-round door bonus</span><p class="audio-editor-help">Players choose a door before each new round. Rewards affect automatic points in that next round only.</p></div><label class="bonus-enabled"><input data-bonus-enabled type="checkbox" ${config.enabled ? "checked" : ""} /> Enabled</label></div><div class="bonus-author-grid ${config.enabled ? "" : "is-disabled"}">${doorCards}</div><div class="bonus-author-footer"><span>Balanced defaults target an expected 1.20× for every door.</span><button class="button button-quiet" data-reset-bonus type="button">Restore balanced defaults</button></div></section>`;
+  return `<section class="section between-round-bonus-editor"><div class="section-head"><div><span class="section-label">Between-round door bonus</span><p class="audio-editor-help">After every round, players see an end-of-round card and the scoreboard before choosing a door. Rewards affect automatic points in that next round only.</p></div><label class="bonus-enabled"><input data-bonus-enabled type="checkbox" ${config.enabled ? "checked" : ""} /> Enabled</label></div><div class="bonus-author-grid ${config.enabled ? "" : "is-disabled"}">${doorCards}</div>${betweenRoundSoundEditor(config)}<div class="bonus-author-footer"><span>Balanced defaults target an expected 1.20× for every door.</span><button class="button button-quiet" data-reset-bonus type="button">Restore balanced defaults</button></div></section>`;
 }
 
 function titlePageEditor() {
   const opening = titlePage();
   const audio = opening.audio || {};
   return `<section class="section section-first title-page-editor"><div class="section-head"><span class="section-label">Opening title page</span><span class="asset-status">Presentation waiting room</span></div><p class="audio-editor-help">This appears before the first question. Add optional transparent theme art and waiting-room music; neither is a scored question.</p><div class="field-grid">${field("Quiz title", "quiz-title", bank.title)}<div class="field"><label>Title-page subtitle</label><textarea data-title-field="subtitle">${escapeHtml(opening.subtitle || "Get your phone ready — we’ll begin shortly.")}</textarea></div><div class="field"><label>Title-card circle icon</label><input data-title-field="icon" maxlength="8" value="${escapeHtml(opening.icon || "♫")}" /><small>Use an emoji or a short symbol; it replaces the yellow music note on the title card.</small></div><div class="field"><label>Theme artwork alt text</label><input data-title-field="imageAlt" value="${escapeHtml(opening.imageAlt || "Quiz theme artwork")}" /></div></div><div class="section-head"><span class="section-label">Theme artwork</span>${imageActionControls("title", '<input data-upload-title-image type="file" accept="image/jpeg,image/png,image/webp" hidden />')}</div><div class="field"><label>Reuse private image</label><select data-existing-title-image><option value="">Choose uploaded image</option>${mediaAssets.filter((asset) => asset.kind === "image").map((asset) => `<option value="${asset.id}" ${asset.id === opening.imageAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${opening.imageAssetId ? `<div class="asset-attached">${attachedImagePreview(opening.imageAssetId, opening.imageAlt || "Title-page art preview")}<p class="asset-status">Title artwork attached</p>${imageReformatButton("title")}<button class="button button-danger asset-unlink" data-remove-title-image type="button">Remove image</button></div>` : ""}<div class="section-head"><span class="section-label">Waiting-room music</span><label class="button button-quiet">Trim and upload clip<input data-upload-title-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">The host alone gets playback controls. Audio plays through Presentation after its one-time sound setup.</p><div class="field-grid">${field("Music label", "title-audio.suggestedWindow", audio.suggestedWindow || "Waiting-room music")}${field("Audio URL (optional fallback)", "title-audio.url", audio.url || "", { type: "url" })}</div><div class="field"><label>Reuse private audio</label><select data-existing-title-audio><option value="">Choose uploaded audio</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${audio.mediaAssetId ? '<button class="button button-danger asset-unlink" data-remove-title-audio type="button">Remove waiting-room music</button>' : ""}</section>`;
+}
+
+function finaleEditor() {
+  const finale = finaleConfig();
+  const slots = [
+    ["drumroll", "Winner drumroll", "Starts when the host opens the full-screen ‘And the winner is…’ cue."],
+    ["outro", "Closing music", "Starts when the host shows the final title-style score screen as people leave."]
+  ];
+  return `<section class="section finale-editor"><div class="section-head"><div><span class="section-label">Finale audio</span><p class="audio-editor-help">The finale is host-cued: suspense, podium, then final standings. These optional clips play only in the shared Presentation tab.</p></div><span class="asset-status">Host controlled</span></div><div class="between-round-sound-grid">${slots.map(([key, label, help]) => { const audio = finale.audio?.[key] || {}; return `<article class="between-round-sound"><strong>${label}</strong><p>${help}</p>${audio.mediaAssetId ? privateAudioPreview(audio.mediaAssetId, `${label} preview`, `finale:${key}`) : ""}<label class="button button-quiet option-upload">Trim and upload clip<input data-upload-finale-audio="${key}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><label class="field"><span>Reuse private audio</span><select data-existing-finale-audio="${key}"><option value="">No sound</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></label></article>`; }).join("")}</div></section>`;
 }
 
 function renderEditor() {
@@ -364,11 +393,11 @@ function renderEditor() {
   $("#question-location").textContent = `${round.title} · Question ${selection.questionIndex + 1}`;
   $("#editor-title").textContent = item.id || "Question editor";
   $("#form-editor").innerHTML = `
-    ${selection.roundIndex === 0 && selection.questionIndex === 0 ? `${titlePageEditor()}${betweenRoundBonusEditor()}` : ""}<section class="section"><span class="section-label">Round details</span><div class="field-grid">${field("Round title", "round-title", round.title)}</div></section>
-    <div class="field-grid">${field("Question ID", "id", item.id)}<div class="field"><label>Question type</label><select data-field="type" aria-label="Question type">${["single_choice","multiple_choice","true_false","image_selection","arrange_in_order","categorize","fill_in_the_blank","short_answer","closest_number","matching"].map((type) => `<option value="${type}" ${item.type === type ? "selected" : ""}>${escapeHtml(typeLabel(type))}</option>`).join("")}</select></div></div>
+    ${selection.roundIndex === 0 && selection.questionIndex === 0 ? `${titlePageEditor()}${betweenRoundBonusEditor()}${finaleEditor()}` : ""}<section class="section"><span class="section-label">Round details</span><div class="field-grid">${field("Round title", "round-title", round.title)}</div></section>
+    <div class="field-grid">${field("Question ID", "id", item.id)}<div class="field"><label>Question type</label><select data-field="type" aria-label="Question type">${["single_choice","multiple_choice","true_false","image_selection","arrange_in_order","categorize","fill_in_the_blank","multi_fill_in_the_blank","short_answer","closest_number","matching"].map((type) => `<option value="${type}" ${item.type === type ? "selected" : ""}>${escapeHtml(typeLabel(type))}</option>`).join("")}</select></div></div>
     ${field("Player prompt", "prompt", item.prompt, { textarea: true })}
-    <div class="field-grid">${field(item.type === "matching" ? "Points per pair" : "Points", item.type === "matching" ? "pointsPerPair" : "points", item.type === "matching" ? item.pointsPerPair : item.points, { type: "number" })}${field("Host reveal", "hostReveal", item.hostReveal || "", { textarea: true })}</div>
-    ${audioEditor(item)}${questionImageEditor(item)}${optionsEditor(item)}${answerEditor(item)}${["fill_in_the_blank", "short_answer", "arrange_in_order", "categorize", "matching", "closest_number"].includes(item.type) ? revealImageEditor(item) : ""}
+    <div class="field-grid">${field(item.type === "matching" ? "Points per pair" : item.type === "multi_fill_in_the_blank" ? "Points per blank" : "Points", item.type === "matching" ? "pointsPerPair" : item.type === "multi_fill_in_the_blank" ? "pointsPerBlank" : "points", item.type === "matching" ? item.pointsPerPair : item.type === "multi_fill_in_the_blank" ? item.pointsPerBlank : item.points, { type: "number" })}${field("Host reveal", "hostReveal", item.hostReveal || "", { textarea: true })}</div>
+    ${audioEditor(item)}${questionImageEditor(item)}${optionsEditor(item)}${answerEditor(item)}${["fill_in_the_blank", "multi_fill_in_the_blank", "short_answer", "arrange_in_order", "categorize", "matching", "closest_number"].includes(item.type) ? revealImageEditor(item) : ""}
   `;
   bindEditorEvents();
 }
@@ -380,6 +409,7 @@ function renderPreview() {
   let body = "";
   if (item.options) body = `<div class="preview-options">${item.options.map((option, index) => `<div class="preview-option ${correct.has(option.id) ? "correct" : ""}"><span class="choice-key">${letters(index)}</span>${escapeHtml(option.label)}</div>`).join("")}</div>`;
   if (item.type === "matching") body = `<div class="preview-answer">10-pair finale · ${item.pointsPerPair || 1} point per correct match</div>`;
+  if (item.type === "multi_fill_in_the_blank") body = `<div class="preview-answer">${(item.clips || []).length}-blank audio finale · ${item.pointsPerBlank || 1} point per correct title · answers save automatically</div>`;
   if (["fill_in_the_blank", "short_answer"].includes(item.type)) body = `<div class="preview-answer">Free-text response · accepted answer variants are graded automatically.</div>`;
   if (item.type === "closest_number") body = `<div class="preview-answer">Closest-number round · target: ${escapeHtml(item.targetNumber)} · tied closest guesses split ${escapeHtml(item.points)} point${Number(item.points) === 1 ? "" : "s"}.</div>`;
   if (item.type === "arrange_in_order") body = `<div class="preview-options">${(item.items || []).map((entry, index) => `<div class="preview-option"><span class="choice-key">${index + 1}</span>${escapeHtml(entry.label)}</div>`).join("")}</div>`;
@@ -392,7 +422,7 @@ function render() { renderNav(); renderQuizHealth(); renderEditor(); renderPrevi
 
 function updateField(key, value) {
   const item = question();
-  if (key.startsWith("title-audio.")) { titlePage().audio ||= {}; titlePage().audio[key.slice(12)] = value; } else if (key.startsWith("audio.")) { item.audio ||= {}; item.audio[key.slice(6)] = value; } else item[key] = ["points", "pointsPerPair", "targetNumber"].includes(key) ? Number(value) : value;
+  if (key.startsWith("title-audio.")) { titlePage().audio ||= {}; titlePage().audio[key.slice(12)] = value; } else if (key.startsWith("audio.")) { item.audio ||= {}; item.audio[key.slice(6)] = value; } else item[key] = ["points", "pointsPerPair", "pointsPerBlank", "targetNumber"].includes(key) ? Number(value) : value;
   markChanged(); renderNav(); renderQuizHealth(); renderPreview();
 }
 
@@ -430,11 +460,14 @@ function bindEditorEvents() {
   document.querySelectorAll("[data-category-item-label]").forEach((input) => input.addEventListener("input", () => { question().items[Number(input.dataset.categoryItemLabel)].label = input.value; markChanged(); renderPreview(); }));
   document.querySelectorAll("[data-category-correct]").forEach((select) => select.addEventListener("change", () => { const item = question(); const selectedItem = item.items[Number(select.dataset.categoryCorrect)]; item.correctCategories[selectedItem.id] = select.value; markChanged(); }));
   document.querySelectorAll("[data-clip-label]").forEach((input) => input.addEventListener("input", () => { question().clips[Number(input.dataset.clipLabel)].label = input.value; markChanged(); renderPreview(); }));
+  document.querySelectorAll("[data-clip-accepted]").forEach((input) => input.addEventListener("input", () => { question().clips[Number(input.dataset.clipAccepted)].acceptedAnswers = input.value.split(",").map((entry) => entry.trim()).filter(Boolean); markChanged(); renderPreview(); }));
   document.querySelectorAll("[data-clip-media]").forEach((select) => select.addEventListener("change", () => { const clip = question().clips[Number(select.dataset.clipMedia)]; if (select.value) clip.mediaAssetId = select.value; else delete clip.mediaAssetId; markChanged(); }));
   document.querySelectorAll("[data-pair]").forEach((select) => select.addEventListener("change", () => { const clip = question().clips[Number(select.dataset.pair)]; question().correctPairs[clip.id] = select.value; markChanged(); renderPreview(); }));
   $("[data-add-audio]")?.addEventListener("click", () => { question().audio = { assetId: "audio-clip", suggestedWindow: "0:00–0:10", cue: "Describe when to play this clip." }; markChanged(); render(); });
   $("[data-upload-audio]")?.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0]); } catch (error) { alert(`Could not upload private audio: ${error.message}`); $("#save-state").textContent = "Audio upload failed"; } finally { event.target.value = ""; } });
   $("[data-upload-title-audio]")?.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0], "title"); } catch (error) { alert(`Could not upload waiting-room music: ${error.message}`); $("#save-state").textContent = "Waiting-room music upload failed"; } finally { event.target.value = ""; } });
+  document.querySelectorAll("[data-upload-finale-audio]").forEach((input) => input.addEventListener("change", async (event) => { const audioKey = event.target.dataset.uploadFinaleAudio; try { await uploadPrivateAudio(event.target.files?.[0], { finaleAudioKey: audioKey }); } catch (error) { alert(`Could not upload finale audio: ${error.message}`); $("#save-state").textContent = "Finale audio upload failed"; } finally { event.target.value = ""; } }));
+  document.querySelectorAll("[data-upload-between-round-audio]").forEach((input) => input.addEventListener("change", async (event) => { const audioKey = event.target.dataset.uploadBetweenRoundAudio; try { await uploadPrivateAudio(event.target.files?.[0], { betweenRoundAudioKey: audioKey }); } catch (error) { alert(`Could not upload between-round sound: ${error.message}`); $("#save-state").textContent = "Between-round sound upload failed"; } finally { event.target.value = ""; } }));
   document.querySelectorAll("[data-upload-clip-audio]").forEach((input) => input.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0], { clipIndex: Number(event.target.dataset.uploadClipAudio) }); } catch (error) { alert(`Could not upload intro clip: ${error.message}`); $("#save-state").textContent = "Intro clip upload failed"; } finally { event.target.value = ""; } }));
   document.querySelectorAll("[data-upload-image]").forEach((input) => input.addEventListener("change", async (event) => { try { await uploadPrivateImage(event.target.files?.[0], Number(event.target.dataset.uploadImage)); } catch (error) { alert(`Could not upload private image: ${error.message}`); $("#save-state").textContent = "Image upload failed"; } finally { event.target.value = ""; } }));
   $("[data-upload-question-image]")?.addEventListener("change", async (event) => { try { await uploadPrivateImage(event.target.files?.[0], "question-image"); } catch (error) { alert(`Could not upload question image: ${error.message}`); $("#save-state").textContent = "Question image upload failed"; } finally { event.target.value = ""; } });
@@ -448,12 +481,17 @@ function bindEditorEvents() {
   $("[data-existing-question-image]")?.addEventListener("change", (event) => { question().questionImageAssetId = event.target.value || undefined; markChanged(); renderEditor(); renderPreview(); });
   $("[data-existing-title-image]")?.addEventListener("change", (event) => { titlePage().imageAssetId = event.target.value || undefined; markChanged(); renderEditor(); renderPreview(); });
   $("[data-existing-title-audio]")?.addEventListener("change", (event) => { titlePage().audio ||= {}; if (event.target.value) titlePage().audio.mediaAssetId = event.target.value; else delete titlePage().audio.mediaAssetId; markChanged(); renderEditor(); renderPreview(); });
+  document.querySelectorAll("[data-existing-finale-audio]").forEach((select) => select.addEventListener("change", () => { const audioKey = select.dataset.existingFinaleAudio; finaleConfig().audio ||= {}; if (select.value) { finaleConfig().audio[audioKey] ||= {}; finaleConfig().audio[audioKey].mediaAssetId = select.value; } else delete finaleConfig().audio[audioKey]; markChanged(); renderEditor(); renderPreview(); }));
+  document.querySelectorAll("[data-existing-between-round-audio]").forEach((select) => select.addEventListener("change", () => { const audioKey = select.dataset.existingBetweenRoundAudio; bonusConfig().audio ||= {}; if (select.value) { bonusConfig().audio[audioKey] ||= {}; bonusConfig().audio[audioKey].mediaAssetId = select.value; } else delete bonusConfig().audio[audioKey]; markChanged(); renderEditor(); renderPreview(); }));
   $("[data-remove-title-image]")?.addEventListener("click", () => { delete titlePage().imageAssetId; markChanged(); renderEditor(); renderPreview(); });
   $("[data-remove-title-audio]")?.addEventListener("click", () => { delete titlePage().audio; markChanged(); renderEditor(); renderPreview(); });
+  document.querySelectorAll("[data-remove-between-round-audio]").forEach((button) => button.addEventListener("click", () => { if (bonusConfig().audio) delete bonusConfig().audio[button.dataset.removeBetweenRoundAudio]; markChanged(); renderEditor(); renderPreview(); }));
   document.querySelectorAll("[data-remove-audio]").forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.removeAudio;
     if (target === "question") {
       if (question().audio) delete question().audio.mediaAssetId;
+    } else if (target.startsWith("finale:")) {
+      if (finaleConfig().audio) delete finaleConfig().audio[target.slice(7)];
     } else if (target.startsWith("clip:")) {
       const clip = question().clips?.[Number(target.slice(5))];
       if (clip) delete clip.mediaAssetId;
@@ -512,6 +550,7 @@ function addQuestionTemplate(type) {
     if (type === "arrange_in_order") Object.assign(base, { items: [{ id: "one", label: "First item" }, { id: "two", label: "Second item" }], correctOrder: ["one", "two"] });
     if (type === "categorize") Object.assign(base, { categories: [{ id: "category-a", label: "Category A" }, { id: "category-b", label: "Category B" }], items: [{ id: "item-1", label: "First item" }, { id: "item-2", label: "Second item" }], correctCategories: { "item-1": "category-a", "item-2": "category-b" } });
     if (type === "matching") Object.assign(base, { pointsPerPair: 1, options: [{ id: "movie-a", label: "Movie A" }, { id: "movie-b", label: "Movie B" }], clips: [{ id: "song-1", label: "Song title A" }, { id: "song-2", label: "Song title B" }], correctPairs: { "song-1": "movie-a", "song-2": "movie-b" } });
+    if (type === "multi_fill_in_the_blank") Object.assign(base, { pointsPerBlank: 1, clips: [{ id: "clip-1", label: "Intro 1", acceptedAnswers: ["Song title A"] }, { id: "clip-2", label: "Intro 2", acceptedAnswers: ["Song title B"] }] });
     round.questions.push(base);
   } else round.questions.push(item);
   selection.questionIndex = round.questions.length - 1; markChanged(); render();
@@ -588,6 +627,8 @@ async function uploadPrivateAudio(file, target = "question") {
   uploadedAudioPreviewUrls.set(asset.id, URL.createObjectURL(clipped.blob));
   await nameMediaAsset(asset.id, `${file.name.replace(/\.[^.]+$/, "")} · ${formatSeconds(clipped.duration)}`);
   if (target === "title") { titlePage().audio ||= {}; titlePage().audio.mediaAssetId = asset.id; }
+  else if (target?.finaleAudioKey) { finaleConfig().audio ||= {}; finaleConfig().audio[target.finaleAudioKey] ||= {}; finaleConfig().audio[target.finaleAudioKey].mediaAssetId = asset.id; }
+  else if (target?.betweenRoundAudioKey) { bonusConfig().audio ||= {}; bonusConfig().audio[target.betweenRoundAudioKey] ||= {}; bonusConfig().audio[target.betweenRoundAudioKey].mediaAssetId = asset.id; }
   else if (Number.isInteger(target?.clipIndex)) question().clips[target.clipIndex].mediaAssetId = asset.id;
   else { question().audio ||= {}; question().audio.mediaAssetId = asset.id; }
   await loadMediaAssets();

@@ -46,3 +46,20 @@ test("all three game surfaces expose the door lifecycle", () => {
   assert.match(app, /activeMultiplierBadge/);
   assert.match(app, /No door selected/);
 });
+
+test("between-round flow stages the scoreboard, door choice, and next-round card", () => {
+  assert.match(app, /async function startRoundEnd/);
+  assert.match(app, /async function showRoundScoreboard/);
+  assert.match(app, /async function startRound/);
+  assert.match(app, /End of Round \$\{roundNumber\}/);
+  assert.match(app, /Feeling lucky\?/);
+  assert.match(app, /Choose your door\./);
+  assert.match(app, /function updateDoorChoicePlayingState/);
+  assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nfunction presenterRenderKey/)?.[0] || "", /doorPicks:/);
+});
+
+test("between-round sounds remain optional but validate private asset IDs", () => {
+  const quiz = { id: "quiz", title: "Quiz", betweenRoundBonus: structuredClone(bank.betweenRoundBonus), rounds: [{ id: "round", title: "Round", questions: [{ id: "q", type: "single_choice", prompt: "Question?", points: 1, options: [{ id: "a", label: "A" }, { id: "b", label: "B" }], correctOptionIds: ["a"] }] }] };
+  quiz.betweenRoundBonus.audio = { doorChoice: { mediaAssetId: "not-a-private-asset" } };
+  assert.match(validateQuiz(quiz).join(" "), /Between-round doorChoice sound has an invalid private audio asset ID/);
+});

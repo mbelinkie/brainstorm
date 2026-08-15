@@ -7,6 +7,9 @@ export function validateQuiz(candidate) {
   if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
+  for (const [screen, audio] of Object.entries(candidate.betweenRoundBonus?.audio || {})) {
+    if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Between-round ${screen} sound has an invalid private audio asset ID.`);
+  }
   if (candidate.betweenRoundBonus?.enabled) {
     const doors = candidate.betweenRoundBonus.doors;
     if (!Array.isArray(doors) || doors.length !== 3) errors.push("Between-round bonus needs exactly three doors.");
@@ -40,7 +43,7 @@ export function validateQuiz(candidate) {
       if (!item || typeof item !== "object") { errors.push(`${label} must be an object.`); continue; }
       if (!requiredText(item.id)) errors.push(`${label} needs an ID.`); else if (questionIds.has(item.id)) errors.push(`${label} has a duplicate question ID: ${item.id}.`); else questionIds.add(item.id);
       if (!requiredText(item.prompt)) errors.push(`${label} needs a player prompt.`);
-      if (item.type !== "matching" && (!Number.isFinite(Number(item.points ?? item.scoring?.points)) || Number(item.points ?? item.scoring?.points) <= 0)) errors.push(`${label} needs positive points.`);
+      if (!["matching", "multi_fill_in_the_blank"].includes(item.type) && (!Number.isFinite(Number(item.points ?? item.scoring?.points)) || Number(item.points ?? item.scoring?.points) <= 0)) errors.push(`${label} needs positive points.`);
       if (item.type === "closest_number" && !validNumericLiteral(item.targetNumber)) errors.push(`${label} needs a valid target number.`);
       if (["single_choice", "multiple_choice", "true_false", "image_selection"].includes(item.type)) {
         const optionIds = new Set((item.options || []).map((option) => option?.id));
@@ -49,6 +52,7 @@ export function validateQuiz(candidate) {
       }
       if (item.type === "short_answer" && (!Array.isArray(item.acceptedAnswers) || item.acceptedAnswers.every((answer) => !requiredText(answer)))) errors.push(`${label} needs an accepted answer.`);
       if (item.type === "matching" && (!Array.isArray(item.options) || item.options.length < 2 || !Array.isArray(item.clips) || item.clips.length < 2 || !item.correctPairs || !Number.isFinite(Number(item.pointsPerPair)) || Number(item.pointsPerPair) <= 0)) errors.push(`${label} needs complete clips, options, pair key, and positive points per pair.`);
+      if (item.type === "multi_fill_in_the_blank" && (!Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((clip) => !requiredText(clip?.id) || !requiredText(clip?.label) || !Array.isArray(clip.acceptedAnswers) || clip.acceptedAnswers.every((answer) => !requiredText(answer))) || !Number.isFinite(Number(item.pointsPerBlank)) || Number(item.pointsPerBlank) <= 0)) errors.push(`${label} needs labeled clips, accepted answers for every clip, and positive points per blank.`);
     }
   }
   return errors;

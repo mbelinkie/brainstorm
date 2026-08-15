@@ -125,6 +125,125 @@ body.is-presentation {
 }
 .is-presentation .presentation-title-page::before { display: none; }
 
+/* The roster is deliberately treated as the primary opening-screen content
+   once players arrive: a dark, top-anchored panel grows down the right half
+   of the shared frame instead of shrinking the names to fit everyone. */
+.is-presentation .presentation-title-page {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  padding: clamp(38px, 6vh, 82px) 0 clamp(38px, 6vh, 82px) clamp(42px, 7vw, 116px);
+}
+.is-presentation .presentation-title-copy {
+  align-self: center;
+  max-width: min(46vw, 840px);
+  padding-right: clamp(28px, 4vw, 68px);
+}
+.is-presentation .presentation-title-copy h1,
+.is-presentation .presentation-title-copy > p:not(.eyebrow) {
+  white-space: normal;
+}
+.is-presentation .presentation-title-art-wrap {
+  display: none;
+}
+.presentation-waiting-room {
+  position: relative;
+  z-index: 3;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  width: 100%;
+  min-height: min(100%, 260px);
+  padding: clamp(26px, 3.4vh, 46px) clamp(26px, 3.4vw, 64px) clamp(28px, 3.4vh, 46px);
+  border-left: 2px solid rgba(255,255,255,.2);
+  border-bottom: 2px solid rgba(255,255,255,.14);
+  border-radius: 0 0 0 34px;
+  background: linear-gradient(145deg, rgba(8,27,76,.84), rgba(26,8,82,.93));
+  box-shadow: -24px 24px 54px rgba(8,3,31,.2);
+  backdrop-filter: blur(16px);
+  transform-origin: top;
+  animation: presentation-waiting-room-in .48s cubic-bezier(.2,.85,.2,1) both;
+}
+.presentation-waiting-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: clamp(18px, 2.6vh, 30px);
+  border-bottom: 1px solid rgba(255,255,255,.22);
+}
+.presentation-waiting-heading .eyebrow {
+  margin: 0 0 7px;
+  color: var(--k-yellow);
+}
+.presentation-waiting-heading h2 {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(29px, 4vh, 48px);
+  line-height: 1;
+}
+.presentation-waiting-heading > span {
+  flex: none;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  font-size: clamp(16px, 2.1vh, 23px);
+  font-weight: 900;
+  white-space: nowrap;
+}
+.presentation-waiting-list {
+  display: grid;
+  gap: clamp(10px, 1.5vh, 17px);
+  margin: clamp(19px, 2.8vh, 32px) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.presentation-waiting-list li {
+  display: grid;
+  grid-template-columns: clamp(52px, 6.2vh, 74px) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(14px, 1.8vw, 25px);
+  min-height: clamp(54px, 6.8vh, 76px);
+  padding: clamp(6px, .8vh, 10px) clamp(8px, 1vw, 13px);
+  border-radius: clamp(14px, 1.6vh, 19px);
+  background: rgba(255,255,255,.1);
+  animation: presentation-waiting-player-in .38s var(--waiting-player-delay, .08s) cubic-bezier(.2,.9,.3,1) both;
+}
+.presentation-waiting-list strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #fff;
+  font-family: Lato, var(--body);
+  font-size: clamp(24px, 3.3vh, 39px);
+  font-weight: 900;
+  letter-spacing: -.025em;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.presentation-waiting-list .player-logo--waiting-room {
+  width: clamp(52px, 6.2vh, 74px);
+  border: 2px solid rgba(255,255,255,.9);
+  border-radius: clamp(13px, 1.6vh, 19px);
+}
+.presentation-waiting-more,
+.presentation-waiting-empty {
+  margin: clamp(17px, 2.6vh, 28px) 0 0;
+  color: var(--k-yellow);
+  font-size: clamp(24px, 3.2vh, 38px);
+  font-weight: 900;
+  line-height: 1;
+}
+.presentation-waiting-empty { color: rgba(255,255,255,.85); }
+@keyframes presentation-waiting-room-in { from { opacity: 0; transform: scaleY(.92); } to { opacity: 1; transform: none; } }
+@keyframes presentation-waiting-player-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 700px) {
+  .is-presentation .presentation-title-page { display: block; padding: 28px 0 0; }
+  .is-presentation .presentation-title-copy { max-width: none; padding: 0 24px 34px; }
+  .presentation-waiting-room { border-radius: 26px 26px 0 0; }
+}
+
 /* Presenter round banner. ::before is the orbit; ::after is the exact K. */
 .is-presentation .presentation-round {
   isolation: isolate;
@@ -576,6 +695,106 @@ body.is-presentation .player-shell::after { content: none; }
 .is-presentation .presentation-card--intermission .presentation-leader strong { align-self:end; padding-right:38px; font-size:clamp(20px,2.5vh,30px); }
 .is-presentation .presentation-card--intermission .presentation-points { align-self:start; font-size:clamp(22px,2.9vh,34px); }
 .is-presentation .presenter-join-qr--corner canvas { width:144px!important; height:144px!important; }
+
+/* Shared-screen type must survive video-call downscaling. These floors apply
+   only to Presentation; host controls and player phones keep their compact UI. */
+.is-presentation .brand {
+  font-size: clamp(18px,2.2vh,24px);
+}
+.is-presentation .brand-mark {
+  width: clamp(34px,4.2vh,44px);
+  height: clamp(34px,4.2vh,44px);
+  font-size: clamp(22px,2.8vh,30px);
+}
+.is-presentation .eyebrow {
+  margin-bottom: clamp(8px,1.2vh,14px);
+  font-size: clamp(17px,2.1vh,25px);
+  letter-spacing: .1em;
+  line-height: 1.2;
+}
+.is-presentation .presenter-join-qr--corner {
+  gap: 9px;
+  padding: 12px;
+  font-size: clamp(18px,2.2vh,25px);
+  line-height: 1;
+}
+.is-presentation .presentation-leaderboard-heading > span {
+  padding: 9px 14px;
+  font-size: clamp(17px,2vh,23px);
+}
+.is-presentation .presentation-points small {
+  font-size: clamp(15px,1.8vh,20px);
+}
+.is-presentation .presentation-more-players {
+  font-size: clamp(17px,2vh,23px);
+}
+.is-presentation .presentation-card .closest-number-help,
+.is-presentation .presentation-card .drag-help,
+.is-presentation .presentation-audio .audio-copy span,
+.is-presentation .presentation-audio-note {
+  font-size: clamp(16px,1.9vh,22px);
+  line-height: 1.35;
+}
+.is-presentation .presentation-audio .audio-copy strong {
+  font-size: clamp(18px,2.2vh,25px);
+}
+.is-presentation .presentation-card--arrange_in_order .drag-card,
+.is-presentation .presentation-card--categorize .drag-card,
+.is-presentation .presentation-card--matching .drag-slot-label,
+.is-presentation .presentation-card--matching .drag-card,
+.is-presentation .presentation-card--matching .drag-placeholder {
+  font-size: clamp(16px,1.9vh,23px);
+}
+.is-presentation .presentation-title-join strong {
+  font-size: clamp(22px,2.8vh,32px);
+}
+.is-presentation .presentation-title-join span,
+.is-presentation .presentation-title-join em {
+  font-size: clamp(17px,2.1vh,24px);
+}
+.is-presentation .presentation-title-join b {
+  font-size: clamp(24px,3vh,34px);
+}
+
+/* The finale previously repeated two headings, then tried to fit ten rows in
+   one column. One clear heading and two columns keep names and points large. */
+.is-presentation .presentation-card--final {
+  display: flex;
+  align-items: stretch;
+  padding: clamp(18px,3vh,42px) clamp(24px,4vw,72px);
+}
+.is-presentation .presentation-card--final .presentation-leaderboard-card {
+  display: flex;
+  flex: 1;
+  max-width: none;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(20px,3.2vh,48px);
+}
+.is-presentation .presentation-card--final .presentation-leaderboard:has(> :nth-child(5)) {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+}
+.is-presentation .presentation-card--final .presentation-leader {
+  grid-template-columns: clamp(42px,5vh,58px) clamp(58px,7vh,82px) minmax(0,1fr) auto;
+  gap: clamp(10px,1.2vw,18px);
+  min-height: clamp(68px,9vh,92px);
+  padding: clamp(8px,1.1vh,13px) clamp(11px,1.4vw,18px);
+}
+.is-presentation .presentation-card--final .presentation-place {
+  width: clamp(38px,4.5vh,52px);
+  height: clamp(38px,4.5vh,52px);
+  font-size: clamp(18px,2.2vh,26px);
+}
+.is-presentation .presentation-card--final .player-logo--presentation {
+  width: clamp(58px,7vh,82px);
+  border-radius: clamp(13px,1.7vh,19px);
+}
+.is-presentation .presentation-card--final .presentation-leader strong {
+  font-size: clamp(20px,2.6vh,31px);
+}
+.is-presentation .presentation-card--final .presentation-points {
+  font-size: clamp(22px,3vh,36px);
+}
 
 @keyframes kaplan-k-breathe {
   0%,100% { transform: translateY(-50%) rotate(-4.5deg) scale(1); }

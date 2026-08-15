@@ -167,11 +167,42 @@ test("player ignores presentation-only audio state changes", () => {
   assert.doesNotMatch(key, /activeClipId/);
 });
 
+test("multi-blank answers autosave without remounting and follow clip playback", () => {
+  assert.match(app, /function multiBlankBoard/);
+  assert.match(app, /data-multi-blank=/);
+  assert.match(app, /queueAutoSubmission\(\{ allowEmpty: true, delay: 40 \}\)/);
+  assert.match(app, /function updateMultiBlankPlayingState/);
+  assert.match(app, /data-multi-blank-playback-status/);
+  assert.match(app, /Now playing' : "Listen closely"/);
+  assert.match(app, /presentationAudioPlayer\?\.addEventListener\("ended", announceAudioEnded\)/);
+  assert.match(app, /\["matching", "multi_fill_in_the_blank"\]\.includes\(hostQuestion\.type\)/);
+});
+
+test("finale reveal titles and door odds remain legible on the presentation screen", () => {
+  const css = fs.readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(css, /presentation-card--multi_fill_in_the_blank \.multi-blank-row > span[\s\S]*color: var\(--purple\)/);
+  assert.match(css, /presentation-card--multi_fill_in_the_blank \.multi-blank-row > span[\s\S]*font-size: clamp\(22px, 3\.8vh, 44px\)/);
+  assert.match(css, /presentation-card--doors \.door-odds[\s\S]*font-size: clamp\(19px, 2\.5vh, 31px\)/);
+});
+
 test("presenter applies audio-only updates without remounting the shared screen", () => {
   const receive = app.slice(app.indexOf("function receive"), app.indexOf("function playerRenderKey"));
   const key = app.slice(app.indexOf("function presenterRenderKey"), app.indexOf("localChannel.onmessage"));
   assert.match(receive, /priorPresenterRenderKey/);
+  assert.match(receive, /updatePresenterActiveClipState\(\)/);
   assert.match(receive, /applyPresentationAudioCommand\(\)/);
-  assert.match(key, /audioCommand, revision, submitted/);
+  assert.match(key, /activeClipId, audioCommand, revision, submitted/);
   assert.match(key, /JSON\.stringify\(visualState\)/);
+});
+
+test("host navigation uses one next and previous control for keys, arrows, and visible buttons", () => {
+  assert.match(app, /async function showNextScreen\(\)/);
+  assert.match(app, /async function showPreviousScreen\(\)/);
+  assert.match(app, /data-next-screen/);
+  assert.match(app, /data-previous/);
+  assert.match(app, /event\.key === "ArrowRight"/);
+  assert.match(app, /event\.key === "ArrowLeft"/);
+  assert.match(app, /event\.key\.toLowerCase\(\) === "n"/);
+  assert.match(app, /event\.key\.toLowerCase\(\) === "p"/);
+  assert.match(app, /screenHistory/);
 });

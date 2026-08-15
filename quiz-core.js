@@ -6,6 +6,7 @@ export function toPlayerQuestion(question = {}) {
   if (question.options !== undefined) playerQuestion.options = question.options.map(({ id, label, imageAssetId }) => ({ id, label, ...(imageAssetId ? { imageAssetId } : {}) }));
   for (const key of ["items", "categories"]) if (question[key] !== undefined) playerQuestion[key] = question[key];
   if (question.clips !== undefined) playerQuestion.clips = question.clips.map(({ id, label }) => ({ id, label }));
+  if (question.pointsPerBlank !== undefined) playerQuestion.pointsPerBlank = question.pointsPerBlank;
   return playerQuestion;
 }
 

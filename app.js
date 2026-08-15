@@ -40,6 +40,16 @@ const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character)
 const validNumericGuess = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
 const doorBonusDefinition = () => hostQuizDefinition?.betweenRoundBonus || state.doorBonus || null;
 const doorBonusEnabled = () => Boolean(doorBonusDefinition()?.enabled && doorBonusDefinition()?.doors?.length === 3 && (hostQuizDefinition?.rounds?.length || state.question?.totalRounds || 1) > 1);
+const betweenRoundAudio = (key) => doorBonusDefinition()?.audio?.[key] || null;
+const finaleDefinition = () => hostQuizDefinition?.finale || state.finale || null;
+const finaleAudio = (key) => finaleDefinition()?.audio?.[key] || null;
+const hasPlayableAudio = (audio) => Boolean(audio?.mediaAssetId || audio?.url);
+function publicDoorBonus() {
+  const definition = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
+  if (!definition) return null;
+  const { audio, ...playerSafeDefinition } = definition;
+  return playerSafeDefinition;
+}
 // Add `src: "./assets/player-icons/file.png"` to an entry when the final
 // square artwork arrives. The stable key is what is stored in player records.
 const PLAYER_LOGOS = Object.freeze([
@@ -96,7 +106,9 @@ const defaultState = {
   doorBonus: null,
   doorPicks: [],
   doorResults: [],
-  targetRoundIndex: null
+  targetRoundIndex: null,
+  intermissionStage: null,
+  screenHistory: []
 };
 
 
@@ -124,6 +136,7 @@ function publicRoomState() {
     revealedCorrectOptionIds: state.phase === "reveal" ? hostQuestion.correctOptionIds || (correctOptionId(hostQuestion) ? [correctOptionId(hostQuestion)] : []) : [],
     revealedCorrectCategories: state.phase === "reveal" && hostQuestion.type === "categorize" ? hostQuestion.correctCategories || {} : {},
     revealedCorrectPairs: state.phase === "reveal" && hostQuestion.type === "matching" ? hostQuestion.correctPairs || {} : {},
+    revealedMultiBlankAnswers: state.phase === "reveal" && hostQuestion.type === "multi_fill_in_the_blank" ? Object.fromEntries((hostQuestion.clips || []).map((clip) => [clip.id, clip.acceptedAnswers || []])) : {},
     revealedTextAnswers: state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(hostQuestion.type) ? hostQuestion.acceptedAnswers || hostQuestion.blanks?.[0]?.acceptedAnswers || [] : [],
     revealedNumber: state.phase === "reveal" && hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null,
     timerEndsAt: state.timerEndsAt || null,
@@ -131,10 +144,14 @@ function publicRoomState() {
     activeClipId: state.activeClipId || null,
     audioCommand: state.audioCommand || null,
     scoreNotification: state.scoreNotification?.expiresAt && new Date(state.scoreNotification.expiresAt).getTime() > Date.now() ? state.scoreNotification : null,
-    doorBonus: hostQuizDefinition?.betweenRoundBonus || state.doorBonus || null,
+    doorBonus: publicDoorBonus(),
     doorPicks: state.doorPicks || [],
     doorResults: state.doorResults || [],
     targetRoundIndex: Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : null,
+    intermissionStage: state.intermissionStage || null,
+    // Navigation history contains only screen identifiers and score-display
+    // data; it never includes answer keys or authored media.
+    screenHistory: state.screenHistory || [],
     submitted: {},
     players: state.players
   };
@@ -176,6 +193,7 @@ function questionPosition(questionId = hostQuestion?.id) {
 }
 
 async function advanceQuestion() {
+  rememberCurrentScreen();
   // Room state is intentionally public and may have been saved by an older
   // client. Navigation must always follow the author’s current question bank.
   const current = questionPosition() || {
@@ -189,20 +207,15 @@ async function advanceQuestion() {
   const nextIndex = nextRound === roundIndex ? nextInRound : 0;
   if (state.phase === "door_reveal") {
     const targetRound = Number(state.targetRoundIndex);
-    if (!Number.isInteger(targetRound) || !setHostQuestion(targetRound, 0)) return;
-    state.targetRoundIndex = targetRound;
-    state.doorBonus = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
-    await persistHostState(); emit(); render(); return;
+    await startRound(targetRound);
+    return;
   }
-  if (nextRound !== roundIndex && nextRound < (hostQuizDefinition?.rounds?.length || 0) && doorBonusEnabled()) {
-    await openDoorChoice(nextRound);
+  if (nextRound !== roundIndex && nextRound < (hostQuizDefinition?.rounds?.length || 0)) {
+    await startRoundEnd(nextRound);
     return;
   }
   if (!setHostQuestion(nextRound, nextIndex)) {
-    state.phase = "complete";
-    await persistHostState();
-    emit();
-    render();
+    await startFinale();
     return;
   }
   await persistHostState();
@@ -210,11 +223,94 @@ async function advanceQuestion() {
   render();
 }
 
+function cueBetweenRoundAudio(audioKey) {
+  const audio = betweenRoundAudio(audioKey);
+  // Send a pause command as well when no sound is authored. This prevents
+  // suspense music from carrying into the scoreboard or next-round card.
+  state.audioCommand = {
+    id: crypto.randomUUID(),
+    action: hasPlayableAudio(audio) ? "play" : "pause",
+    audioScope: "between_round",
+    audioKey
+  };
+}
+
+function cueFinaleAudio(audioKey) {
+  const audio = finaleAudio(audioKey);
+  state.audioCommand = {
+    id: crypto.randomUUID(),
+    action: hasPlayableAudio(audio) ? "play" : "pause",
+    audioScope: "finale",
+    audioKey
+  };
+}
+
+async function startFinale() {
+  rememberCurrentScreen();
+  state = {
+    ...state,
+    phase: "complete",
+    presentationScreen: "final_suspense",
+    intermissionStage: "final_suspense",
+    timerEndsAt: null,
+    timerDurationSeconds: null,
+    submitted: {}
+  };
+  cueFinaleAudio("drumroll");
+  await persistHostState(); emit(); render();
+}
+
+async function revealFinalPodium() {
+  if (state.phase !== "complete" || state.presentationScreen !== "final_suspense") return;
+  rememberCurrentScreen();
+  state.presentationScreen = "final_podium";
+  state.intermissionStage = "final_podium";
+  await persistHostState(); emit(); render();
+}
+
+async function showFinalScores() {
+  if (state.phase !== "complete" || state.presentationScreen !== "final_podium") return;
+  rememberCurrentScreen();
+  state.presentationScreen = "final_scores";
+  state.intermissionStage = "final_scores";
+  cueFinaleAudio("outro");
+  await persistHostState(); emit(); render();
+}
+
+async function startRoundEnd(targetRoundIndex) {
+  rememberCurrentScreen();
+  state = {
+    ...state,
+    phase: "lobby",
+    presentationScreen: "round_end",
+    intermissionStage: "round_end",
+    targetRoundIndex,
+    doorPicks: [],
+    doorResults: [],
+    timerEndsAt: null,
+    timerDurationSeconds: null,
+    submitted: {}
+  };
+  cueBetweenRoundAudio("roundEnd");
+  await persistHostState(); emit(); render();
+}
+
+async function showRoundScoreboard() {
+  if (state.presentationScreen !== "round_end") return;
+  rememberCurrentScreen();
+  state.presentationScreen = "round_scoreboard";
+  state.intermissionStage = "scoreboard";
+  cueBetweenRoundAudio("scoreboard");
+  await persistHostState(); emit(); render();
+}
+
 async function openDoorChoice(targetRoundIndex) {
+  rememberCurrentScreen();
   state = {
     ...state,
     phase: "door_choice",
     presentationScreen: "doors",
+    intermissionStage: "doors",
     targetRoundIndex,
     doorBonus: hostQuizDefinition?.betweenRoundBonus || state.doorBonus,
     doorPicks: [],
@@ -223,6 +319,18 @@ async function openDoorChoice(targetRoundIndex) {
     timerDurationSeconds: null,
     submitted: {}
   };
+  cueBetweenRoundAudio("doorChoice");
+  await persistHostState(); emit(); render();
+}
+
+async function startRound(targetRoundIndex = state.targetRoundIndex) {
+  if (!Number.isInteger(targetRoundIndex)) return;
+  rememberCurrentScreen();
+  if (!setHostQuestion(targetRoundIndex, 0)) return;
+  state.targetRoundIndex = targetRoundIndex;
+  state.presentationScreen = "round_start";
+  state.intermissionStage = "round_start";
+  cueBetweenRoundAudio("roundStart");
   await persistHostState(); emit(); render();
 }
 
@@ -249,6 +357,81 @@ async function jumpToQuestion() {
 }
 
 let state = structuredClone(defaultState);
+
+function screenSnapshot() {
+  return {
+    phase: state.phase,
+    presentationScreen: state.presentationScreen,
+    questionId: state.questionId || state.question?.id || null,
+    targetRoundIndex: Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : null,
+    intermissionStage: state.intermissionStage || null,
+    doorPicks: state.doorPicks || [],
+    doorResults: state.doorResults || []
+  };
+}
+
+function sameScreen(left, right) {
+  return left?.phase === right?.phase
+    && left?.presentationScreen === right?.presentationScreen
+    && left?.questionId === right?.questionId;
+}
+
+function rememberCurrentScreen() {
+  const history = Array.isArray(state.screenHistory) ? state.screenHistory : [];
+  const current = screenSnapshot();
+  if (sameScreen(history.at(-1), current)) return;
+  state.screenHistory = [...history.slice(-49), current];
+}
+
+async function showPreviousScreen() {
+  const history = Array.isArray(state.screenHistory) ? state.screenHistory : [];
+  const previous = history.at(-1);
+  if (!previous) return;
+  const currentPhase = state.phase;
+  const position = previous.questionId ? questionPosition(previous.questionId) : null;
+  if (position && !setHostQuestion(position.roundIndex, position.questionIndex)) return;
+  // Scoring is irreversible. Rewinding from a locked/revealed question to its
+  // question card keeps submissions closed, rather than reopening a question
+  // that has already generated score events.
+  const phase = previous.phase === "open" && previous.questionId === (state.questionId || state.question?.id) && ["locked", "reveal", "complete"].includes(currentPhase) ? "locked" : previous.phase;
+  state = {
+    ...state,
+    phase,
+    presentationScreen: phase === "locked" && previous.phase === "open" ? "question" : previous.presentationScreen,
+    targetRoundIndex: previous.targetRoundIndex,
+    intermissionStage: previous.intermissionStage,
+    doorPicks: previous.doorPicks || [],
+    doorResults: previous.doorResults || [],
+    timerEndsAt: null,
+    timerDurationSeconds: null,
+    screenHistory: history.slice(0, -1)
+  };
+  if (state.phase === "reveal") {
+    state.revealedCorrectOptionId = correctOptionId(hostQuestion);
+    state.revealedCorrectOptionIds = hostQuestion.correctOptionIds || (state.revealedCorrectOptionId ? [state.revealedCorrectOptionId] : []);
+    state.revealedNumber = hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null;
+  }
+  await persistHostState(); emit(); render();
+}
+
+async function showNextScreen() {
+  if (view !== "host") return;
+  if (state.phase === "complete") {
+    if (state.presentationScreen === "final_suspense") return revealFinalPodium();
+    if (state.presentationScreen === "final_podium") return showFinalScores();
+    return;
+  }
+  if (state.phase === "door_choice") return revealDoorRewards();
+  if (state.phase === "door_reveal") return advanceQuestion();
+  if (state.phase === "lobby") {
+    if (state.presentationScreen === "round_end") return showRoundScoreboard();
+    if (state.presentationScreen === "round_scoreboard") return doorBonusEnabled() ? openDoorChoice(Number(state.targetRoundIndex)) : startRound(Number(state.targetRoundIndex));
+    return setPhase("open");
+  }
+  if (state.phase === "open") return lockQuestion();
+  if (state.phase === "locked") return revealQuestion();
+  if (state.phase === "reveal") return advanceQuestion();
+}
 let playerId = sessionStorage.getItem("musicTriviaPlayerId") || crypto.randomUUID();
 sessionStorage.setItem("musicTriviaPlayerId", playerId);
 let playerName = sessionStorage.getItem("musicTriviaPlayerName") || "";
@@ -320,12 +503,20 @@ function receive(message) {
     const playerChanged = view === "player" && priorPlayerRenderKey !== playerRenderKey(state);
     const presenterChanged = view === "presenter" && priorPresenterRenderKey !== presenterRenderKey(state);
     if (!["player", "presenter"].includes(view) || playerChanged || presenterChanged) render();
-    else if (view === "presenter" && presentationAudioArmed) applyPresentationAudioCommand().catch((error) => console.warn("Presentation clip unavailable.", error));
+    else if (view === "player") {
+      updateMultiBlankPlayingState();
+      updateDoorChoicePlayingState();
+    }
+    else if (view === "presenter") {
+      updatePresenterActiveClipState();
+      if (presentationAudioArmed) applyPresentationAudioCommand().catch((error) => console.warn("Presentation clip unavailable.", error));
+    }
   }
   if (data?.type === "submission") acceptSubmission(data.payload);
   if (data?.type === "presentation-submission" && view === "presenter") acceptSubmission(data.payload);
   if (data?.type === "presence") acceptPlayerPresence(data.payload);
   if (data?.type === "door-choice") acceptDoorChoice(data.payload);
+  if (data?.type === "audio-ended" && view === "host" && data.questionId === hostQuestion.id && data.clipId === state.activeClipId) clearActiveClip();
 }
 
 function playerRenderKey(roomState) {
@@ -338,10 +529,10 @@ function playerRenderKey(roomState) {
     revealedCorrectOptionIds: roomState?.revealedCorrectOptionIds,
     revealedCorrectCategories: roomState?.revealedCorrectCategories,
     revealedCorrectPairs: roomState?.revealedCorrectPairs,
+    revealedMultiBlankAnswers: roomState?.revealedMultiBlankAnswers,
     revealedTextAnswers: roomState?.revealedTextAnswers,
     revealedNumber: roomState?.revealedNumber,
     doorBonus: roomState?.doorBonus,
-    doorPicks: roomState?.doorPicks,
     doorResults: roomState?.doorResults,
     targetRoundIndex: roomState?.targetRoundIndex,
     timerEndsAt: roomState?.timerEndsAt,
@@ -358,7 +549,7 @@ function presenterRenderKey(roomState) {
   // Audio controls increment the server revision and replace audioCommand, but
   // neither change is visual. Keep the presentation DOM mounted so a host cue
   // cannot flash the shared screen while still applying the command above.
-  const { audioCommand, revision, submitted, ...visualState } = roomState || {};
+  const { activeClipId, audioCommand, revision, submitted, ...visualState } = roomState || {};
   return JSON.stringify(visualState);
 }
 localChannel.onmessage = receive;
@@ -396,6 +587,16 @@ function sendSubmission(answer) {
   realtimeChannel?.send({ type: "broadcast", event: "submission", payload });
 }
 
+function announceAudioEnded() {
+  const command = state.audioCommand;
+  if (view !== "presenter" || !command?.clipId) return;
+  const payload = { type: "audio-ended", questionId: command.questionId, clipId: command.clipId };
+  localChannel.postMessage(payload);
+  realtimeChannel?.send({ type: "broadcast", event: "audio-ended", payload });
+}
+
+presentationAudioPlayer?.addEventListener("ended", announceAudioEnded);
+
 function announcePlayerPresence() {
   const payload = { playerId, playerName, playerLogoKey };
   localChannel.postMessage({ type: "presence", payload });
@@ -423,6 +624,7 @@ async function connectHostedRoom() {
     realtimeChannel.on("broadcast", { event: "submission" }, ({ payload }) => receive({ type: "submission", payload }));
     realtimeChannel.on("broadcast", { event: "presence" }, ({ payload }) => receive({ type: "presence", payload }));
     realtimeChannel.on("broadcast", { event: "door-choice" }, ({ payload }) => receive({ type: "door-choice", payload }));
+    realtimeChannel.on("broadcast", { event: "audio-ended" }, ({ payload }) => receive(payload));
     realtimeChannel.on("broadcast", { event: "request-state" }, () => {
       if (view === "host") emit();
     });
@@ -469,8 +671,9 @@ async function connectHostedRoom() {
 }
 
 async function setPhase(phase) {
+  if (state.phase !== phase || (phase === "open" && state.presentationScreen !== "question")) rememberCurrentScreen();
   state.phase = phase;
-  if (phase === "open") state.presentationScreen = "question";
+  if (phase === "open") { state.presentationScreen = "question"; state.intermissionStage = null; }
   if (phase === "reveal") {
     state.revealedCorrectOptionId = correctOptionId(hostQuestion);
     state.revealedCorrectOptionIds = hostQuestion.correctOptionIds || (state.revealedCorrectOptionId ? [state.revealedCorrectOptionId] : []);
@@ -481,6 +684,7 @@ async function setPhase(phase) {
   render();
 }
 async function lockQuestion({ renderAfter = true } = {}) {
+  if (state.phase === "open") rememberCurrentScreen();
   const hostSecret = getHostSecret();
   if (!params.has("room") || !hostSecret) {
     state.phase = "locked";
@@ -509,6 +713,7 @@ async function revealQuestion() {
 }
 async function revealDoorRewards() {
   if (state.phase !== "door_choice") return;
+  rememberCurrentScreen();
   const hostSecret = getHostSecret();
   try {
     if (params.has("room") && hostSecret) {
@@ -525,6 +730,7 @@ async function revealDoorRewards() {
       });
     }
     state.phase = "door_reveal";
+    cueBetweenRoundAudio("doorReveal");
     await persistHostState(); emit(); render();
   } catch (error) {
     recordDiagnostic("door-reveal", error, { roomCode });
@@ -623,7 +829,7 @@ function roundProgress() {
 }
 
 function hostUtilityControls() {
-  return `<div class="host-utilities"><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button></div>`;
+  return `<div class="host-utilities"><button class="btn btn-secondary" data-previous>Previous <span class="keyhint">P / ←</span></button><button class="btn btn-secondary" data-next-screen>Next <span class="keyhint">N / →</span></button><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button></div>`;
 }
 
 function questionJumpControls() {
@@ -634,7 +840,7 @@ function questionJumpControls() {
 }
 
 function shortcutGuide() {
-  return `<aside class="shortcut-guide" data-shortcut-guide hidden><div><strong>Host shortcuts</strong><button data-toggle-shortcuts aria-label="Close shortcut guide">×</button></div><p><kbd>N</kbd> Start / next question</p><p><kbd>R</kbd> Reveal and score</p><p><kbd>Space</kbd> Play audio</p><p><kbd>?</kbd> Show this guide</p></aside>`;
+  return `<aside class="shortcut-guide" data-shortcut-guide hidden><div><strong>Host shortcuts</strong><button data-toggle-shortcuts aria-label="Close shortcut guide">×</button></div><p><kbd>N</kbd> / <kbd>→</kbd> Next screen</p><p><kbd>P</kbd> / <kbd>←</kbd> Previous screen</p><p><kbd>R</kbd> Reveal and score</p><p><kbd>Space</kbd> Play audio</p><p><kbd>?</kbd> Show this guide</p></aside>`;
 }
 
 function renderLanding() {
@@ -687,8 +893,7 @@ function matchingBoard(question, player, presenter = false) {
   const assignedClipIds = new Set(Object.keys(assignments).filter((clipId) => assignments[clipId]));
   const unassigned = (question.clips || []).filter((clip) => !assignedClipIds.has(clip.id));
   const helper = enabled ? (hasTargetImages ? "Drag each song title onto its matching movie poster." : "Match each item to a choice.") : showingMatches ? "Correct matches" : "Listen carefully—matches will be revealed shortly.";
-  const activeClipIndex = (question.clips || []).findIndex((clip) => clip.id === state.activeClipId);
-  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching"><p class="drag-help">${helper}</p><div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const isActiveIntro = presenter && !showingMatches && index === activeClipIndex; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "Listen closely"}</span>`}</div>`; }).join("")}</div></div>`;
+  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching"><p class="drag-help">${helper}</p><div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const playbackClip = (question.clips || [])[index]; const isActiveIntro = presenter && !showingMatches && playbackClip?.id === state.activeClipId; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder" data-matching-playback-status="${escapeHtml(playbackClip?.id || "")}">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "?"}</span>`}</div>`; }).join("")}</div></div>`;
 }
 
 function matchingSelectBoard(question) {
@@ -696,6 +901,51 @@ function matchingSelectBoard(question) {
   const assignments = selectedObject();
   const usedOptionIds = new Set(Object.values(assignments).filter(Boolean));
   return `<div class="matching-select-board"><p class="drag-help">Choose one title for each sample. A title can only be used once.</p>${(question.clips || []).map((clip) => `<label class="matching-select-row"><strong>${escapeHtml(clip.label)}</strong><select data-match-select="${escapeHtml(clip.id)}" ${enabled ? "" : "disabled"}><option value="">Choose a title</option>${(question.options || []).map((option) => `<option value="${escapeHtml(option.id)}" ${assignments[clip.id] === option.id ? "selected" : ""} ${usedOptionIds.has(option.id) && assignments[clip.id] !== option.id ? "disabled" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>`).join("")}</div>`;
+}
+
+function normalizedTextAnswer(value) {
+  return String(value || "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
+}
+
+function multiBlankBoard(question, { player = false, presenter = false } = {}) {
+  const enabled = player && state.phase === "open";
+  const answers = selectedObject();
+  const revealed = state.phase === "reveal";
+  const correctAnswers = player || presenter ? state.revealedMultiBlankAnswers || {} : Object.fromEntries((question.clips || []).map((clip) => [clip.id, clip.acceptedAnswers || []]));
+  return `<div class="multi-blank-board ${presenter ? "multi-blank-board--presenter" : ""}"><p class="drag-help">${player ? "Enter the song title only. Your answers save automatically and remain editable until the host closes the question." : revealed ? "Correct song titles" : `${(question.clips || []).length} piano intros · song titles only`}</p><div class="multi-blank-grid">${(question.clips || []).map((clip, index) => {
+    const value = answers[clip.id] || "";
+    const acceptedAnswers = player ? correctAnswers[clip.id] || [] : clip.acceptedAnswers || [];
+    const isCorrect = player && revealed && acceptedAnswers.some((answer) => normalizedTextAnswer(answer) === normalizedTextAnswer(value));
+    const isWrong = player && revealed && Boolean(value) && !isCorrect;
+    const correctAnswer = (correctAnswers[clip.id] || acceptedAnswers)[0] || "";
+    const isPlaying = clip.id === state.activeClipId && !revealed;
+    const content = !player
+      ? `<strong>${index + 1}</strong><span ${revealed ? "" : `data-multi-blank-playback-status="${escapeHtml(clip.id)}"`}>${revealed ? escapeHtml(correctAnswer) : isPlaying ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : "Listen closely"}</span>`
+      : `<strong>${index + 1}</strong><input data-multi-blank="${escapeHtml(clip.id)}" value="${escapeHtml(value)}" placeholder="Song title" autocomplete="off" autocapitalize="words" ${enabled ? "" : "disabled"} aria-label="Song title for intro ${index + 1}" />${revealed ? `<small>${isCorrect ? "Correct" : `Answer: ${escapeHtml(correctAnswer)}`}</small>` : ""}`;
+    return `<label class="multi-blank-row ${isPlaying ? "is-playing-intro" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-multi-blank-row="${escapeHtml(clip.id)}">${content}</label>`;
+  }).join("")}</div></div>`;
+}
+
+function updateMultiBlankPlayingState() {
+  document.querySelectorAll("[data-multi-blank-row]").forEach((row) => {
+    const isPlaying = state.phase !== "reveal" && row.dataset.multiBlankRow === state.activeClipId;
+    row.classList.toggle("is-playing-intro", isPlaying);
+    const status = row.querySelector("[data-multi-blank-playback-status]");
+    if (status) status.innerHTML = isPlaying ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : "Listen closely";
+  });
+}
+
+function updatePresenterActiveClipState() {
+  updateMultiBlankPlayingState();
+  document.querySelectorAll("[data-drag-item]").forEach((card) => card.classList.toggle("is-playing-intro", state.phase !== "reveal" && card.dataset.dragItem === state.activeClipId));
+  document.querySelectorAll(".matching-target-slot").forEach((slot) => {
+    const position = [...slot.parentElement.children].indexOf(slot);
+    const clip = (state.question?.clips || [])[position];
+    const isPlaying = state.phase !== "reveal" && clip?.id === state.activeClipId;
+    slot.classList.toggle("is-playing-intro", isPlaying);
+    const status = slot.querySelector("[data-matching-playback-status]");
+    if (status) status.innerHTML = isPlaying ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : "?";
+  });
 }
 
 function categorizeBoard(question, player) {
@@ -757,6 +1007,7 @@ function answerControl({ player = false, presenter = false } = {}) {
   if (question.type === "categorize") return player ? categorizeTapBoard(question) : categorizeBoard(question, player);
   if (question.type === "arrange_in_order") return orderBoard(question, player, presenter);
   if (question.type === "matching") return player ? matchingSelectBoard(question) : matchingBoard(question, player, presenter);
+  if (question.type === "multi_fill_in_the_blank") return multiBlankBoard(question, { player, presenter });
   return "<p>This question type is ready for the host but has no player control yet.</p>";
 }
 
@@ -845,20 +1096,21 @@ function answerReady(question = state.question) {
   if (question.type === "arrange_in_order") return (question.items || []).every((item) => selected?.[item.id]);
   if (question.type === "categorize") return (question.items || []).every((item) => selected?.[item.id]);
   if (question.type === "matching") return (question.clips || []).every((clip) => selected?.[clip.id]);
+  if (question.type === "multi_fill_in_the_blank") return Object.values(selectedObject()).some((answer) => String(answer).trim());
   return typeof selected === "string";
 }
 
-function audioPanel(sourceAudio = null, { opening = false } = {}) {
+function audioPanel(sourceAudio = null, { opening = false, scope = "question", label = "" } = {}) {
   const audio = sourceAudio || hostQuestion.audio || (hostQuestion.audioLabel ? { suggestedWindow: hostQuestion.audioLabel, cue: hostQuestion.audioHelp } : null);
   if (!audio) return "";
   const playable = Boolean(hostQuizDefinition && params.has("room") && (audio.mediaAssetId || audio.url));
-  const scope = opening ? "title" : "question";
-  const controls = playable ? `<div class="host-audio-actions"><button class="btn btn-primary" data-audio-command="play" data-audio-scope="${scope}">Play clip</button><button class="btn btn-secondary" data-audio-command="restart" data-audio-scope="${scope}">Restart</button><button class="btn btn-secondary" data-audio-command="pause" data-audio-scope="${scope}">Pause</button></div>` : "";
-  return `<div class="audio-panel audio-panel--host"><span class="audio-play is-external" aria-hidden="true">♫</span><div class="audio-copy"><strong>${escapeHtml(audio.suggestedWindow || (opening ? "Waiting-room music" : hostQuestion.audioLabel) || "Audio clip")}</strong><span>${playable ? "Plays through the presentation tab when you cue it here." : escapeHtml(audio.cue || "Attach an uploaded clip in authoring to enable host controls.")}</span></div>${controls}</div>`;
+  const resolvedScope = opening ? "title" : scope;
+  const controls = playable ? `<div class="host-audio-actions"><button class="btn btn-primary" data-audio-command="play" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Play clip</button><button class="btn btn-secondary" data-audio-command="restart" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Restart</button><button class="btn btn-secondary" data-audio-command="pause" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Pause</button></div>` : "";
+  return `<div class="audio-panel audio-panel--host"><span class="audio-play is-external" aria-hidden="true">♫</span><div class="audio-copy"><strong>${escapeHtml(audio.suggestedWindow || (opening ? "Waiting-room music" : label === "drumroll" ? "Winner drumroll" : label === "outro" ? "Closing music" : hostQuestion.audioLabel) || "Audio clip")}</strong><span>${playable ? "Plays through the presentation tab when you cue it here." : escapeHtml(audio.cue || "Attach an uploaded clip in authoring to enable host controls.")}</span></div>${controls}</div>`;
 }
 
 function matchingClipControls() {
-  if (hostQuestion.type !== "matching" || !(hostQuestion.clips || []).some((clip) => clip.mediaAssetId || clip.url)) return "";
+  if (!["matching", "multi_fill_in_the_blank"].includes(hostQuestion.type) || !(hostQuestion.clips || []).some((clip) => clip.mediaAssetId || clip.url)) return "";
   return `<section class="matching-clip-controls"><div><strong>Intro playback</strong><span>Choose an intro to play it and spotlight its tile in Presentation.</span></div><div>${hostQuestion.clips.map((clip) => `<button class="btn ${clip.id === state.activeClipId ? "btn-primary" : "btn-secondary"}" data-play-intro="${escapeHtml(clip.id)}">${escapeHtml(clip.label)}</button>`).join("")}</div></section>`;
 }
 
@@ -897,7 +1149,11 @@ async function preparePresentationAudio(command = state.audioCommand) {
   if (view !== "presenter" || !presentationAudioPlayer) return;
   const commandedQuestion = questionDefinitionById(command?.questionId);
   const commandedIntro = command?.clipId ? commandedQuestion?.clips?.find((clip) => clip.id === command.clipId) : null;
-  const audio = command?.audioScope === "title"
+  const audio = command?.audioScope === "between_round"
+    ? betweenRoundAudio(command.audioKey)
+    : command?.audioScope === "finale"
+    ? finaleAudio(command.audioKey)
+    : command?.audioScope === "title"
     ? hostQuizDefinition?.titlePage?.audio
     : commandedIntro || commandedQuestion?.audio || (state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio : hostQuestion.audio);
   const sourceKey = audio?.mediaAssetId || audio?.url || null;
@@ -962,6 +1218,14 @@ async function applyPresentationAudioCommand() {
   if (command.action === "pause") { presentationAudioPlayer.pause(); return; }
   if (command.action === "restart") presentationAudioPlayer.currentTime = 0;
   try { await startPresentationPlayback(); } catch (error) { console.warn("Presentation audio needs to be enabled once in the presentation tab.", error); }
+}
+
+async function clearActiveClip() {
+  if (view !== "host" || !state.activeClipId) return;
+  state.activeClipId = null;
+  await persistHostState();
+  emit();
+  render();
 }
 
 async function loadPrivateImage(image) {
@@ -1057,7 +1321,7 @@ function doorChoiceCards({ interactive = false, compact = false } = {}) {
   return `<div class="door-grid ${compact ? "door-grid--compact" : ""}">${(config?.doors || []).map((door, doorIndex) => {
     const players = entries.filter((entry) => entry.doorId === door.id);
     const people = interactive ? "" : players.length ? `<div class="door-players">${players.map((entry, index) => `<span class="door-player ${state.phase === "door_reveal" ? Number(entry.multiplier) < 1 ? "is-penalty" : "is-boost" : ""}" style="--door-player-delay:${index * .06}s">${playerLogoMarkup({ logoKey: entry.logoKey }, "player-logo--door")}<b>${escapeHtml(entry.playerName)}</b>${state.phase === "door_reveal" ? `<strong>${formatMultiplier(entry.multiplier)}</strong>` : ""}</span>`).join("")}</div>` : `<p class="door-empty">No picks yet</p>`;
-    const content = `<span class="door-number">Door ${doorIndex + 1}</span><span class="door-icon door-icon--${escapeHtml(door.icon)}" aria-hidden="true">${doorIconSymbol(door.icon)}</span><h3>${escapeHtml(door.name)}</h3><p class="door-odds">${escapeHtml(doorOdds(door))}</p>${people}`;
+    const content = `<span class="door-number">Door ${doorIndex + 1}</span><span class="door-icon door-icon--${escapeHtml(door.icon)}" aria-hidden="true">${doorIconSymbol(door.icon)}</span><h3>${escapeHtml(door.name)}</h3><div class="door-effect"><span>Possible effect</span><p class="door-odds">${escapeHtml(doorOdds(door))}</p></div>${people}`;
     return interactive ? `<button class="door-card ${selectedDoorId === door.id ? "is-selected" : ""}" data-choose-door="${escapeHtml(door.id)}" type="button" ${state.phase !== "door_choice" ? "disabled" : ""}>${content}<span class="door-select-label">${selectedDoorId === door.id ? "Your pick" : "Choose this door"}</span></button>` : `<article class="door-card">${content}</article>`;
   }).join("")}</div>`;
 }
@@ -1066,11 +1330,29 @@ function renderHostDoors() {
   const picked = (state.doorPicks || []).length;
   const targetRound = hostQuizDefinition?.rounds?.[state.targetRoundIndex];
   const revealed = state.phase === "door_reveal";
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow">${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow">${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+}
+
+function renderHostFinale() {
+  const finalStage = state.presentationScreen || "final_suspense";
+  const audio = finalStage === "final_suspense"
+    ? audioPanel(finaleAudio("drumroll"), { scope: "finale", label: "drumroll" })
+    : finalStage === "final_scores"
+    ? audioPanel(finaleAudio("outro"), { scope: "finale", label: "outro" })
+    : "";
+  const action = finalStage === "final_suspense"
+    ? '<button class="btn btn-primary" data-reveal-final-podium>Reveal podium <span class="keyhint">N / →</span></button>'
+    : finalStage === "final_podium"
+    ? '<button class="btn btn-primary" data-show-final-scores>Show final scores <span class="keyhint">N / →</span></button>'
+    : '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>';
+  const title = finalStage === "final_suspense" ? "Cue the winner reveal." : finalStage === "final_podium" ? "The podium is live." : "Final scores are live.";
+  const copy = finalStage === "final_suspense" ? "The suspense screen is up. Let the drumroll build, then reveal the podium." : finalStage === "final_podium" ? "Confetti is falling on the shared screen and the winner’s phone. Show the full score list when you’re ready." : "Closing music is playing while the full standings remain on screen.";
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Finale</span><h1>${title}</h1><p>${copy}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">Finale control</p><h2>${finalStage === "final_suspense" ? "And the winner is…" : finalStage === "final_podium" ? "Celebrate the podium." : "Thanks for playing."}</h2>${audio}${leaderboard()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions">${isHostedRoom ? `<a class="btn btn-secondary" href="${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}" target="_blank" rel="noopener">Open presentation view</a>` : ""}${action}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHost() {
   if (["door_choice", "door_reveal"].includes(state.phase)) { renderHostDoors(); return; }
+  if (state.phase === "complete") { renderHostFinale(); return; }
   const submittedCount = Object.keys(state.submitted).length;
   const playerUrl = `${location.origin}${location.pathname}?view=player&room=${encodeURIComponent(roomCode)}`;
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
@@ -1078,7 +1360,14 @@ function renderHost() {
   const openingTitle = hostQuizDefinition?.titlePage;
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
   const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>` : "";
-  const presentationAction = isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : "";
+  const intermissionAction = state.presentationScreen === "round_end"
+    ? '<button class="btn btn-primary" data-show-round-scoreboard>Show scoreboard</button>'
+    : state.presentationScreen === "round_scoreboard"
+    ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
+    : state.presentationScreen === "round_start"
+    ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N / →</span></button>'
+    : "";
+  const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
   app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
@@ -1112,6 +1401,13 @@ function presenterIntermission() {
   return `<section class="presentation-card presentation-card--intermission">${presentationLeaderboard()}</section>`;
 }
 
+function roundTransitionCard(stage) {
+  const isEnd = stage === "round_end";
+  const roundNumber = isEnd ? Number(state.question?.round || 1) : Number(state.targetRoundIndex) + 1;
+  const roundTitle = isEnd ? state.question?.roundTitle : hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title;
+  return `<section class="presentation-card presentation-card--round-transition presentation-card--${stage}" aria-live="polite"><div class="round-transition-scoreboard">${presentationLeaderboard()}</div><div class="round-transition-splash"><p class="eyebrow">${isEnd ? "Round complete" : "Get ready"}</p><h2>${isEnd ? `End of Round ${roundNumber}` : `Round ${roundNumber}`}</h2><p>${escapeHtml(isEnd ? "Check the scoreboard" : roundTitle || "The next round is about to begin")}</p></div></section>`;
+}
+
 function presentationTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
@@ -1122,7 +1418,52 @@ function presentationTitlePage() {
     ? `<div class="presentation-title-art-with-logo"><img class="presentation-title-art" data-private-image="${escapeHtml(titlePage.imageAssetId)}" alt="${escapeHtml(titlePage.imageAlt || "Quiz theme artwork")}" />${musicLogo}</div>`
     : musicLogo;
   const playerCount = state.players.length;
-  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  const visiblePlayers = state.players.slice(0, 8);
+  const playerList = visiblePlayers.length
+    ? `<ol class="presentation-waiting-list">${visiblePlayers.map((player, index) => `<li style="--waiting-player-delay:${0.08 + index * 0.06}s">${playerLogoMarkup(player, "player-logo--waiting-room")}<strong>${escapeHtml(player.name)}</strong></li>`).join("")}</ol>`
+    : `<p class="presentation-waiting-empty">Be the first to join.</p>`;
+  const morePlayers = playerCount > visiblePlayers.length ? `<p class="presentation-waiting-more">and more!</p>` : "";
+  const waitingRoom = `<aside class="presentation-waiting-room" aria-label="Players in the room"><div class="presentation-waiting-heading"><div><p class="eyebrow">In the room</p><h2>Players joining</h2></div><span>${playerCount} player${playerCount === 1 ? "" : "s"}</span></div>${playerList}${morePlayers}</aside>`;
+  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+}
+
+function rankedPlayers() {
+  return [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
+}
+
+function confettiMarkup(count = 52) {
+  return `<div class="winner-confetti" aria-hidden="true">${Array.from({ length: count }, (_, index) => `<i style="--confetti-index:${index};--confetti-count:${count}"></i>`).join("")}</div>`;
+}
+
+function finalSuspenseCard() {
+  return `<section class="presentation-finale presentation-finale--suspense" aria-live="polite"><div class="finale-spotlight" aria-hidden="true"></div><div class="finale-suspense-copy"><p class="eyebrow">Final reveal</p><h1>And the winner is…</h1><div class="finale-drumbeat" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><p>One more moment.</p></div></section>`;
+}
+
+function finalPodiumCard() {
+  const winners = rankedPlayers().slice(0, 3);
+  const places = [
+    { rank: 2, label: "Second place", medal: "🥈" },
+    { rank: 1, label: "First place", medal: "🏆" },
+    { rank: 3, label: "Third place", medal: "🥉" }
+  ];
+  const blocks = places.map(({ rank, label, medal }) => {
+    const player = winners[rank - 1];
+    return `<article class="podium-place podium-place--${rank} ${player ? "" : "is-empty"}"><span class="podium-medal" aria-hidden="true">${medal}</span>${player ? `${playerLogoMarkup(player, "player-logo--podium")}<p>${escapeHtml(label)}</p><h2>${escapeHtml(player.name)}</h2><strong>${Number(player.points) || 0}<small> pts</small></strong>` : `<p>${escapeHtml(label)}</p><h2>—</h2>`}<span class="podium-plinth">${rank}</span></article>`;
+  }).join("");
+  return `<section class="presentation-finale presentation-finale--podium" aria-live="polite">${confettiMarkup()}<div class="podium-heading"><p class="eyebrow">Final results</p><h1>Take the podium!</h1></div><div class="podium">${blocks}</div></section>`;
+}
+
+function finalScoreTitlePage() {
+  const titlePage = hostQuizDefinition?.titlePage || {};
+  const title = hostQuizDefinition?.title || "Quiz night";
+  const titleIcon = titlePage.icon || "♫";
+  const musicLogo = `<span class="presentation-title-music-logo" aria-hidden="true">${escapeHtml(titleIcon)}</span>`;
+  const themeArt = titlePage.imageAssetId
+    ? `<div class="presentation-title-art-with-logo"><img class="presentation-title-art" data-private-image="${escapeHtml(titlePage.imageAssetId)}" alt="${escapeHtml(titlePage.imageAlt || "Quiz theme artwork")}" />${musicLogo}</div>`
+    : musicLogo;
+  const players = rankedPlayers();
+  const list = players.length ? `<ol class="presentation-final-score-list">${players.map((player, index) => `<li class="presentation-final-score presentation-final-score--${index + 1}"><span>${index + 1}</span>${playerLogoMarkup(player, "player-logo--final-score")}<strong>${escapeHtml(player.name)}</strong><b>${Number(player.points) || 0}<small> pts</small></b></li>`).join("")}</ol>` : "<p class=\"presentation-final-score-empty\">No final scores yet.</p>";
+  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p><div class="presentation-final-art">${themeArt}</div></div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
 }
 
 function presentationCornerJoinQr() {
@@ -1132,32 +1473,83 @@ function presentationCornerJoinQr() {
 function renderPresenter() {
   const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
-  const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
+  const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const soundGate = isHostedRoom && quizHasAudio && !presentationAudioArmed ? '<aside class="presentation-sound-gate"><div><p class="eyebrow">One-time setup</p><h2>Enable presentation sound</h2><p>Click once before sharing this tab. The setup disappears; all playback controls remain in Host view.</p><button class="btn btn-primary" data-arm-presentation-audio>Enable sound</button><span data-arm-audio-status role="status"></span></div></aside>' : "";
   const presenterQuestion = presenterQuestionDefinition();
   const card = state.presentationScreen === "title"
     ? presentationTitlePage()
+    : state.presentationScreen === "final_suspense"
+    ? finalSuspenseCard()
+    : state.presentationScreen === "final_podium"
+    ? finalPodiumCard()
+    : state.presentationScreen === "final_scores"
+    ? finalScoreTitlePage()
+    : ["round_end", "round_start"].includes(state.presentationScreen)
+    ? roundTransitionCard(state.presentationScreen)
     : ["door_choice", "door_reveal"].includes(state.phase)
-    ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Which door will you choose?"}</h2></div>${doorChoiceCards()}</section>`
+    ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Feeling lucky?"}</h2>${state.phase === "door_reveal" ? "" : "<p>Choose your door.</p>"}</div>${doorChoiceCards()}</section>`
     : state.phase === "complete"
-    ? `<section class="presentation-card presentation-card--final"><div class="winner-confetti" aria-hidden="true">${Array.from({ length: 28 }, (_, index) => `<i style="--confetti-index:${index}"></i>`).join("")}</div><p class="eyebrow">Final leaderboard</p><h2>Thanks for playing.</h2>${presentationLeaderboard({ final: true })}</section>`
+    ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
       ? presenterIntermission()
     : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(presenterQuestion?.revealImageAssetId || presenterQuestion?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite">${state.phase === "reveal" ? "" : `<p class="eyebrow">${state.phase === "locked" ? "Answers are in" : `Question ${questionNumber}`}</p>`}<h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
   const displayedRound = ["door_choice", "door_reveal"].includes(state.phase) ? Number(state.targetRoundIndex) + 1 : state.question?.round || 1;
   const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Brainstorm";
-  const heading = state.presentationScreen === "title" ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1>${state.phase === "open" ? timerDisplay() : ""}</section>`;
+  const isFullscreenFinale = ["final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen);
+  const heading = ["title", "round_end", "round_start", "final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen) ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1>${state.phase === "open" ? timerDisplay() : ""}</section>`;
   const fullscreenControl = '<div class="presentation-fullscreen-corner"><button class="presentation-fullscreen-toggle" data-toggle-fullscreen aria-label="Toggle fullscreen presentation" title="Toggle fullscreen">⛶</button></div>';
-  const cornerJoinQr = state.presentationScreen === "title" ? "" : presentationCornerJoinQr();
+  // Keep the ordinary title-page QR behavior explicit; finale screens are
+  // intentionally QR-free so they read as a clean, full-screen send-off.
+  const titleCornerJoinQr = state.presentationScreen === "title" ? "" : presentationCornerJoinQr();
+  const cornerJoinQr = isFullscreenFinale ? "" : titleCornerJoinQr;
   // The title page already has its own join code. On every other presentation
   // screen, replace the room badge with the corner QR and its room ID.
-  app.innerHTML = shell(`${brandTopbar(false, false, state.presentationScreen === "title")}<main class="presentation-main ${state.presentationScreen === "title" ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
+  const titleTopbar = brandTopbar(false, false, state.presentationScreen === "title");
+  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
   const ranked = [...players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name))).slice(0, limit);
   if (!ranked.length) return "";
   return `<ol class="player-mini-leaderboard">${ranked.map((leader, index) => `<li class="${leader.id === playerId ? "is-current-player" : ""}"><span class="player-mini-place">${index + 1}</span>${playerLogoMarkup(leader, "player-logo--mini")}<strong>${escapeHtml(leader.name)}</strong><b>${Number(leader.points) || 0}<small>pts</small></b></li>`).join("")}</ol>`;
+}
+
+function playerFinale() {
+  const players = rankedPlayers();
+  const place = players.findIndex((player) => player.id === playerId || player.name === playerName) + 1;
+  const player = place ? players[place - 1] : null;
+  const isWinner = place === 1;
+  if (state.presentationScreen === "final_suspense") {
+    app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--suspense"><p class="eyebrow">Final reveal</p><h1>And the winner is…</h1><div class="finale-drumbeat" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><p>The host is about to reveal the podium.</p></section></main>`, true);
+    return;
+  }
+  if (state.presentationScreen === "final_podium") {
+    app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--podium ${isWinner ? "is-winner" : ""}">${isWinner ? confettiMarkup(34) : ""}<p class="eyebrow">Final results</p><span class="player-finale-medal" aria-hidden="true">${isWinner ? "🏆" : place === 2 ? "🥈" : place === 3 ? "🥉" : "✦"}</span><h1>${isWinner ? "You won!" : "The podium is in!"}</h1>${player ? `<p class="player-finale-rank">You finished <strong>#${place}</strong> with <strong>${Number(player.points) || 0} points</strong>.</p>` : "<p class=\"player-finale-rank\">Final scores are on the shared screen.</p>"}</section></main>`, true);
+    return;
+  }
+  app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--scores"><p class="eyebrow">Thanks for playing</p><h1>Final scores</h1>${player ? `<p class="player-finale-rank">You finished <strong>#${place}</strong> with <strong>${Number(player.points) || 0} points</strong>.</p>` : ""}${playerScoreCards(players, 8)}</section></main>`, true);
+}
+
+function playerRoundTransition(stage) {
+  const isEnd = stage === "round_end";
+  const roundNumber = isEnd ? Number(state.question?.round || 1) : Number(state.targetRoundIndex) + 1;
+  const roundTitle = isEnd ? state.question?.roundTitle : hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title;
+  return shell(`<main class="player-main player-main--intermission"><section class="player-card player-card--intermission player-round-transition"><div class="player-transition-scoreboard">${playerScoreCards()}</div><div class="player-transition-splash"><p class="eyebrow">${isEnd ? "Round complete" : "Get ready"}</p><h1>${isEnd ? `End of Round ${roundNumber}` : `Round ${roundNumber}`}</h1><p>${escapeHtml(isEnd ? "The scoreboard is up next." : roundTitle || "The next round is about to begin.")}</p></div></section></main>`, true);
+}
+
+function updateDoorChoicePlayingState() {
+  if (view !== "player" || state.phase !== "door_choice") return;
+  const selectedDoorId = (state.doorPicks || []).find((entry) => entry.playerId === (doorPlayerRecordId || playerId))?.doorId;
+  document.querySelectorAll("[data-choose-door]").forEach((button) => {
+    const selectedDoor = button.dataset.chooseDoor === selectedDoorId;
+    button.classList.toggle("is-selected", selectedDoor);
+    button.disabled = false;
+    const label = button.querySelector(".door-select-label");
+    if (label) label.textContent = selectedDoor ? "Your pick" : "Choose this door";
+  });
+  const selectedDoor = doorBonusDefinition()?.doors?.find((door) => door.id === selectedDoorId);
+  const status = document.querySelector(".door-phone-status");
+  if (status) status.textContent = selectedDoor ? `You picked ${selectedDoor.name}.` : "Choose a door to lock in your chance.";
 }
 
 function renderPlayer() {
@@ -1167,7 +1559,15 @@ function renderPlayer() {
     return;
   }
   if (state.presentationScreen === "title") {
-    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">You’re in, ${escapeHtml(playerName)}</p><h1>${escapeHtml(state.quizTitle || "Quiz night")}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Title screen</p><h2>Get ready to play.</h2><p>${escapeHtml(state.quizSubtitle || "The host will start the first question shortly.")}</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">You’re in, ${escapeHtml(playerName)}</p><h1>${escapeHtml(state.quizTitle || "Quiz night")}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Get ready</p><h2>Get ready to play.</h2><p>${escapeHtml(state.quizSubtitle || "The host will start the first question shortly.")}</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
+    return;
+  }
+  if (state.phase === "complete") {
+    playerFinale();
+    return;
+  }
+  if (["round_end", "round_start"].includes(state.presentationScreen)) {
+    app.innerHTML = playerRoundTransition(state.presentationScreen);
     return;
   }
   if (["door_choice", "door_reveal"].includes(state.phase)) {
@@ -1175,7 +1575,7 @@ function renderPlayer() {
     const selectedPick = (state.doorPicks || []).find((entry) => entry.playerId === playerId);
     const selectedDoor = doorBonusDefinition()?.doors?.find((door) => door.id === (result?.doorId || selectedPick?.doorId));
     const revealCopy = result ? `<div class="personal-door-result ${Number(result.multiplier) < 1 ? "is-penalty" : "is-boost"}"><span>${doorIconSymbol(selectedDoor?.icon)}</span><div><small>${escapeHtml(selectedDoor?.name || "Your door")}</small><strong>${formatMultiplier(result.multiplier)}</strong><p>This multiplier applies to every automatic point you earn in the next round.</p></div></div>` : `<div class="personal-door-result is-neutral"><span>—</span><div><small>No door selected</small><strong>1×</strong><p>You’ll play the next round at the standard multiplier.</p></div></div>`;
-    app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Choose your door"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Pick one. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Feeling lucky?"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Choose your door. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
@@ -1185,7 +1585,8 @@ function renderPlayer() {
   const submissionKey = `quiz-submitted:${roomCode}:${state.questionId || state.question?.id}`;
   const isSubmitted = sessionStorage.getItem(submissionKey) === "true";
   const manualSubmit = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"].includes(state.question?.type);
-  const phaseMessage = state.phase === "locked" ? "Answers are locked." : state.phase === "reveal" ? "Answer revealed." : state.phase === "complete" ? "Thanks for playing—the final leaderboard is on the shared screen." : isSubmitted ? (manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal.") : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically.";
+  const autoSavingMultiBlank = state.question?.type === "multi_fill_in_the_blank";
+  const phaseMessage = state.phase === "locked" ? "Answers are locked." : state.phase === "reveal" ? "Answer revealed." : state.phase === "complete" ? "Thanks for playing—the final leaderboard is on the shared screen." : autoSavingMultiBlank ? (isSubmitted ? "Answers saved. You can keep editing until the host closes the question." : "Answers save automatically as you type.") : isSubmitted ? (manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal.") : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically.";
   const playerType = escapeHtml(state.question?.type || "question");
   app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : ""}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
 }
@@ -1259,10 +1660,11 @@ function setSubmissionStatus(message, className = "") {
   status.className = className;
 }
 
-function queueAutoSubmission() {
-  if (view !== "player" || state.phase !== "open" || !answerReady()) return;
+function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
+  if (view !== "player" || state.phase !== "open" || (!allowEmpty && !answerReady())) return;
+  const isMultiBlank = state.question?.type === "multi_fill_in_the_blank";
   clearTimeout(autoSubmitTimer);
-  setSubmissionStatus("Saving selection…");
+  setSubmissionStatus(isMultiBlank ? "Saving answers…" : "Saving selection…");
   autoSubmitTimer = setTimeout(() => {
     const answer = structuredClone(selected);
     const questionId = state.questionId || state.question?.id || "sample-question";
@@ -1277,13 +1679,13 @@ function queueAutoSubmission() {
         state.submitted[playerId] = answer;
         sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
         sendSubmission(answer);
-        setSubmissionStatus("Selection saved. You can change it until reveal.", "submitted");
+        setSubmissionStatus(isMultiBlank ? "Answers saved. You can keep editing until the host closes the question." : "Selection saved. You can change it until reveal.", "submitted");
       } catch (error) {
         recordDiagnostic("auto-submit-answer", error, { roomCode, questionId });
-        setSubmissionStatus("Selection was not saved. Tap it again to retry.", "submitted locked");
+        setSubmissionStatus(isMultiBlank ? "Answers were not saved. Edit a field to retry." : "Selection was not saved. Tap it again to retry.", "submitted locked");
       }
     });
-  }, 40);
+  }, delay);
 }
 
 function updateMatchingSelectAvailability() {
@@ -1298,6 +1700,9 @@ function updateMatchingSelectAvailability() {
 }
 
 function attachEvents() {
+  if (view === "host" && ["round_end", "round_scoreboard", "round_start"].includes(state.presentationScreen)) {
+    document.querySelectorAll('.host-actions [data-phase="open"]').forEach((button) => button.remove());
+  }
   document.querySelector("[data-create-room]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -1378,11 +1783,22 @@ function attachEvents() {
     queueAutoSubmission();
   }));
   document.querySelector("[data-text-answer]")?.addEventListener("input", (event) => { selected = event.target.value; const submit = document.querySelector("[data-submit]"); if (submit) submit.disabled = !answerReady(); });
+  document.querySelectorAll("[data-multi-blank]").forEach((input) => input.addEventListener("input", () => {
+    selected = { ...selectedObject(), [input.dataset.multiBlank]: input.value };
+    queueAutoSubmission({ allowEmpty: true, delay: 40 });
+  }));
   document.querySelectorAll("[data-drag-item]").forEach((card) => card.addEventListener("pointerdown", startDrag));
   document.querySelectorAll("[data-phase]").forEach((button) => button.addEventListener("click", () => button.dataset.phase === "locked" ? lockQuestion() : setPhase(button.dataset.phase)));
   document.querySelector("[data-reveal-question]")?.addEventListener("click", revealQuestion);
   document.querySelector("[data-reveal-doors]")?.addEventListener("click", revealDoorRewards);
-  document.querySelector("[data-next]")?.addEventListener("click", advanceQuestion);
+  document.querySelector("[data-reveal-final-podium]")?.addEventListener("click", revealFinalPodium);
+  document.querySelector("[data-show-final-scores]")?.addEventListener("click", showFinalScores);
+  document.querySelector("[data-next]")?.addEventListener("click", showNextScreen);
+  document.querySelectorAll("[data-next-screen]").forEach((button) => button.addEventListener("click", showNextScreen));
+  document.querySelectorAll("[data-previous]").forEach((button) => button.addEventListener("click", showPreviousScreen));
+  document.querySelector("[data-show-round-scoreboard]")?.addEventListener("click", showRoundScoreboard);
+  document.querySelector("[data-open-door-choice]")?.addEventListener("click", () => openDoorChoice(Number(state.targetRoundIndex)));
+  document.querySelector("[data-start-round]")?.addEventListener("click", () => startRound(Number(state.targetRoundIndex)));
   document.querySelectorAll("[data-choose-door]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "player" || state.phase !== "door_choice") return;
     const doorId = button.dataset.chooseDoor;
@@ -1396,7 +1812,7 @@ function attachEvents() {
       state.doorPicks = [...(state.doorPicks || []).filter((entry) => entry.playerId !== playerId), payload];
       localChannel.postMessage({ type: "door-choice", payload });
       realtimeChannel?.send({ type: "broadcast", event: "door-choice", payload });
-      render();
+      updateDoorChoicePlayingState();
     } catch (error) {
       recordDiagnostic("door-choice", error, { roomCode, doorId });
       alert(`Your door was not saved. Please try again.\n\n${error.message}`);
@@ -1469,7 +1885,7 @@ function attachEvents() {
   });
   document.querySelectorAll("[data-audio-command]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "host" || !hostQuizDefinition) return;
-    state.audioCommand = { id: crypto.randomUUID(), action: button.dataset.audioCommand, audioScope: button.dataset.audioScope, questionId: button.dataset.audioScope === "question" ? hostQuestion.id : null };
+    state.audioCommand = { id: crypto.randomUUID(), action: button.dataset.audioCommand, audioScope: button.dataset.audioScope, audioKey: button.dataset.audioKey || null, questionId: button.dataset.audioScope === "question" ? hostQuestion.id : null };
     await persistHostState();
     emit();
   }));
@@ -1518,14 +1934,22 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (view !== "host") return;
-  if (event.key === "?" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) document.querySelector("[data-toggle-shortcuts]")?.click();
-  if (event.code === "Space" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
+  const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+  if (event.key === "?" && !editing) document.querySelector("[data-toggle-shortcuts]")?.click();
+  if (event.code === "Space" && !editing) {
     const audioButton = document.querySelector('[data-audio-command="play"]');
     if (audioButton) { event.preventDefault(); audioButton.click(); return; }
   }
-  if (event.key.toLowerCase() === "n" && state.phase === "lobby") setPhase("open");
-  if (event.key.toLowerCase() === "n" && state.phase === "reveal") advanceQuestion();
-  if (event.key.toLowerCase() === "n" && state.phase === "door_reveal") advanceQuestion();
+  if (!editing && (event.key.toLowerCase() === "n" || event.key === "ArrowRight")) {
+    event.preventDefault();
+    showNextScreen();
+    return;
+  }
+  if (!editing && (event.key.toLowerCase() === "p" || event.key === "ArrowLeft")) {
+    event.preventDefault();
+    showPreviousScreen();
+    return;
+  }
   if (event.key.toLowerCase() === "r" && state.phase === "door_choice") revealDoorRewards();
   if (event.key.toLowerCase() === "r" && ["open", "locked"].includes(state.phase)) revealQuestion();
 });
