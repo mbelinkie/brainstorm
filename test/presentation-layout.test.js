@@ -81,6 +81,16 @@ test("presentation reserves one title QR and uses a large corner QR with two-col
   assert.match(brand, /presentation-card--intermission \.player-logo--presentation \{[^}]*width:min\(100%,150px\)/);
 });
 
+test("round-transition scoreboard spans the full presenter canvas", () => {
+  assert.match(styles, /\.is-presentation \.presentation-card--round-transition\{grid-row:1\/-1\}/);
+});
+
+test("piano-intro answer reveals size their grid to the available card height", () => {
+  assert.match(styles, /presentation-card--multi_fill_in_the_blank\{display:grid;grid-template-rows:auto auto minmax\(0,1fr\)\}/);
+  assert.match(styles, /multi-blank-board\{min-height:0;height:auto;grid-template-rows:auto minmax\(0,1fr\)/);
+  assert.match(styles, /multi-blank-grid\{min-height:0;height:auto;grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
+});
+
 test("shared-screen labels have presentation-specific legibility floors", () => {
   assert.match(brand, /\.is-presentation \.eyebrow \{[^}]*font-size: clamp\(17px,2\.1vh,25px\)/);
   assert.match(brand, /\.is-presentation \.presenter-join-qr--corner \{[^}]*font-size: clamp\(18px,2\.2vh,25px\)/);
@@ -111,6 +121,7 @@ test("the host runs a three-cue finale with a podium, winner confetti, and QR-fr
   assert.match(app, /const cornerJoinQr = isFullscreenFinale \? ""/);
   assert.match(styles, /presentation-final-score-list/);
   assert.match(styles, /podium-place--1/);
+  assert.match(styles, /\.presentation-finale--podium \.player-logo--podium \{ transform: none; \}/);
 });
 
 test("finale drumroll and closing music are host-authored presentation cues", () => {
