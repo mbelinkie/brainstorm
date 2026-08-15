@@ -10,6 +10,7 @@ const migration = readFileSync(new URL("../supabase/migrations/0021_player_logos
 test("players select a square logo before joining", () => {
   assert.match(app, /name="player-logo"/);
   assert.match(app, /player-logo-picker/);
+  assert.ok(app.indexOf("player-logo-picker") < app.indexOf("player-join-action"));
   assert.match(app, /sessionStorage\.setItem\("quizPlayerLogoKey"/);
   assert.match(api, /p_logo_key: logoKey/);
 });

@@ -295,15 +295,6 @@ async function startRoundEnd(targetRoundIndex) {
   await persistHostState(); emit(); render();
 }
 
-async function showRoundScoreboard() {
-  if (state.presentationScreen !== "round_end") return;
-  rememberCurrentScreen();
-  state.presentationScreen = "round_scoreboard";
-  state.intermissionStage = "scoreboard";
-  cueBetweenRoundAudio("scoreboard");
-  await persistHostState(); emit(); render();
-}
-
 async function openDoorChoice(targetRoundIndex) {
   rememberCurrentScreen();
   state = {
@@ -424,11 +415,17 @@ async function showNextScreen() {
   if (state.phase === "door_choice") return revealDoorRewards();
   if (state.phase === "door_reveal") return advanceQuestion();
   if (state.phase === "lobby") {
-    if (state.presentationScreen === "round_end") return showRoundScoreboard();
+    // The end-of-round card reveals its own scoreboard after the hero. Do not
+    // advance into a second scoreboard state before the door choice.
+    if (state.presentationScreen === "round_end") return doorBonusEnabled() ? openDoorChoice(Number(state.targetRoundIndex)) : startRound(Number(state.targetRoundIndex));
+    // Keep rooms that were saved on the retired intermediate screen movable.
     if (state.presentationScreen === "round_scoreboard") return doorBonusEnabled() ? openDoorChoice(Number(state.targetRoundIndex)) : startRound(Number(state.targetRoundIndex));
     return setPhase("open");
   }
-  if (state.phase === "open") return lockQuestion();
+  // “Next” should match the primary host action: lock, score, and reveal in
+  // one step. Leaving this as lockQuestion() made a right-arrow press appear
+  // to refresh the presentation before a second press actually revealed it.
+  if (state.phase === "open") return revealQuestion();
   if (state.phase === "locked") return revealQuestion();
   if (state.phase === "reveal") return advanceQuestion();
 }
@@ -1361,7 +1358,7 @@ function renderHost() {
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
   const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>` : "";
   const intermissionAction = state.presentationScreen === "round_end"
-    ? '<button class="btn btn-primary" data-show-round-scoreboard>Show scoreboard</button>'
+    ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_scoreboard"
     ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_start"
@@ -1404,8 +1401,11 @@ function presenterIntermission() {
 function roundTransitionCard(stage) {
   const isEnd = stage === "round_end";
   const roundNumber = isEnd ? Number(state.question?.round || 1) : Number(state.targetRoundIndex) + 1;
-  const roundTitle = isEnd ? state.question?.roundTitle : hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title;
-  return `<section class="presentation-card presentation-card--round-transition presentation-card--${stage}" aria-live="polite"><div class="round-transition-scoreboard">${presentationLeaderboard()}</div><div class="round-transition-splash"><p class="eyebrow">${isEnd ? "Round complete" : "Get ready"}</p><h2>${isEnd ? `End of Round ${roundNumber}` : `Round ${roundNumber}`}</h2><p>${escapeHtml(isEnd ? "Check the scoreboard" : roundTitle || "The next round is about to begin")}</p></div></section>`;
+  const scoreboard = isEnd ? `<div class="round-transition-scoreboard">${presentationLeaderboard()}</div>` : "";
+  const hero = isEnd
+    ? `<p class="eyebrow">Round complete</p><h2>End of Round ${roundNumber}</h2>`
+    : `<h2>Round ${roundNumber}</h2>`;
+  return `<section class="presentation-card ${isEnd ? "presentation-card--intermission" : "presentation-card--round-start"} presentation-card--round-transition presentation-card--${stage}" aria-live="polite">${scoreboard}<div class="round-transition-splash">${hero}</div></section>`;
 }
 
 function presentationTitlePage() {
@@ -1436,34 +1436,35 @@ function confettiMarkup(count = 52) {
 }
 
 function finalSuspenseCard() {
-  return `<section class="presentation-finale presentation-finale--suspense" aria-live="polite"><div class="finale-spotlight" aria-hidden="true"></div><div class="finale-suspense-copy"><p class="eyebrow">Final reveal</p><h1>And the winner is…</h1><div class="finale-drumbeat" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><p>One more moment.</p></div></section>`;
+  return `<section class="presentation-finale presentation-finale--suspense" aria-live="polite"><div class="finale-spotlight" aria-hidden="true"></div><div class="finale-suspense-copy"><p class="eyebrow">Final reveal</p><h1>And the<br>winner is…</h1><div class="finale-drumbeat" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></div></section>`;
 }
 
 function finalPodiumCard() {
   const winners = rankedPlayers().slice(0, 3);
   const places = [
-    { rank: 2, label: "Second place", medal: "🥈" },
-    { rank: 1, label: "First place", medal: "🏆" },
-    { rank: 3, label: "Third place", medal: "🥉" }
+    { rank: 2 },
+    { rank: 1 },
+    { rank: 3 }
   ];
-  const blocks = places.map(({ rank, label, medal }) => {
+  const blocks = places.map(({ rank }) => {
     const player = winners[rank - 1];
-    return `<article class="podium-place podium-place--${rank} ${player ? "" : "is-empty"}"><span class="podium-medal" aria-hidden="true">${medal}</span>${player ? `${playerLogoMarkup(player, "player-logo--podium")}<p>${escapeHtml(label)}</p><h2>${escapeHtml(player.name)}</h2><strong>${Number(player.points) || 0}<small> pts</small></strong>` : `<p>${escapeHtml(label)}</p><h2>—</h2>`}<span class="podium-plinth">${rank}</span></article>`;
+    return `<article class="podium-place podium-place--${rank} ${player ? "" : "is-empty"}">${player ? `<div class="podium-player-details"><h2>${escapeHtml(player.name)}</h2><strong>${Number(player.points) || 0}<small> pts</small></strong></div>${playerLogoMarkup(player, "player-logo--podium")}` : `<div class="podium-player-details"><h2>—</h2></div>`}<span class="podium-plinth">${rank}</span></article>`;
   }).join("");
-  return `<section class="presentation-finale presentation-finale--podium" aria-live="polite">${confettiMarkup()}<div class="podium-heading"><p class="eyebrow">Final results</p><h1>Take the podium!</h1></div><div class="podium">${blocks}</div></section>`;
+  return `<section class="presentation-finale presentation-finale--podium" aria-live="polite">${confettiMarkup()}<div class="podium-heading"><h1>Take the podium!</h1></div><div class="podium">${blocks}</div></section>`;
 }
 
 function finalScoreTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
-  const titleIcon = titlePage.icon || "♫";
-  const musicLogo = `<span class="presentation-title-music-logo" aria-hidden="true">${escapeHtml(titleIcon)}</span>`;
+  // The closing screen is about the players and their final standing, so it
+  // intentionally omits the circular music-note title treatment.
   const themeArt = titlePage.imageAssetId
-    ? `<div class="presentation-title-art-with-logo"><img class="presentation-title-art" data-private-image="${escapeHtml(titlePage.imageAssetId)}" alt="${escapeHtml(titlePage.imageAlt || "Quiz theme artwork")}" />${musicLogo}</div>`
-    : musicLogo;
+    ? `<img class="presentation-title-art" data-private-image="${escapeHtml(titlePage.imageAssetId)}" alt="${escapeHtml(titlePage.imageAlt || "Quiz theme artwork")}" />`
+    : "";
+  const artMarkup = themeArt ? `<div class="presentation-final-art">${themeArt}</div>` : "";
   const players = rankedPlayers();
   const list = players.length ? `<ol class="presentation-final-score-list">${players.map((player, index) => `<li class="presentation-final-score presentation-final-score--${index + 1}"><span>${index + 1}</span>${playerLogoMarkup(player, "player-logo--final-score")}<strong>${escapeHtml(player.name)}</strong><b>${Number(player.points) || 0}<small> pts</small></b></li>`).join("")}</ol>` : "<p class=\"presentation-final-score-empty\">No final scores yet.</p>";
-  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p><div class="presentation-final-art">${themeArt}</div></div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p>${artMarkup}</div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
 }
 
 function presentationCornerJoinQr() {
@@ -1492,7 +1493,7 @@ function renderPresenter() {
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
       ? presenterIntermission()
-    : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(presenterQuestion?.revealImageAssetId || presenterQuestion?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite">${state.phase === "reveal" ? "" : `<p class="eyebrow">${state.phase === "locked" ? "Answers are in" : `Question ${questionNumber}`}</p>`}<h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
+    : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(presenterQuestion?.revealImageAssetId || presenterQuestion?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite"><p class="eyebrow">${state.phase === "locked" ? "Answers are in" : state.phase === "reveal" ? "Answer reveal" : `Question ${questionNumber}`}</p><h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
   const displayedRound = ["door_choice", "door_reveal"].includes(state.phase) ? Number(state.targetRoundIndex) + 1 : state.question?.round || 1;
   const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Brainstorm";
   const isFullscreenFinale = ["final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen);
@@ -1524,7 +1525,7 @@ function playerFinale() {
     return;
   }
   if (state.presentationScreen === "final_podium") {
-    app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--podium ${isWinner ? "is-winner" : ""}">${isWinner ? confettiMarkup(34) : ""}<p class="eyebrow">Final results</p><span class="player-finale-medal" aria-hidden="true">${isWinner ? "🏆" : place === 2 ? "🥈" : place === 3 ? "🥉" : "✦"}</span><h1>${isWinner ? "You won!" : "The podium is in!"}</h1>${player ? `<p class="player-finale-rank">You finished <strong>#${place}</strong> with <strong>${Number(player.points) || 0} points</strong>.</p>` : "<p class=\"player-finale-rank\">Final scores are on the shared screen.</p>"}</section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--podium ${isWinner ? "is-winner" : ""}">${isWinner ? confettiMarkup(34) : ""}<p class="eyebrow">Final results</p>${player ? playerLogoMarkup(player, "player-logo--player-finale") : ""}<h1>${isWinner ? "You won!" : "The podium is in!"}</h1>${player ? `<p class="player-finale-rank">You finished <strong>#${place}</strong> with <strong>${Number(player.points) || 0} points</strong>.</p>` : "<p class=\"player-finale-rank\">Final scores are on the shared screen.</p>"}</section></main>`, true);
     return;
   }
   app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--scores"><p class="eyebrow">Thanks for playing</p><h1>Final scores</h1>${player ? `<p class="player-finale-rank">You finished <strong>#${place}</strong> with <strong>${Number(player.points) || 0} points</strong>.</p>` : ""}${playerScoreCards(players, 8)}</section></main>`, true);
@@ -1533,8 +1534,11 @@ function playerFinale() {
 function playerRoundTransition(stage) {
   const isEnd = stage === "round_end";
   const roundNumber = isEnd ? Number(state.question?.round || 1) : Number(state.targetRoundIndex) + 1;
-  const roundTitle = isEnd ? state.question?.roundTitle : hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title;
-  return shell(`<main class="player-main player-main--intermission"><section class="player-card player-card--intermission player-round-transition"><div class="player-transition-scoreboard">${playerScoreCards()}</div><div class="player-transition-splash"><p class="eyebrow">${isEnd ? "Round complete" : "Get ready"}</p><h1>${isEnd ? `End of Round ${roundNumber}` : `Round ${roundNumber}`}</h1><p>${escapeHtml(isEnd ? "The scoreboard is up next." : roundTitle || "The next round is about to begin.")}</p></div></section></main>`, true);
+  const scoreboard = isEnd ? `<div class="player-transition-scoreboard">${playerScoreCards()}</div>` : "";
+  const hero = isEnd
+    ? `<p class="eyebrow">Round complete</p><h1>End of Round ${roundNumber}</h1>`
+    : `<h1>Round ${roundNumber}</h1>`;
+  return shell(`<main class="player-main player-main--intermission"><section class="player-card player-card--intermission player-round-transition player-round-transition--${stage}">${scoreboard}<div class="player-transition-splash">${hero}</div></section></main>`, true);
 }
 
 function updateDoorChoicePlayingState() {
@@ -1555,7 +1559,7 @@ function updateDoorChoicePlayingState() {
 function renderPlayer() {
   if (params.has("room") && !playerName) {
     const logoChoices = PLAYER_LOGOS.map((logo) => `<label class="player-logo-choice"><input type="radio" name="player-logo" value="${logo.key}" aria-label="${logo.label}" ${playerLogoKey === logo.key ? "checked" : ""} /><span class="player-logo player-logo--${logo.key}" aria-hidden="true">${playerLogoArtwork(logo)}</span></label>`).join("");
-    app.innerHTML = shell(`<main class="player-main player-main--join">${brandTopbar()}<section class="player-card player-card--join"><section class="player-question"><div class="player-join-controls"><label class="field"><span>Display name</span><input data-player-name maxlength="32" autocomplete="nickname" placeholder="Your name" /></label><div class="submit-bar"><button class="btn btn-primary" data-join-room>Join quiz</button></div></div><fieldset class="player-logo-picker"><legend>Player logo</legend><div>${logoChoices}</div></fieldset></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--join">${brandTopbar()}<section class="player-card player-card--join"><section class="player-question"><div class="player-join-controls"><label class="field"><span>Display name</span><input data-player-name maxlength="32" autocomplete="nickname" placeholder="Your name" /></label></div><fieldset class="player-logo-picker"><legend>Choose your player logo</legend><div>${logoChoices}</div></fieldset><div class="player-join-action"><button class="btn btn-primary" data-join-room>Join quiz</button></div></section></section></main>`, true);
     return;
   }
   if (state.presentationScreen === "title") {
@@ -1796,7 +1800,6 @@ function attachEvents() {
   document.querySelector("[data-next]")?.addEventListener("click", showNextScreen);
   document.querySelectorAll("[data-next-screen]").forEach((button) => button.addEventListener("click", showNextScreen));
   document.querySelectorAll("[data-previous]").forEach((button) => button.addEventListener("click", showPreviousScreen));
-  document.querySelector("[data-show-round-scoreboard]")?.addEventListener("click", showRoundScoreboard);
   document.querySelector("[data-open-door-choice]")?.addEventListener("click", () => openDoorChoice(Number(state.targetRoundIndex)));
   document.querySelector("[data-start-round]")?.addEventListener("click", () => startRound(Number(state.targetRoundIndex)));
   document.querySelectorAll("[data-choose-door]").forEach((button) => button.addEventListener("click", async () => {
@@ -1920,7 +1923,8 @@ function attachEvents() {
   });
   document.querySelectorAll("[data-join-qr]").forEach((qrCanvas) => {
     const isPresenterCornerQr = Boolean(qrCanvas.closest(".presenter-join-qr--corner"));
-    const width = isPresenterCornerQr ? 144 : 150;
+    const isTitleScreenQr = Boolean(qrCanvas.closest(".presentation-title-join"));
+    const width = isPresenterCornerQr ? 144 : isTitleScreenQr ? 300 : 150;
     import("https://esm.sh/qrcode@1.5.4")
       .then(({ toCanvas }) => toCanvas(qrCanvas, `${location.origin}${location.pathname}?view=player&room=${encodeURIComponent(roomCode)}`, { width, margin: 1, color: { dark: "#240f6e", light: "#ffffff" } }))
       .catch(() => qrCanvas.remove());

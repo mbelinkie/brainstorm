@@ -484,6 +484,8 @@ body.is-presentation .player-shell::after { content: none; }
 .player-logo-picker { min-width: 0; margin: 22px 0; padding: 0; border: 0; }
 .player-logo-picker legend { margin-bottom: 10px; color: rgba(200,225,252,.82); font-size: 13px; font-weight: 700; }
 .player-logo-picker>div { display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; max-height: 520px; padding-right: 5px; overflow-y: auto; overscroll-behavior: contain; }
+.player-join-action { position: sticky; z-index: 3; bottom: 0; margin: 0 -4px; padding: 14px 4px calc(4px + env(safe-area-inset-bottom)); background: linear-gradient(0deg,rgba(23,6,77,.98) 0%,rgba(23,6,77,.90) 78%,transparent 100%); backdrop-filter: blur(10px); }
+.player-join-action .btn { width: 100%; }
 .player-logo-choice { position: relative; display: grid; grid-template-columns: 96px minmax(0,1fr); min-width: 0; align-items: center; justify-items: start; gap: 16px; padding: 10px; border: 2px solid transparent; border-radius: 18px; color: rgba(255,255,255,.72); cursor: pointer; }
 .player-logo-choice .player-logo { width: 96px; border-radius: 20px; }
 .player-logo-choice:hover { background: rgba(255,255,255,.07); }

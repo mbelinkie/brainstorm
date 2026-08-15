@@ -196,8 +196,11 @@ test("presenter applies audio-only updates without remounting the shared screen"
 });
 
 test("host navigation uses one next and previous control for keys, arrows, and visible buttons", () => {
+  const next = app.slice(app.indexOf("async function showNextScreen"), app.indexOf("let playerId"));
   assert.match(app, /async function showNextScreen\(\)/);
   assert.match(app, /async function showPreviousScreen\(\)/);
+  assert.match(next, /if \(state\.phase === "open"\) return revealQuestion\(\)/);
+  assert.doesNotMatch(next, /if \(state\.phase === "open"\) return lockQuestion\(\)/);
   assert.match(app, /data-next-screen/);
   assert.match(app, /data-previous/);
   assert.match(app, /event\.key === "ArrowRight"/);

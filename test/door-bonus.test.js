@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { validateQuiz } from "../quiz-validation.js";
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const styles = fs.readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const api = fs.readFileSync(new URL("../room-api.js", import.meta.url), "utf8");
 const migration = fs.readFileSync(new URL("../supabase/migrations/0025_between_round_door_bonus.sql", import.meta.url), "utf8");
 const bank = JSON.parse(fs.readFileSync(new URL("../music-trivia.question-bank.json", import.meta.url), "utf8"));
@@ -47,13 +48,20 @@ test("all three game surfaces expose the door lifecycle", () => {
   assert.match(app, /No door selected/);
 });
 
-test("between-round flow stages the scoreboard, door choice, and next-round card", () => {
+test("between-round flow reveals one scoreboard, then moves to door choice and the next-round card", () => {
   assert.match(app, /async function startRoundEnd/);
-  assert.match(app, /async function showRoundScoreboard/);
   assert.match(app, /async function startRound/);
   assert.match(app, /End of Round \$\{roundNumber\}/);
   assert.match(app, /Feeling lucky\?/);
   assert.match(app, /Choose your door\./);
+  assert.match(app, /if \(state\.presentationScreen === "round_end"\) return doorBonusEnabled\(\) \? openDoorChoice/);
+  assert.doesNotMatch(app, /data-show-round-scoreboard/);
+  assert.match(app, /isEnd \? "presentation-card--intermission" : "presentation-card--round-start"/);
+  assert.doesNotMatch(app, /Check the scoreboard|The scoreboard is up next/);
+  assert.match(app, /const scoreboard = isEnd \? `<div class="round-transition-scoreboard">\$\{presentationLeaderboard\(\)\}<\/div>` : ""/);
+  assert.match(app, /const scoreboard = isEnd \? `<div class="player-transition-scoreboard">\$\{playerScoreCards\(\)\}<\/div>` : ""/);
+  assert.match(styles, /@keyframes round-title-arrival/);
+  assert.doesNotMatch(styles, /player-round-transition:has\(.player-transition-splash h1\)\{background:#fff\}/);
   assert.match(app, /function updateDoorChoicePlayingState/);
   assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nfunction presenterRenderKey/)?.[0] || "", /doorPicks:/);
 });

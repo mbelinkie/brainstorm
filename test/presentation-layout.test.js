@@ -55,6 +55,12 @@ test("image-selection answers keep their full-width album grid when reveal art i
   assert.match(styles, /presentation-card--with-side-image \.question-image,.+?z-index:1/);
 });
 
+test("answer reveal keeps the shared-screen answer grid anchored", () => {
+  assert.match(app, /state\.phase === "reveal" \? "Answer reveal"/);
+  assert.match(styles, /presentation-card--reveal \.answer\.is-correct \{[\s\S]*animation: presentation-correct-highlight/);
+  assert.match(styles, /@keyframes presentation-correct-highlight \{[\s\S]*box-shadow/);
+});
+
 test("next-question navigation follows the authored question ID, not a restored display count", () => {
   assert.match(app, /function questionPosition\(questionId = hostQuestion\?\.id\)/);
   assert.match(app, /const current = questionPosition\(\) \|\|/);
@@ -67,7 +73,7 @@ test("presenter timer is a prominent shared-screen control", () => {
 
 test("presentation reserves one title QR and uses a large corner QR with two-column intermission cards", () => {
   assert.match(app, /const isPresenterCornerQr = Boolean\(qrCanvas\.closest\("\.presenter-join-qr--corner"\)\)/);
-  assert.match(app, /const width = isPresenterCornerQr \? 144 : 150/);
+  assert.match(app, /const width = isPresenterCornerQr \? 144 : isTitleScreenQr \? 300 : 150/);
   assert.match(app, /function presentationCornerJoinQr\(\) \{[\s\S]*<span>\$\{escapeHtml\(roomCode\)\}<\/span>/);
   assert.match(app, /brandTopbar\(false, false, state\.presentationScreen === "title"\)/);
   assert.match(app, /return `<section class="presentation-card presentation-card--intermission">\$\{presentationLeaderboard\(\)\}<\/section>`/);
@@ -111,4 +117,12 @@ test("finale drumroll and closing music are host-authored presentation cues", ()
   assert.match(app, /cueFinaleAudio\("drumroll"\)/);
   assert.match(app, /cueFinaleAudio\("outro"\)/);
   assert.match(app, /command\?\.audioScope === "finale"/);
+});
+
+test("movie posters and category labels remain legible in presenter mode", () => {
+  assert.match(styles, /presentation-card--image_selection \.answer-grid \{[\s\S]*grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /presentation-card--image_selection \.answer \{[\s\S]*height: auto/);
+  assert.match(styles, /presentation-card--categorize \.drag-bucket h3 \{[\s\S]*font-size: clamp\(26px, 3\.6vh, 48px\)/);
+  assert.match(app, /<h1>And the<br>winner is…<\/h1>/);
+  assert.doesNotMatch(app.slice(app.indexOf("function finalSuspenseCard"), app.indexOf("function finalPodiumCard")), /One more moment\./);
 });
