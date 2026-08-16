@@ -66,6 +66,14 @@ test("between-round flow reveals one scoreboard, then moves to door choice and t
   assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nfunction presenterRenderKey/)?.[0] || "", /doorPicks:/);
 });
 
+test("advancing within a round opens the next question without a leaderboard", () => {
+  const advance = app.slice(app.indexOf("async function advanceQuestion"), app.indexOf("function cueBetweenRoundAudio"));
+  assert.match(advance, /nextRound !== roundIndex/);
+  assert.match(advance, /state\.phase = "open"/);
+  assert.match(advance, /state\.presentationScreen = "question"/);
+  assert.doesNotMatch(advance, /presentationScreen = "intermission"/);
+});
+
 test("between-round sounds remain optional but validate private asset IDs", () => {
   const quiz = { id: "quiz", title: "Quiz", betweenRoundBonus: structuredClone(bank.betweenRoundBonus), rounds: [{ id: "round", title: "Round", questions: [{ id: "q", type: "single_choice", prompt: "Question?", points: 1, options: [{ id: "a", label: "A" }, { id: "b", label: "B" }], correctOptionIds: ["a"] }] }] };
   quiz.betweenRoundBonus.audio = { doorChoice: { mediaAssetId: "not-a-private-asset" } };

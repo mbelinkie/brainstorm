@@ -19,6 +19,9 @@ const AUTHOR_EMAIL_KEY = "quiz-control:last-author-email:v1";
 const AUDIO_NORMALIZATION_TARGET_DBFS = -16;
 const AUDIO_NORMALIZATION_PEAK_CEILING = 10 ** (-1 / 20);
 const AUDIO_NORMALIZATION_GATE = 10 ** (-50 / 20);
+// Door-choice music deliberately sits below the quiz clips. It is rendered
+// into the stored WAV at half amplitude instead of being loudness-normalized.
+const DOOR_BACKGROUND_AUDIO_GAIN = .5;
 let bank;
 let selection = { roundIndex: 0, questionIndex: 0 };
 let originalBank;
@@ -145,8 +148,9 @@ function validateQuiz(candidate) {
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
   const titleAudio = candidate.titlePage?.audio;
+  const validKaraoke = (cue) => cue.karaoke === undefined || (Array.isArray(cue.karaoke) && cue.karaoke.length <= 500 && cue.karaoke.every((segment) => segment && Object.getPrototypeOf(segment) === Object.prototype && Number.isFinite(segment.startMs) && segment.startMs >= cue.startMs && Number.isFinite(segment.endMs) && segment.endMs >= segment.startMs && segment.endMs <= cue.endMs && Number.isInteger(segment.startIndex) && segment.startIndex >= 0 && Number.isInteger(segment.endIndex) && segment.endIndex > segment.startIndex && segment.endIndex <= cue.text.length));
   if (titleAudio?.captionSourceName !== undefined && (typeof titleAudio.captionSourceName !== "string" || titleAudio.captionSourceName.length > 255)) errors.push("Title page caption source name must be a string of 255 characters or fewer.");
-  if (titleAudio?.captions !== undefined && (!Array.isArray(titleAudio.captions) || titleAudio.captions.length > 500 || titleAudio.captions.some((cue) => !cue || Object.getPrototypeOf(cue) !== Object.prototype || !Number.isFinite(cue.startMs) || cue.startMs < 0 || !Number.isFinite(cue.endMs) || cue.endMs <= cue.startMs || typeof cue.text !== "string" || !cue.text.trim() || cue.text.length > 500))) errors.push("Title page captions must contain at most 500 valid timed text cues.");
+  if (titleAudio?.captions !== undefined && (!Array.isArray(titleAudio.captions) || titleAudio.captions.length > 500 || titleAudio.captions.some((cue) => !cue || Object.getPrototypeOf(cue) !== Object.prototype || !Number.isFinite(cue.startMs) || cue.startMs < 0 || !Number.isFinite(cue.endMs) || cue.endMs <= cue.startMs || typeof cue.text !== "string" || !cue.text.trim() || cue.text.length > 500 || !validKaraoke(cue)))) errors.push("Title page captions must contain at most 500 valid timed text cues.");
   for (const [key, audio] of Object.entries(candidate.finale?.audio || {})) if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Finale ${key} has an invalid private audio asset ID.`);
   if (candidate.betweenRoundBonus?.enabled) {
     const doors = candidate.betweenRoundBonus.doors;
@@ -376,11 +380,13 @@ function betweenRoundSoundEditor(config) {
     ["roundEnd", "End-of-round transition", "A short sting when the End of Round card arrives."],
     ["scoreboard", "Scoreboard transition", "A short sting as the scoreboard is revealed."],
     ["doorChoice", "Door selection", "Suspenseful music that begins when players choose a door."],
+    ["doorReveal", "The doors are open", "Plays automatically when the selected doors open and rewards are revealed."],
     ["roundStart", "Next-round transition", "A short sting when the Round card arrives."]
   ];
   return `<section class="between-round-sounds"><div><span class="section-label">Auto-triggered presentation sound</span><p class="audio-editor-help">Every slot is optional. These clips play only in the shared Presentation tab after its one-time sound setup; player phones stay silent.</p></div><div class="between-round-sound-grid">${slots.map(([key, label, help]) => {
     const audio = config.audio?.[key] || {};
-    return `<article class="between-round-sound"><strong>${label}</strong><p>${help}</p>${privateAudioPreview(audio.mediaAssetId, `${label} preview`, `between:${key}`)}<label class="button button-quiet option-upload">Trim and upload clip<input data-upload-between-round-audio="${key}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><label class="field"><span>Reuse private audio</span><select data-existing-between-round-audio="${key}"><option value="">No auto sound</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></label>${audio.mediaAssetId ? `<button class="button button-danger asset-unlink" data-remove-between-round-audio="${key}" type="button">Remove sound</button>` : ""}</article>`;
+    const doorVolumeControl = key === "doorChoice" && audio.mediaAssetId ? `<p class="audio-editor-help">Door background music is exempt from loudness leveling and must be stored at 50% volume (−6 dB).</p><button class="button button-quiet" data-reduce-door-audio-volume type="button">Render this file at 50% volume</button>` : "";
+    return `<article class="between-round-sound"><strong>${label}</strong><p>${help}</p>${privateAudioPreview(audio.mediaAssetId, `${label} preview`, `between:${key}`)}<label class="button button-quiet option-upload">Trim and upload clip<input data-upload-between-round-audio="${key}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><label class="field"><span>Reuse private audio</span><select data-existing-between-round-audio="${key}"><option value="">No auto sound</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></label>${doorVolumeControl}${audio.mediaAssetId ? `<button class="button button-danger asset-unlink" data-remove-between-round-audio="${key}" type="button">Remove sound</button>` : ""}</article>`;
   }).join("")}</div></section>`;
 }
 
@@ -401,7 +407,7 @@ function titlePageEditor() {
   const opening = titlePage();
   const audio = opening.audio || {};
   const captions = Array.isArray(audio.captions) ? audio.captions : [];
-  const lyricControls = `<div class="field title-caption-editor"><label>Title-screen lyrics</label><div class="option-image-actions"><label class="button button-quiet">${captions.length ? "Replace lyrics" : "Import lyrics"}<input data-import-title-captions type="file" accept=".srt,.ass,application/x-subrip,text/x-ass,text/x-ssa,text/plain" hidden /></label>${captions.length ? '<button class="button button-danger asset-unlink" data-remove-title-captions type="button">Remove lyrics</button>' : ""}</div><small data-title-caption-status>${captions.length ? `${escapeHtml(audio.captionSourceName || "Imported subtitles")} · ${captions.length} cue${captions.length === 1 ? "" : "s"}` : "Optional SRT or ASS captions are parsed locally and stored with this title audio."}</small></div>`;
+  const lyricControls = `<div class="field title-caption-editor"><label>Title-screen lyrics</label><div class="option-image-actions"><label class="button button-quiet">${captions.length ? "Replace lyrics" : "Import lyrics"}<input data-import-title-captions type="file" accept=".srt,.ass,application/x-subrip,text/x-ass,text/x-ssa,text/plain" hidden /></label>${captions.length ? '<button class="button button-danger asset-unlink" data-remove-title-captions type="button">Remove lyrics</button>' : ""}</div><small data-title-caption-status>${captions.length ? `${escapeHtml(audio.captionSourceName || "Imported subtitles")} · ${captions.length} cue${captions.length === 1 ? "" : "s"}` : "Optional SRT or ASS captions are parsed locally and stored with this title audio. ASS karaoke tags (\\k, \\K, \\kf, or \\ko) light up each timed lyric segment."}</small></div>`;
   return `<section class="section section-first title-page-editor"><div class="section-head"><span class="section-label">Opening title page</span><span class="asset-status">Presentation waiting room</span></div><p class="audio-editor-help">This appears before the first question. Add optional transparent theme art and waiting-room music; neither is a scored question.</p><div class="field-grid">${field("Quiz title", "quiz-title", bank.title)}<div class="field"><label>Title-page subtitle</label><textarea data-title-field="subtitle">${escapeHtml(opening.subtitle || "Get your phone ready — we’ll begin shortly.")}</textarea></div><div class="field"><label>Title-card circle icon</label><input data-title-field="icon" maxlength="8" value="${escapeHtml(opening.icon || "♫")}" /><small>Use an emoji or a short symbol; it replaces the yellow music note on the title card.</small></div><div class="field"><label>Theme artwork alt text</label><input data-title-field="imageAlt" value="${escapeHtml(opening.imageAlt || "Quiz theme artwork")}" /></div></div><div class="section-head"><span class="section-label">Theme artwork</span>${imageActionControls("title", '<input data-upload-title-image type="file" accept="image/jpeg,image/png,image/webp" hidden />')}</div><div class="field"><label>Reuse private image</label><select data-existing-title-image><option value="">Choose uploaded image</option>${mediaAssets.filter((asset) => asset.kind === "image").map((asset) => `<option value="${asset.id}" ${asset.id === opening.imageAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${opening.imageAssetId ? `<div class="asset-attached">${attachedImagePreview(opening.imageAssetId, opening.imageAlt || "Title-page art preview")}<p class="asset-status">Title artwork attached</p>${imageReformatButton("title")}<button class="button button-danger asset-unlink" data-remove-title-image type="button">Remove image</button></div>` : ""}<div class="section-head"><span class="section-label">Waiting-room music</span><label class="button button-quiet">Trim and upload clip<input data-upload-title-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">The host alone gets playback controls. Audio plays through Presentation after its one-time sound setup.</p><div class="field-grid">${field("Music label", "title-audio.suggestedWindow", audio.suggestedWindow || "Waiting-room music")}${field("Audio URL (optional fallback)", "title-audio.url", audio.url || "", { type: "url" })}</div><div class="field"><label>Reuse private audio</label><select data-existing-title-audio><option value="">Choose uploaded audio</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${lyricControls}${audio.mediaAssetId ? '<button class="button button-danger asset-unlink" data-remove-title-audio type="button">Remove waiting-room music</button>' : ""}</section>`;
 }
 
@@ -409,6 +415,7 @@ function finaleEditor() {
   const finale = finaleConfig();
   const slots = [
     ["drumroll", "Winner drumroll", "Starts when the host opens the full-screen ‘And the winner is…’ cue."],
+    ["podiumCheer", "Podium cheer", "Starts automatically as soon as the winners’ podium appears."],
     ["outro", "Closing music", "Starts when the host shows the final title-style score screen as people leave."]
   ];
   return `<section class="section finale-editor"><div class="section-head"><div><span class="section-label">Finale audio</span><p class="audio-editor-help">The finale is host-cued: suspense, podium, then final standings. These optional clips play only in the shared Presentation tab.</p></div><span class="asset-status">Host controlled</span></div><div class="between-round-sound-grid">${slots.map(([key, label, help]) => { const audio = finale.audio?.[key] || {}; return `<article class="between-round-sound"><strong>${label}</strong><p>${help}</p>${audio.mediaAssetId ? privateAudioPreview(audio.mediaAssetId, `${label} preview`, `finale:${key}`) : ""}<label class="button button-quiet option-upload">Trim and upload clip<input data-upload-finale-audio="${key}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><label class="field"><span>Reuse private audio</span><select data-existing-finale-audio="${key}"><option value="">No sound</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></label></article>`; }).join("")}</div></section>`;
@@ -498,6 +505,7 @@ function bindEditorEvents() {
   $("[data-import-title-captions]")?.addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const captions = /\.ass$/i.test(file.name) ? parseAss(await file.text()) : parseSrt(await file.text()); titlePage().audio ||= {}; titlePage().audio.captions = captions; titlePage().audio.captionSourceName = file.name.slice(0, 255); markChanged(); renderEditor(); renderPreview(); } catch (error) { const status = $("[data-title-caption-status]"); if (status) status.textContent = `Could not import ${file.name}: ${error.message}`; } finally { event.target.value = ""; } });
   document.querySelectorAll("[data-upload-finale-audio]").forEach((input) => input.addEventListener("change", async (event) => { const audioKey = event.target.dataset.uploadFinaleAudio; try { await uploadPrivateAudio(event.target.files?.[0], { finaleAudioKey: audioKey }); } catch (error) { alert(`Could not upload finale audio: ${error.message}`); $("#save-state").textContent = "Finale audio upload failed"; } finally { event.target.value = ""; } }));
   document.querySelectorAll("[data-upload-between-round-audio]").forEach((input) => input.addEventListener("change", async (event) => { const audioKey = event.target.dataset.uploadBetweenRoundAudio; try { await uploadPrivateAudio(event.target.files?.[0], { betweenRoundAudioKey: audioKey }); } catch (error) { alert(`Could not upload between-round sound: ${error.message}`); $("#save-state").textContent = "Between-round sound upload failed"; } finally { event.target.value = ""; } }));
+  $("[data-reduce-door-audio-volume]")?.addEventListener("click", () => reduceDoorBackgroundAudioVolume().catch((error) => { alert(`Could not reduce the door background music volume: ${error.message}`); $("#save-state").textContent = "Door background music volume update failed"; }));
   document.querySelectorAll("[data-upload-clip-audio]").forEach((input) => input.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0], { clipIndex: Number(event.target.dataset.uploadClipAudio) }); } catch (error) { alert(`Could not upload intro clip: ${error.message}`); $("#save-state").textContent = "Intro clip upload failed"; } finally { event.target.value = ""; } }));
   document.querySelectorAll("[data-upload-image]").forEach((input) => input.addEventListener("change", async (event) => { try { await uploadPrivateImage(event.target.files?.[0], Number(event.target.dataset.uploadImage)); } catch (error) { alert(`Could not upload private image: ${error.message}`); $("#save-state").textContent = "Image upload failed"; } finally { event.target.value = ""; } }));
   $("[data-upload-question-image]")?.addEventListener("change", async (event) => { try { await uploadPrivateImage(event.target.files?.[0], "question-image"); } catch (error) { alert(`Could not upload question image: ${error.message}`); $("#save-state").textContent = "Question image upload failed"; } finally { event.target.value = ""; } });
@@ -648,7 +656,8 @@ async function uploadPrivateAudio(file, target = "question") {
   if (!file.type.startsWith("audio/") || file.size > 26214400) { alert("Choose an audio file up to 25 MB."); return; }
   $("#save-state").textContent = "Preparing audio clip…";
   await saveOriginalMedia(file);
-  const clipped = await chooseAudioClip(file);
+  const doorBackgroundMusic = target?.betweenRoundAudioKey === "doorChoice";
+  const clipped = await chooseAudioClip(file, { normalize: !doorBackgroundMusic, outputGain: doorBackgroundMusic ? DOOR_BACKGROUND_AUDIO_GAIN : 1 });
   if (!clipped) { $("#save-state").textContent = "Audio upload cancelled"; return; }
   if (clipped.blob.size > 26214400) throw new Error("The rendered WAV clip is over 25 MB. Trim it shorter or use a smaller source file.");
   const storagePath = `${currentUser.id}/${crypto.randomUUID()}.wav`;
@@ -666,7 +675,8 @@ async function uploadPrivateAudio(file, target = "question") {
   else { delete question().video; question().audio ||= {}; question().audio.mediaAssetId = asset.id; }
   await loadMediaAssets();
   markChanged();
-  $("#save-state").textContent = `Rendered and loudness-leveled clip uploaded (${formatSeconds(clipped.duration)} · ${formatBytes(clipped.blob.size)}) — publish a new quiz version to use it.`;
+  const processing = doorBackgroundMusic ? "Rendered door background clip uploaded at 50% volume" : "Rendered and loudness-leveled clip uploaded";
+  $("#save-state").textContent = `${processing} (${formatSeconds(clipped.duration)} · ${formatBytes(clipped.blob.size)}) — publish a new quiz version to use it.`;
   renderEditor();
   renderPreview();
 }
@@ -1123,6 +1133,13 @@ function audioBufferToWav(buffer) {
   return new Blob([output], { type: "audio/wav" });
 }
 
+function applyAudioGain(buffer, gain) {
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const samples = buffer.getChannelData(channel);
+    for (let index = 0; index < samples.length; index += 1) samples[index] *= gain;
+  }
+}
+
 function normalizeAudioBuffer(buffer) {
   let peak = 0;
   let sumSquares = 0;
@@ -1140,21 +1157,19 @@ function normalizeAudioBuffer(buffer) {
   const targetRms = 10 ** (AUDIO_NORMALIZATION_TARGET_DBFS / 20);
   const requestedGain = targetRms / inputRms;
   const gain = Math.min(requestedGain, AUDIO_NORMALIZATION_PEAK_CEILING / peak);
-  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    const samples = buffer.getChannelData(channel);
-    for (let index = 0; index < samples.length; index += 1) samples[index] *= gain;
-  }
+  applyAudioGain(buffer, gain);
   const inputDbfs = 20 * Math.log10(inputRms);
   return { gain, inputDbfs, outputDbfs: inputDbfs + 20 * Math.log10(gain) };
 }
 
-function formatNormalization(normalization) {
+function formatNormalization(normalization, outputGain = 1) {
+  if (!normalization) return `Door background music bypasses automatic loudness leveling and is rendered at ${Math.round(outputGain * 100)}% volume (${(20 * Math.log10(outputGain)).toFixed(1)} dB).`;
   if (normalization?.inputDbfs == null) return "Automatic loudness leveling skipped (the selection is silent).";
   const change = 20 * Math.log10(normalization.gain);
   return `Automatic loudness leveling: ${change >= 0 ? "+" : ""}${change.toFixed(1)} dB · target ${AUDIO_NORMALIZATION_TARGET_DBFS} dBFS · peak ceiling −1 dBFS`;
 }
 
-async function renderAudioClip(buffer, { start, end, fadeIn, fadeOut }) {
+async function renderAudioClip(buffer, { start, end, fadeIn, fadeOut }, { normalize = true, outputGain = 1 } = {}) {
   const duration = Math.max(.05, end - start);
   const sampleRate = buffer.sampleRate;
   const offline = new OfflineAudioContext(Math.min(2, buffer.numberOfChannels), Math.ceil(duration * sampleRate), sampleRate);
@@ -1167,15 +1182,21 @@ async function renderAudioClip(buffer, { start, end, fadeIn, fadeOut }) {
   if (outLength) { gain.gain.setValueAtTime(1, Math.max(inLength, duration - outLength)); gain.gain.linearRampToValueAtTime(0, duration); }
   source.start(0, start, duration);
   const rendered = await offline.startRendering();
-  return { buffer: rendered, normalization: normalizeAudioBuffer(rendered) };
+  const normalization = normalize ? normalizeAudioBuffer(rendered) : null;
+  applyAudioGain(rendered, outputGain);
+  return { buffer: rendered, normalization, outputGain };
 }
 
-async function chooseAudioClip(file) {
+async function chooseAudioClip(file, processing = {}) {
   if (!window.AudioContext || !window.OfflineAudioContext || !window.HTMLDialogElement) throw new Error("This browser cannot trim audio. Use a current Chrome, Edge, or Firefox browser.");
   const context = new AudioContext();
   let source;
   try { source = await context.decodeAudioData(await file.arrayBuffer()); } catch { throw new Error("This audio format could not be decoded in this browser. Try an MP3, WAV, AAC, or OGG file."); } finally { await context.close(); }
   const dialog = $("#audio-clipper"); const startRange = $("#audio-clip-start"); const endRange = $("#audio-clip-end"); const startNumber = $("#audio-clip-start-number"); const endNumber = $("#audio-clip-end-number"); const fadeIn = $("#audio-fade-in"); const fadeOut = $("#audio-fade-out"); const summary = $("#audio-clip-summary"); const player = $("#audio-source-player"); const playhead = $("#audio-playhead");
+  const doorBackgroundMusic = processing.normalize === false;
+  dialog.querySelector(".cropper-head + p").textContent = doorBackgroundMusic ? "Listen to the original, click the waveform to place the red playhead, then set the clip’s in and out points. Press Space to play or pause. This door background-music file bypasses automatic loudness leveling and is permanently rendered at 50% volume (−6 dB)." : "Listen to the original, click the waveform to place the red playhead, then set the clip’s in and out points. Press Space to play or pause. Each rendered clip is automatically loudness-leveled to −16 dBFS with a −1 dBFS peak ceiling. The original stays local; only the rendered clip uploads.";
+  $("#audio-clip-preview").textContent = doorBackgroundMusic ? "Preview 50% selection" : "Preview leveled selection";
+  $("#audio-clip-apply").textContent = doorBackgroundMusic ? "Render at 50% and upload" : "Render, level and upload";
   const sourceUrl = URL.createObjectURL(file);
   player.src = sourceUrl;
   let clip = { start: 0, end: source.duration, fadeIn: 0, fadeOut: 0 };
@@ -1195,7 +1216,7 @@ async function chooseAudioClip(file) {
       player.pause(); player.removeAttribute("src"); player.load(); URL.revokeObjectURL(sourceUrl); dialog.close(); audioClipperSession = null;
       if (!apply) { resolve(null); return; }
       try {
-        const rendered = await renderAudioClip(source, clip);
+        const rendered = await renderAudioClip(source, clip, processing);
         resolve({ blob: audioBufferToWav(rendered.buffer), duration: clip.end - clip.start, normalization: rendered.normalization });
       } catch (error) { reject(error); }
     };
@@ -1210,8 +1231,8 @@ async function chooseAudioClip(file) {
         else player.pause();
       },
       preview: async () => {
-        const rendered = await renderAudioClip(source, clip);
-        summary.textContent = formatNormalization(rendered.normalization);
+        const rendered = await renderAudioClip(source, clip, processing);
+        summary.textContent = formatNormalization(rendered.normalization, rendered.outputGain);
         const audio = new Audio(URL.createObjectURL(audioBufferToWav(rendered.buffer)));
         audio.addEventListener("ended", () => URL.revokeObjectURL(audio.src), { once: true });
         await audio.play();
@@ -1249,7 +1270,7 @@ function renderMediaLibrary() {
   const normalizeButton = ensureNormalizeLibraryButton();
   if (!status || !list) return;
   if (!currentUser) { status.textContent = "Sign in to view uploaded private media."; list.innerHTML = ""; normalizeButton.disabled = true; return; }
-  normalizeButton.disabled = !mediaAssets.some((asset) => asset.kind === "audio");
+  normalizeButton.disabled = !mediaAssets.some((asset) => asset.kind === "audio" && asset.id !== bonusConfig().audio?.doorChoice?.mediaAssetId);
   status.textContent = mediaAssets.length ? `${mediaAssets.length} private asset${mediaAssets.length === 1 ? "" : "s"}` : "No private media uploaded yet.";
   mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   mediaPreviewUrls = [];
@@ -1277,15 +1298,16 @@ function ensureNormalizeLibraryButton() {
   button.addEventListener("click", () => normalizeExistingLibraryAudio().catch((error) => {
     alert(`Could not loudness-level the media library: ${error.message}`);
     $("#save-state").textContent = "Media-library loudness leveling failed";
-    button.disabled = !mediaAssets.some((asset) => asset.kind === "audio");
+    button.disabled = !mediaAssets.some((asset) => asset.kind === "audio" && asset.id !== bonusConfig().audio?.doorChoice?.mediaAssetId);
   }));
   $("#refresh-media")?.before(button);
   return button;
 }
 
 async function normalizeExistingLibraryAudio() {
-  const assets = mediaAssets.filter((asset) => asset.kind === "audio");
-  if (!assets.length) { $("#save-state").textContent = "No private audio clips to level"; return; }
+  const doorBackgroundAssetId = bonusConfig().audio?.doorChoice?.mediaAssetId;
+  const assets = mediaAssets.filter((asset) => asset.kind === "audio" && asset.id !== doorBackgroundAssetId);
+  if (!assets.length) { $("#save-state").textContent = "No private audio clips to level (door background music is excluded)."; return; }
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("Your author sign-in has expired. Sign in again, then retry.");
   const button = ensureNormalizeLibraryButton();
@@ -1314,7 +1336,41 @@ async function normalizeExistingLibraryAudio() {
     renderMediaLibrary();
   } finally {
     await context.close();
-    button.disabled = !mediaAssets.some((asset) => asset.kind === "audio");
+    button.disabled = !mediaAssets.some((asset) => asset.kind === "audio" && asset.id !== bonusConfig().audio?.doorChoice?.mediaAssetId);
+  }
+}
+
+async function reduceDoorBackgroundAudioVolume() {
+  const assetId = bonusConfig().audio?.doorChoice?.mediaAssetId;
+  const asset = mediaAssets.find((candidate) => candidate.id === assetId);
+  if (!asset) throw new Error("Attach the door background-music asset before rendering it.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error("Your author sign-in has expired. Sign in again, then retry.");
+  if (!confirm("Render this door background-music file at 50% of its current volume? This permanently replaces the stored WAV.")) return;
+  const button = $("[data-reduce-door-audio-volume]");
+  if (button) button.disabled = true;
+  const context = new AudioContext();
+  try {
+    $("#save-state").textContent = "Rendering door background music at 50% volume…";
+    const response = await fetch(`${workerOrigin}/author-media/${encodeURIComponent(asset.id)}`, { headers: { Authorization: `Bearer ${session.access_token}` } });
+    if (!response.ok) throw new Error(`Could not download “${asset.display_name || asset.id}” (${response.status}).`);
+    const decoded = await context.decodeAudioData(await response.arrayBuffer());
+    applyAudioGain(decoded, DOOR_BACKGROUND_AUDIO_GAIN);
+    const blob = audioBufferToWav(decoded);
+    if (blob.size > 26214400) throw new Error(`“${asset.display_name || asset.id}” would exceed the 25 MB upload limit after rendering.`);
+    const { error } = await supabase.storage.from("quiz-media").update(asset.storage_path, blob, { contentType: "audio/wav" });
+    if (error) throw error;
+    asset.mime_type = "audio/wav";
+    asset.byte_size = blob.size;
+    const oldPreview = uploadedAudioPreviewUrls.get(asset.id);
+    if (oldPreview) URL.revokeObjectURL(oldPreview);
+    uploadedAudioPreviewUrls.set(asset.id, URL.createObjectURL(blob));
+    $("#save-state").textContent = "Door background-music file rendered at 50% volume (−6 dB).";
+    renderMediaLibrary();
+    renderEditor();
+  } finally {
+    await context.close();
+    if (button) button.disabled = false;
   }
 }
 
@@ -1641,6 +1697,7 @@ window.addEventListener("keydown", (event) => {
 });
 
 startDiagnostics("author");
+document.querySelector(".image-optimization p").textContent = "Images are optimized for the game; audio is trimmed, loudness-leveled to −16 dBFS with a −1 dBFS peak ceiling, and rendered as WAV. Door background music is the exception: it bypasses leveling and is rendered at 50% volume. Originals never upload.";
 try {
   const bundledBank = await fetch(BANK_URL, { cache: "no-store" }).then((response) => { if (!response.ok) throw new Error("Question bank not found"); return response.json(); });
   originalBank = clone(bundledBank);

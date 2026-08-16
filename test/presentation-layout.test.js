@@ -71,12 +71,12 @@ test("presenter timer is a prominent shared-screen control", () => {
   assert.match(styles, /presentation-round \.question-timer\{[^}]*min-width:clamp\(112px,13vw,190px\)[^}]*font-size:clamp\(30px,5\.6vh,68px\)/);
 });
 
-test("presentation reserves one title QR and uses a large corner QR with two-column intermission cards", () => {
+test("presentation reserves one title QR and uses a large corner QR with a simple question-transition card", () => {
   assert.match(app, /const isPresenterCornerQr = Boolean\(qrCanvas\.closest\("\.presenter-join-qr--corner"\)\)/);
   assert.match(app, /const width = isPresenterCornerQr \? 144 : isTitleScreenQr \? 300 : 150/);
   assert.match(app, /function presentationCornerJoinQr\(\) \{[\s\S]*<span>\$\{escapeHtml\(roomCode\)\}<\/span>/);
   assert.match(app, /brandTopbar\(false, false, state\.presentationScreen === "title"\)/);
-  assert.match(app, /return `<section class="presentation-card presentation-card--intermission">\$\{presentationLeaderboard\(\)\}<\/section>`/);
+  assert.match(app, /return `<section class="presentation-card presentation-card--intermission"><p class="eyebrow">Get ready<\/p><h2>Next question coming up<\/h2><\/section>`/);
   assert.match(brand, /presentation-card--intermission \.presentation-leaderboard \{ grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(brand, /presentation-card--intermission \.player-logo--presentation \{[^}]*width:min\(100%,150px\)/);
 });
@@ -86,10 +86,21 @@ test("title lyrics use a non-interactive animated overlay that preserves lines",
   assert.match(brand, /\.presentation-title-caption \{[\s\S]*pointer-events: none[\s\S]*transition: opacity \.24s/);
   assert.match(brand, /\.presentation-title-caption\.is-visible/);
   assert.match(brand, /white-space: pre-line/);
+  assert.match(brand, /has-karaoke/);
+  assert.match(brand, /is-sung/);
 });
 
 test("round-transition scoreboard spans the full presenter canvas", () => {
   assert.match(styles, /\.is-presentation \.presentation-card--round-transition\{grid-row:1\/-1\}/);
+});
+
+test("every round uses a title-style cue that automatically opens question one", () => {
+  assert.match(app, /const ROUND_START_HOLD_MS = 2600/);
+  assert.match(app, /function scheduleRoundStartAdvance\(\)[\s\S]*?setPhase\("open"\)/);
+  assert.match(app, /if \(state\.presentationScreen === "title"\) return startRound\(0\)/);
+  assert.match(app, /state\.presentationScreen === "title" \|\| state\.presentationScreen === "round_start"/);
+  assert.match(styles, /\.presentation-card--round-start,\.presentation-card--round_start\{[^}]*background:transparent/);
+  assert.match(styles, /\.presentation-card--round_start \.round-transition-splash h2\{[^}]*font-size:clamp\(84px,10\.5vw,170px\)/);
 });
 
 test("piano-intro answer reveals size their grid to the available card height", () => {
@@ -123,18 +134,27 @@ test("the host runs a three-cue finale with a podium, winner confetti, and QR-fr
   assert.match(app, /presentationScreen = "final_scores"/);
   assert.match(app, /function finalPodiumCard\(\)/);
   assert.match(app, /function finalScoreTitlePage\(\)/);
+  assert.match(app, /const FINAL_SCORE_PAGE_SIZE = 8/);
+  assert.match(app, /data-final-score-pager/);
+  assert.match(app, /function syncFinalScorePager\(\)/);
   assert.match(app, /function playerFinale\(\)/);
   assert.match(app, /isWinner \? confettiMarkup\(34\)/);
   assert.match(app, /const cornerJoinQr = isFullscreenFinale \? ""/);
   assert.match(styles, /presentation-final-score-list/);
+  assert.match(styles, /presentation-final-score-list\.is-active\{display:grid/);
   assert.match(styles, /podium-place--1/);
   assert.match(styles, /\.presentation-finale--podium \.player-logo--podium \{ transform: none; \}/);
 });
 
 test("finale drumroll and closing music are host-authored presentation cues", () => {
   assert.match(app, /cueFinaleAudio\("drumroll"\)/);
+  assert.match(app, /cueFinaleAudio\("podiumCheer"\)/);
   assert.match(app, /cueFinaleAudio\("outro"\)/);
   assert.match(app, /command\?\.audioScope === "finale"/);
+});
+
+test("the player winner logo is enlarged and displayed without an avatar tile", () => {
+  assert.match(brand, /\.player-logo--player-finale\s*\{[\s\S]*?width: min\(62vw,310px\);[\s\S]*?height: auto;[\s\S]*?border: 0;[\s\S]*?border-radius: 0;[\s\S]*?box-shadow: none;/);
 });
 
 test("movie posters and category labels remain legible in presenter mode", () => {

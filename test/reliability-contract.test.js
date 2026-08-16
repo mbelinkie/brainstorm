@@ -47,6 +47,20 @@ test("audio trimmer lets Space toggle source playback", () => {
   assert.match(author, /audioClipperSession\.toggleSource\(\)/);
 });
 
+test("door background music is rendered at half volume instead of loudness-leveled", () => {
+  const upload = author.slice(author.indexOf("async function uploadPrivateAudio"), author.indexOf("async function tusUploadVideo"));
+  const renderer = author.slice(author.indexOf("async function renderAudioClip"), author.indexOf("async function chooseAudioClip"));
+  const libraryLeveling = author.slice(author.indexOf("async function normalizeExistingLibraryAudio"), author.indexOf("async function reduceDoorBackgroundAudioVolume"));
+  const existingDoorFile = author.slice(author.indexOf("async function reduceDoorBackgroundAudioVolume"), author.indexOf("async function loadMediaPreview"));
+  assert.match(upload, /target\?\.betweenRoundAudioKey === "doorChoice"/);
+  assert.match(upload, /normalize: !doorBackgroundMusic, outputGain: doorBackgroundMusic \? DOOR_BACKGROUND_AUDIO_GAIN : 1/);
+  assert.match(renderer, /const normalization = normalize \? normalizeAudioBuffer\(rendered\) : null/);
+  assert.match(renderer, /applyAudioGain\(rendered, outputGain\)/);
+  assert.match(libraryLeveling, /asset\.id !== doorBackgroundAssetId/);
+  assert.match(existingDoorFile, /applyAudioGain\(decoded, DOOR_BACKGROUND_AUDIO_GAIN\)/);
+  assert.match(existingDoorFile, /storage\.from\("quiz-media"\)\.update/);
+});
+
 test("publish state and published JSON backups are tracked locally", () => {
   assert.match(author, /const PUBLISHED_SNAPSHOT_KEY/);
   assert.match(author, /function hasUnpublishedChanges/);
@@ -68,9 +82,11 @@ test("title-page SRT captions stay local to the presentation audio clock", () =>
   assert.match(author, /parseSrt/);
   assert.match(author, /data-import-title-captions/);
   assert.match(author, /data-remove-title-captions/);
-  assert.match(app, /activeCaptionAt\(captions, \(presentationAudioPlayer\?\.currentTime \|\| 0\) \* 1000\)/);
+  assert.match(app, /const timeMs = \(presentationAudioPlayer\?\.currentTime \|\| 0\) \* 1000/);
+  assert.match(app, /visibleCaptionAt\(captions, timeMs\)/);
   assert.match(app, /data-title-caption-overlay/);
   assert.match(app, /text\.textContent = cue\.text/);
+  assert.match(app, /data-karaoke-start/);
   assert.match(app, /requestAnimationFrame/);
   assert.doesNotMatch(app.match(/state\.audioCommand = \{[\s\S]*?\};/)?.[0] || "", /captions/);
 });
@@ -119,11 +135,13 @@ test("auto-submit skips a selection after its question has closed or changed", (
   assert.match(autoSubmit, /state\.revision \|\| 0\) !== serverRevision/);
 });
 
-test("player title and intermission screens hide the active question until the host starts it", () => {
+test("player title and fallback intermission screens hide the active question until the host starts it", () => {
   const renderPlayer = app.slice(app.indexOf("function renderPlayer"), app.indexOf("function render()"));
   assert.match(renderPlayer, /presentationScreen === "title"/);
   assert.match(renderPlayer, /presentationScreen === "intermission"/);
-  assert.match(renderPlayer, /The next question will appear here when it starts/);
+  assert.match(renderPlayer, /The next question will appear here when the host starts it/);
+  assert.doesNotMatch(renderPlayer, /The host is showing the leaderboard/);
+  assert.doesNotMatch(renderPlayer, /\$\{playerScoreCards\(\)\}/);
 });
 
 test("manual score changes redraw player scoreboards and notify player screens", () => {

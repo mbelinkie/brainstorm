@@ -4,6 +4,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-08-15
 
+- Added ASS karaoke-tag support for title-screen lyrics: timed lyric segments now light up from the Presentation audio clock, while ordinary SRT and ASS captions continue to render as before.
 - Added private, browser-rendered presentation video clips for ordinary questions: trim, independent visual/audio fades, standardized MP4 generation, resumable upload, private-library reuse, and Host Play/Pause/Restart controls. Player payloads remain video-free.
 - Added optional locally parsed SRT lyric captions for opening waiting-room music, including author import/replace/remove controls and a Presentation-only audio-clock overlay.
 - Fixed production categorize-question scoring by adding migration `0031_jsonb_object_length.sql`, which provides the PostgreSQL-compatible JSONB object-cardinality helper used by the scoring RPC.

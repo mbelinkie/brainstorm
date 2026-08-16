@@ -1,7 +1,7 @@
 import { randomRoomSecret, roomApi } from "./room-api.js";
 import { correctOptionId, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
-import { activeCaptionAt } from "./subtitle-core.js";
+import { visibleCaptionAt } from "./subtitle-core.js";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") || "landing";
@@ -34,6 +34,7 @@ let presentationMediaArmed = false;
 let loadedPrivateAudioAssetId = null;
 let presentationAudioArmed = false;
 let titleCaptionAnimationFrame = null;
+let roundStartAdvanceTimer = null;
 let anonymousTextAnswers = [];
 let anonymousTextAnswersError = false;
 let anonymousTextAnswersKey = "";
@@ -41,9 +42,19 @@ let anonymousTextAnswersPendingKey = "";
 let anonymousTextAnswerRetries = 0;
 let realtimeTextAnswers = new Map();
 let realtimeTextAnswersQuestionId = "";
+let closestNumberGuesses = [];
+let closestNumberGuessesQuestionId = "";
+let closestNumberGuessesError = false;
+let closestNumberGuessesKey = "";
+let closestNumberGuessesPendingKey = "";
+let realtimeClosestNumberGuesses = new Map();
+let realtimeClosestNumberGuessesQuestionId = "";
 let autoSubmitTimer = null;
 let submissionSequence = Promise.resolve();
 const quizWorkerOrigin = config.workerOrigin || location.origin;
+const ROUND_START_HOLD_MS = 2600;
+const FINAL_SCORE_PAGE_SIZE = 8;
+const FINAL_SCORE_PAGE_HOLD_MS = 6000;
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 const validNumericGuess = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
 const doorBonusDefinition = () => hostQuizDefinition?.betweenRoundBonus || state.doorBonus || null;
@@ -211,6 +222,21 @@ function setHostQuestion(roundIndex, questionIndex) {
   return true;
 }
 
+function clearRoundStartAdvance() {
+  if (roundStartAdvanceTimer !== null) clearTimeout(roundStartAdvanceTimer);
+  roundStartAdvanceTimer = null;
+}
+
+function scheduleRoundStartAdvance() {
+  clearRoundStartAdvance();
+  if (view !== "host") return;
+  roundStartAdvanceTimer = setTimeout(() => {
+    roundStartAdvanceTimer = null;
+    if (state.phase !== "lobby" || state.presentationScreen !== "round_start") return;
+    setPhase("open");
+  }, ROUND_START_HOLD_MS);
+}
+
 function questionPosition(questionId = hostQuestion?.id) {
   for (let roundIndex = 0; roundIndex < (hostQuizDefinition?.rounds?.length || 0); roundIndex += 1) {
     const questionIndex = (hostQuizDefinition.rounds[roundIndex].questions || []).findIndex((question) => question.id === questionId);
@@ -245,6 +271,11 @@ async function advanceQuestion() {
     await startFinale();
     return;
   }
+  // Moving between questions in the same round is a direct transition. The
+  // round-end card is the single place a scoreboard is shown before doors.
+  state.phase = "open";
+  state.presentationScreen = "question";
+  state.intermissionStage = null;
   await persistHostState();
   emit();
   render();
@@ -290,6 +321,9 @@ async function revealFinalPodium() {
   rememberCurrentScreen();
   state.presentationScreen = "final_podium";
   state.intermissionStage = "final_podium";
+  // The podium is a one-way finale transition, so this is also a natural
+  // one-time trigger for the authored celebration sound.
+  cueFinaleAudio("podiumCheer");
   await persistHostState(); emit(); render();
 }
 
@@ -341,13 +375,17 @@ async function openDoorChoice(targetRoundIndex) {
 
 async function startRound(targetRoundIndex = state.targetRoundIndex) {
   if (!Number.isInteger(targetRoundIndex)) return;
+  clearRoundStartAdvance();
   rememberCurrentScreen();
-  if (!setHostQuestion(targetRoundIndex, 0)) return;
+  // The local demo retains its sample question instead of an authored rounds
+  // array, but it should still take the same Round 1 cue as a hosted quiz.
+  if (hostQuizDefinition?.rounds?.length && !setHostQuestion(targetRoundIndex, 0)) return;
   state.targetRoundIndex = targetRoundIndex;
   state.presentationScreen = "round_start";
   state.intermissionStage = "round_start";
   cueBetweenRoundAudio("roundStart");
   await persistHostState(); emit(); render();
+  scheduleRoundStartAdvance();
 }
 
 async function acceptDoorChoice(payload) {
@@ -400,6 +438,7 @@ function rememberCurrentScreen() {
 }
 
 async function showPreviousScreen() {
+  clearRoundStartAdvance();
   const history = Array.isArray(state.screenHistory) ? state.screenHistory : [];
   const previous = history.at(-1);
   if (!previous) return;
@@ -440,6 +479,7 @@ async function showNextScreen() {
   if (state.phase === "door_choice") return revealDoorRewards();
   if (state.phase === "door_reveal") return advanceQuestion();
   if (state.phase === "lobby") {
+    if (state.presentationScreen === "title") return startRound(0);
     // The end-of-round card reveals its own scoreboard after the hero. Do not
     // advance into a second scoreboard state before the door choice.
     if (state.presentationScreen === "round_end") return doorBonusEnabled() ? openDoorChoice(Number(state.targetRoundIndex)) : startRound(Number(state.targetRoundIndex));
@@ -493,6 +533,9 @@ function saveHostSecret(code, secret) {
   sessionStorage.setItem(key, secret);
 }
 let selected = null;
+let finalScorePageTimer = null;
+let finalScorePageIndex = 0;
+let finalScorePagerKey = "";
 
 const app = document.querySelector("#app");
 
@@ -500,13 +543,27 @@ function acceptSubmission(payload) {
   if (state.phase !== "open" || !payload?.playerId) return;
   const questionId = state.questionId || state.question?.id;
   if (view === "presenter") {
-    if (!['short_answer', 'fill_in_the_blank'].includes(state.question?.type) || payload.questionId !== questionId || typeof payload.answer !== "string" || !payload.answer.trim()) return;
-    if (realtimeTextAnswersQuestionId !== questionId) {
-      realtimeTextAnswers = new Map();
-      realtimeTextAnswersQuestionId = questionId;
+    if (payload.questionId !== questionId || typeof payload.answer !== "string" || !payload.answer.trim()) return;
+    if (['short_answer', 'fill_in_the_blank'].includes(state.question?.type)) {
+      if (realtimeTextAnswersQuestionId !== questionId) {
+        realtimeTextAnswers = new Map();
+        realtimeTextAnswersQuestionId = questionId;
+      }
+      realtimeTextAnswers.set(payload.playerId, payload.answer.trim().slice(0, 180));
+      anonymousTextAnswersError = false;
+      return;
     }
-    realtimeTextAnswers.set(payload.playerId, payload.answer.trim().slice(0, 180));
-    anonymousTextAnswersError = false;
+    if (state.question?.type === "closest_number" && validNumericGuess(payload.answer)) {
+      if (realtimeClosestNumberGuessesQuestionId !== questionId) {
+        realtimeClosestNumberGuesses = new Map();
+        realtimeClosestNumberGuessesQuestionId = questionId;
+      }
+      realtimeClosestNumberGuesses.set(payload.playerId, {
+        playerName: String(payload.playerName || "Guest").trim().slice(0, 32),
+        logoKey: normalizePlayerLogoKey(payload.playerLogoKey),
+        guess: payload.answer.trim()
+      });
+    }
     return;
   }
   if (view !== "host") return;
@@ -530,6 +587,12 @@ function receive(message) {
       selected = null;
       realtimeTextAnswers = new Map();
       realtimeTextAnswersQuestionId = incomingQuestionId;
+      closestNumberGuesses = [];
+      closestNumberGuessesQuestionId = "";
+      closestNumberGuessesError = false;
+      closestNumberGuessesKey = "";
+      realtimeClosestNumberGuesses = new Map();
+      realtimeClosestNumberGuessesQuestionId = incomingQuestionId;
     }
     const priorPlayerRenderKey = view === "player" ? playerRenderKey(state) : null;
     const priorPresenterRenderKey = view === "presenter" ? presenterRenderKey(state) : null;
@@ -647,17 +710,46 @@ function stopTitleCaptionClock() {
   titleCaptionAnimationFrame = null;
 }
 
+function renderTitleCaptionText(text, cue, timeMs) {
+  const karaoke = Array.isArray(cue.karaoke) ? cue.karaoke : [];
+  if (!karaoke.length) {
+    if (text.textContent !== cue.text) text.textContent = cue.text;
+    text.classList.remove("has-karaoke");
+    text._titleCaptionCue = null;
+    return;
+  }
+
+  if (text._titleCaptionCue !== cue) {
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const segment of karaoke) {
+      fragment.append(cue.text.slice(cursor, segment.startIndex));
+      const word = document.createElement("span");
+      word.textContent = cue.text.slice(segment.startIndex, segment.endIndex);
+      word.dataset.karaokeStart = String(segment.startMs);
+      fragment.append(word);
+      cursor = segment.endIndex;
+    }
+    fragment.append(cue.text.slice(cursor));
+    text.replaceChildren(fragment);
+    text.classList.add("has-karaoke");
+    text._titleCaptionCue = cue;
+  }
+  text.querySelectorAll("[data-karaoke-start]").forEach((word) => word.classList.toggle("is-sung", timeMs >= Number(word.dataset.karaokeStart)));
+}
+
 function updateTitleCaption() {
   const overlay = document.querySelector("[data-title-caption-overlay]");
   const text = document.querySelector("[data-title-caption-text]");
   const captions = state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio?.captions : null;
-  const cue = activeCaptionAt(captions, (presentationAudioPlayer?.currentTime || 0) * 1000);
+  const timeMs = (presentationAudioPlayer?.currentTime || 0) * 1000;
+  const cue = visibleCaptionAt(captions, timeMs);
   if (!overlay || !text || !cue) {
     overlay?.classList.remove("is-visible");
-    if (text) text.textContent = "";
+    if (text) { text.textContent = ""; text.classList.remove("has-karaoke"); text._titleCaptionCue = null; }
     return;
   }
-  text.textContent = cue.text;
+  renderTitleCaptionText(text, cue, timeMs);
   overlay.classList.add("is-visible");
 }
 
@@ -752,6 +844,7 @@ async function connectHostedRoom() {
 }
 
 async function setPhase(phase) {
+  if (phase === "open") clearRoundStartAdvance();
   if (state.phase !== phase || (phase === "open" && state.presentationScreen !== "question")) rememberCurrentScreen();
   state.phase = phase;
   if (phase === "open") { state.presentationScreen = "question"; state.intermissionStage = null; }
@@ -973,8 +1066,9 @@ function matchingBoard(question, player, presenter = false) {
   const hasTargetImages = (question.options || []).some((option) => option.imageAssetId);
   const assignedClipIds = new Set(Object.keys(assignments).filter((clipId) => assignments[clipId]));
   const unassigned = (question.clips || []).filter((clip) => !assignedClipIds.has(clip.id));
-  const helper = enabled ? (hasTargetImages ? "Drag each song title onto its matching movie poster." : "Match each item to a choice.") : showingMatches ? "Correct matches" : "Listen carefully—matches will be revealed shortly.";
-  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching"><p class="drag-help">${helper}</p><div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const playbackClip = (question.clips || [])[index]; const isActiveIntro = presenter && !showingMatches && playbackClip?.id === state.activeClipId; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder" data-matching-playback-status="${escapeHtml(playbackClip?.id || "")}">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "?"}</span>`}</div>`; }).join("")}</div></div>`;
+  const helper = enabled ? (hasTargetImages ? "Drag each song title onto its matching movie poster." : "Match each item to a choice.") : showingMatches ? "Correct matches" : "";
+  const helperMarkup = helper ? `<p class="drag-help">${helper}</p>` : "";
+  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching">${helperMarkup}<div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const playbackClip = (question.clips || [])[index]; const isActiveIntro = presenter && !showingMatches && playbackClip?.id === state.activeClipId; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder" data-matching-playback-status="${escapeHtml(playbackClip?.id || "")}">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "?"}</span>`}</div>`; }).join("")}</div></div>`;
 }
 
 function matchingSelectBoard(question) {
@@ -1073,11 +1167,80 @@ function hasRealtimeTextAnswers(questionId = state.questionId || state.question?
   return realtimeTextAnswersQuestionId === questionId && realtimeTextAnswers.size > 0;
 }
 
+function closestNumberDecimal(value) {
+  const text = String(value).trim();
+  const match = text.match(/^([+-]?)(\d*)(?:\.(\d+))?$/);
+  if (!match || !validNumericGuess(text)) return null;
+  const whole = match[2] || "0";
+  const fraction = match[3] || "";
+  return { units: BigInt(`${match[1] === "-" ? "-" : ""}${whole}${fraction}`), scale: fraction.length };
+}
+
+function formatClosestDecimal(units, scale) {
+  const negative = units < 0n;
+  const digits = (negative ? -units : units).toString().padStart(scale + 1, "0");
+  const whole = digits.slice(0, Math.max(1, digits.length - scale)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fraction = scale ? digits.slice(-scale).replace(/0+$/, "") : "";
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+function closestNumberTarget() {
+  return presenterQuestionDefinition()?.targetNumber ?? hostQuestion.targetNumber ?? state.revealedNumber;
+}
+
+function closestNumberResultEntries(questionId = state.questionId || state.question?.id) {
+  if (closestNumberGuessesQuestionId === questionId) return closestNumberGuesses;
+  return realtimeClosestNumberGuessesQuestionId === questionId ? [...realtimeClosestNumberGuesses.values()] : [];
+}
+
+function closestNumberResultsBoard() {
+  const target = closestNumberDecimal(closestNumberTarget());
+  const rawEntries = closestNumberResultEntries()
+    .map((entry) => ({ ...entry, decimal: closestNumberDecimal(entry.guess) }))
+    .filter((entry) => entry.decimal && target);
+  const scale = Math.max(target?.scale || 0, ...rawEntries.map((entry) => entry.decimal.scale));
+  const scaleUp = (decimal) => decimal.units * (10n ** BigInt(scale - decimal.scale));
+  const targetUnits = target ? scaleUp(target) : 0n;
+  const entries = rawEntries
+    .map((entry) => ({ ...entry, units: scaleUp(entry.decimal), distance: (scaleUp(entry.decimal) - targetUnits < 0n ? targetUnits - scaleUp(entry.decimal) : scaleUp(entry.decimal) - targetUnits) }))
+    .sort((left, right) => left.distance < right.distance ? -1 : left.distance > right.distance ? 1 : String(left.playerName).localeCompare(String(right.playerName)));
+  const winnerDistance = entries[0]?.distance;
+  let previousDistance = null;
+  let rank = 0;
+  const rows = entries.map((entry, index) => {
+    if (entry.distance !== previousDistance) rank = index + 1;
+    previousDistance = entry.distance;
+    const winner = entry.distance === winnerDistance;
+    const direction = entry.distance === 0n ? "Exact match" : `${formatClosestDecimal(entry.distance, scale)} ${entry.units < targetUnits ? "below" : "above"}`;
+    return `<li class="closest-match-row ${winner ? "is-winner" : ""}" style="--guess-index:${index}"><span class="closest-match-place">${winner ? "★" : rank}</span>${playerLogoMarkup({ logoKey: entry.logoKey }, "player-logo--closest-match")}<strong>${escapeHtml(entry.playerName)}</strong><b>${escapeHtml(formatClosestDecimal(entry.units, scale))}</b><small>${escapeHtml(direction)}</small>${winner ? '<em>Closest!</em>' : ""}</li>`;
+  }).join("");
+  const content = rows
+    ? `<ol class="closest-match-list">${rows}</ol>`
+    : closestNumberGuessesError
+      ? '<p class="closest-match-empty">Guesses could not be loaded. Please try again.</p>'
+      : '<p class="closest-match-empty">No valid guesses were submitted.</p>';
+  const targetLabel = target ? formatClosestDecimal(targetUnits, scale) : "—";
+  return `<section class="closest-match-results" data-closest-match-results aria-live="polite"><header><div><p class="eyebrow">Closest match</p><h3>Actual number <strong>${escapeHtml(targetLabel)}</strong></h3></div>${entries.length ? `<span>${entries.filter((entry) => entry.distance === winnerDistance).length > 1 ? "Tied winners" : "Winning guess"}</span>` : ""}</header>${content}</section>`;
+}
+
+function updateClosestNumberResults() {
+  const board = document.querySelector("[data-closest-match-results]");
+  if (!board) return;
+  const template = document.createElement("template");
+  template.innerHTML = closestNumberResultsBoard();
+  const nextBoard = template.content.firstElementChild;
+  if (!nextBoard || board.innerHTML === nextBoard.innerHTML) return;
+  board.replaceWith(nextBoard);
+}
+
 function answerControl({ player = false, presenter = false } = {}) {
   const question = player || presenter ? state.question : hostQuestion;
   if (["single_choice", "multiple_choice", "true_false", "image_selection"].includes(question.type)) return `<div class="answer-grid">${answerButtons({ player, presenter })}</div>`;
   if (["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"].includes(question.type)) {
     if (presenter && ["short_answer", "fill_in_the_blank"].includes(question.type)) return anonymousTextAnswerWall();
+    if (presenter && question.type === "closest_number") {
+      return state.phase === "reveal" ? closestNumberResultsBoard() : '<p class="closest-number-pending">Players are entering their closest guesses.</p>';
+    }
     const isNumber = ["numeric_estimate", "closest_number"].includes(question.type);
     const revealedNumber = player || presenter ? state.revealedNumber : hostQuestion.targetNumber;
     const reveal = question.type === "closest_number" && state.phase === "reveal" && Number.isFinite(Number(revealedNumber)) ? `<p class="number-reveal">Correct number: <strong>${escapeHtml(revealedNumber)}</strong></p>` : "";
@@ -1147,6 +1310,40 @@ async function refreshAnonymousTextAnswers() {
     }
   } finally {
     if (anonymousTextAnswersPendingKey === key) anonymousTextAnswersPendingKey = "";
+  }
+}
+
+async function refreshClosestNumberGuesses() {
+  if (view !== "presenter" || !params.has("room") || state.question?.type !== "closest_number" || state.phase !== "reveal") {
+    closestNumberGuesses = [];
+    closestNumberGuessesQuestionId = "";
+    closestNumberGuessesError = false;
+    closestNumberGuessesKey = "";
+    return;
+  }
+  const hostSecret = getHostSecret();
+  if (!hostSecret) return;
+  const questionId = state.questionId || state.question?.id;
+  const key = `${roomCode}:${questionId}:${state.revision || ""}`;
+  if (key === closestNumberGuessesKey || key === closestNumberGuessesPendingKey) return;
+  closestNumberGuessesPendingKey = key;
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/host-closest-number-guesses`, { headers: { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret } });
+    if (!response.ok) throw new Error(`Closest-number lookup failed (${response.status})`);
+    const result = await response.json();
+    if (closestNumberGuessesPendingKey !== key) return;
+    closestNumberGuesses = Array.isArray(result.guesses) ? result.guesses : [];
+    closestNumberGuessesQuestionId = questionId;
+    closestNumberGuessesError = false;
+    closestNumberGuessesKey = key;
+    updateClosestNumberResults();
+  } catch (error) {
+    recordDiagnostic("closest-number-results", error, { roomCode, questionId });
+    console.warn("Could not load closest-number guesses.", error);
+    closestNumberGuessesError = true;
+    updateClosestNumberResults();
+  } finally {
+    if (closestNumberGuessesPendingKey === key) closestNumberGuessesPendingKey = "";
   }
 }
 
@@ -1521,10 +1718,10 @@ function renderHost() {
     : state.presentationScreen === "round_scoreboard"
     ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_start"
-    ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N / →</span></button>'
+    ? '<p class="host-auto-advance" role="status">Opening the first question…</p>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -1552,18 +1749,20 @@ function presentationLeaderboard({ final = false } = {}) {
 }
 
 function presenterIntermission() {
-  // The round banner above already provides the next-question context. Keep
-  // this state purpose-built for the shared scoreboard instead of repeating it.
-  return `<section class="presentation-card presentation-card--intermission">${presentationLeaderboard()}</section>`;
+  // This is a fallback for restored or host-jumped questions. Ordinary
+  // question-to-question navigation opens the next question directly; the
+  // scoreboard belongs only on the end-of-round transition.
+  return `<section class="presentation-card presentation-card--intermission"><p class="eyebrow">Get ready</p><h2>Next question coming up</h2></section>`;
 }
 
 function roundTransitionCard(stage) {
   const isEnd = stage === "round_end";
   const roundNumber = isEnd ? Number(state.question?.round || 1) : Number(state.targetRoundIndex) + 1;
+  const roundTitle = hostQuizDefinition?.rounds?.[roundNumber - 1]?.title || state.question?.roundTitle || "Get ready to play";
   const scoreboard = isEnd ? `<div class="round-transition-scoreboard">${presentationLeaderboard()}</div>` : "";
   const hero = isEnd
     ? `<p class="eyebrow">Round complete</p><h2>End of Round ${roundNumber}</h2>`
-    : `<h2>Round ${roundNumber}</h2>`;
+    : `<div class="round-transition-copy"><p class="eyebrow">Get ready</p><h2>Round ${roundNumber}</h2><p class="round-transition-title">${escapeHtml(roundTitle)}</p></div>`;
   return `<section class="presentation-card ${isEnd ? "presentation-card--intermission" : "presentation-card--round-start"} presentation-card--round-transition presentation-card--${stage}" aria-live="polite">${scoreboard}<div class="round-transition-splash">${hero}</div></section>`;
 }
 
@@ -1584,7 +1783,7 @@ function presentationTitlePage() {
   const morePlayers = playerCount > visiblePlayers.length ? `<p class="presentation-waiting-more">and more!</p>` : "";
   const waitingRoom = `<aside class="presentation-waiting-room" aria-label="Players in the room"><div class="presentation-waiting-heading"><div><p class="eyebrow">In the room</p><h2>Players joining</h2></div><span>${playerCount} player${playerCount === 1 ? "" : "s"}</span></div>${playerList}${morePlayers}</aside>`;
   const captionOverlay = Array.isArray(titlePage.audio?.captions) && titlePage.audio.captions.length ? '<div class="presentation-title-caption" data-title-caption-overlay aria-live="polite"><p data-title-caption-text></p></div>' : "";
-  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}${captionOverlay}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">ADO&S PRESENTS</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}${captionOverlay}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
 }
 
 function rankedPlayers() {
@@ -1623,8 +1822,71 @@ function finalScoreTitlePage() {
     : "";
   const artMarkup = themeArt ? `<div class="presentation-final-art">${themeArt}</div>` : "";
   const players = rankedPlayers();
-  const list = players.length ? `<ol class="presentation-final-score-list">${players.map((player, index) => `<li class="presentation-final-score presentation-final-score--${index + 1}"><span>${index + 1}</span>${playerLogoMarkup(player, "player-logo--final-score")}<strong>${escapeHtml(player.name)}</strong><b>${Number(player.points) || 0}<small> pts</small></b></li>`).join("")}</ol>` : "<p class=\"presentation-final-score-empty\">No final scores yet.</p>";
-  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p>${artMarkup}</div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  const pages = Array.from({ length: Math.ceil(players.length / FINAL_SCORE_PAGE_SIZE) }, (_, pageIndex) => players.slice(pageIndex * FINAL_SCORE_PAGE_SIZE, (pageIndex + 1) * FINAL_SCORE_PAGE_SIZE));
+  const pagerKey = players.map((player) => `${player.id}:${Number(player.points) || 0}`).join("|");
+  const list = players.length
+    ? `<div class="presentation-final-score-pager" data-final-score-pager data-final-score-pager-key="${escapeHtml(pagerKey)}"><p class="presentation-final-score-page-status" data-final-score-page-status>Ranks 1–${Math.min(FINAL_SCORE_PAGE_SIZE, players.length)} of ${players.length}</p>${pages.map((page, pageIndex) => {
+      const firstRank = pageIndex * FINAL_SCORE_PAGE_SIZE + 1;
+      const lastRank = firstRank + page.length - 1;
+      const rows = page.map((player, index) => {
+        const rank = firstRank + index;
+        return `<li class="presentation-final-score presentation-final-score--${rank}"><span>${rank}</span>${playerLogoMarkup(player, "player-logo--final-score")}<strong>${escapeHtml(player.name)}</strong><b>${Number(player.points) || 0}<small> pts</small></b></li>`;
+      }).join("");
+      return `<ol class="presentation-final-score-list ${pageIndex === 0 ? "is-active" : ""}" data-final-score-page data-final-score-first-rank="${firstRank}" data-final-score-last-rank="${lastRank}">${rows}</ol>`;
+    }).join("")}</div>`
+    : "<p class=\"presentation-final-score-empty\">No final scores yet.</p>";
+  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy"><p class="eyebrow">ADO&S PRESENTS</p><h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p>${artMarkup}</div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+}
+
+function syncFinalScorePager() {
+  const pager = document.querySelector("[data-final-score-pager]");
+  if (!pager) {
+    clearTimeout(finalScorePageTimer);
+    finalScorePageTimer = null;
+    finalScorePageIndex = 0;
+    finalScorePagerKey = "";
+    return;
+  }
+  const pages = [...pager.querySelectorAll("[data-final-score-page]")];
+  const pagerKey = pager.dataset.finalScorePagerKey || "";
+  const pagerChanged = pagerKey !== finalScorePagerKey;
+  if (pagerChanged) {
+    clearTimeout(finalScorePageTimer);
+    finalScorePageTimer = null;
+    finalScorePageIndex = 0;
+    finalScorePagerKey = pagerKey;
+  }
+  if (!pages.length) return;
+  finalScorePageIndex %= pages.length;
+  const showPage = () => {
+    pages.forEach((page, index) => page.classList.toggle("is-active", index === finalScorePageIndex));
+    const activePage = pages[finalScorePageIndex];
+    const status = pager.querySelector("[data-final-score-page-status]");
+    if (status) status.textContent = `Ranks ${activePage.dataset.finalScoreFirstRank}–${activePage.dataset.finalScoreLastRank} of ${pages.at(-1).dataset.finalScoreLastRank}`;
+  };
+  showPage();
+  if (pages.length === 1) {
+    clearTimeout(finalScorePageTimer);
+    finalScorePageTimer = null;
+    return;
+  }
+  if (pagerChanged || !finalScorePageTimer) {
+    const advancePage = () => {
+      const livePager = document.querySelector("[data-final-score-pager]");
+      if (!livePager || livePager.dataset.finalScorePagerKey !== finalScorePagerKey) {
+        finalScorePageTimer = null;
+        return;
+      }
+      const livePages = [...livePager.querySelectorAll("[data-final-score-page]")];
+      finalScorePageIndex = (finalScorePageIndex + 1) % livePages.length;
+      livePages.forEach((page, index) => page.classList.toggle("is-active", index === finalScorePageIndex));
+      const activePage = livePages[finalScorePageIndex];
+      const status = livePager.querySelector("[data-final-score-page-status]");
+      if (status) status.textContent = `Ranks ${activePage.dataset.finalScoreFirstRank}–${activePage.dataset.finalScoreLastRank} of ${livePages.at(-1).dataset.finalScoreLastRank}`;
+      finalScorePageTimer = setTimeout(advancePage, FINAL_SCORE_PAGE_HOLD_MS);
+    };
+    finalScorePageTimer = setTimeout(advancePage, FINAL_SCORE_PAGE_HOLD_MS);
+  }
 }
 
 function presentationCornerJoinQr() {
@@ -1667,12 +1929,13 @@ function renderPresenter() {
   // The title page already has its own join code. On every other presentation
   // screen, replace the room badge with the corner QR and its room ID.
   const titleTopbar = brandTopbar(false, false, state.presentationScreen === "title");
-  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
+  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || state.presentationScreen === "round_start" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
   const videoStage = document.querySelector("[data-presentation-video-stage]");
   if (videoStage && presentationVideoPlayer) videoStage.append(presentationVideoPlayer);
   updateTitleCaption();
   if (presentationAudioPlayer && !presentationAudioPlayer.paused && state.presentationScreen === "title") startTitleCaptionClock();
   else if (state.presentationScreen !== "title") stopTitleCaptionClock();
+  syncFinalScorePager();
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
@@ -1749,7 +2012,7 @@ function renderPlayer() {
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
-    app.innerHTML = shell(`<main class="player-main player-main--intermission">${brandTopbar()}<section class="player-card player-card--intermission player-holding-card"><header class="player-round"><p class="eyebrow">Scoreboard</p><h1>Next question coming up</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Between questions</p><h2>Stay on this screen.</h2><p>The host is showing the leaderboard. The next question will appear here when it starts.</p>${playerScoreCards()}<div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
+    app.innerHTML = shell(`<main class="player-main player-main--intermission">${brandTopbar()}<section class="player-card player-card--intermission player-holding-card"><header class="player-round"><p class="eyebrow">Get ready</p><h1>Next question coming up</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Between questions</p><h2>Stay on this screen.</h2><p>The next question will appear here when the host starts it.</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
     return;
   }
   const submissionKey = `quiz-submitted:${roomCode}:${state.questionId || state.question?.id}`;
@@ -1968,7 +2231,7 @@ function attachEvents() {
   document.querySelectorAll("[data-next-screen]").forEach((button) => button.addEventListener("click", showNextScreen));
   document.querySelectorAll("[data-previous]").forEach((button) => button.addEventListener("click", showPreviousScreen));
   document.querySelector("[data-open-door-choice]")?.addEventListener("click", () => openDoorChoice(Number(state.targetRoundIndex)));
-  document.querySelector("[data-start-round]")?.addEventListener("click", () => startRound(Number(state.targetRoundIndex)));
+  document.querySelector("[data-start-round]")?.addEventListener("click", (event) => startRound(Number(event.currentTarget.dataset.startRound ?? state.targetRoundIndex)));
   document.querySelectorAll("[data-choose-door]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "player" || state.phase !== "door_choice") return;
     const doorId = button.dataset.chooseDoor;
@@ -2112,6 +2375,7 @@ function attachEvents() {
     preparePresentationVideo().then(() => presentationMediaArmed && applyPresentationMediaCommand()).catch((error) => console.warn("Presentation video unavailable.", error));
   }
   refreshAnonymousTextAnswers();
+  refreshClosestNumberGuesses();
   document.querySelectorAll("[data-private-image]").forEach((image) => {
     loadPrivateImage(image).catch(() => image.remove());
   });

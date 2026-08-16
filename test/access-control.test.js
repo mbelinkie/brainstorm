@@ -53,7 +53,8 @@ test("anonymous text-answer wall is host authorized and excludes player identity
   assert.match(worker, /get_host_live_room_state/);
   assert.match(worker, /rest\/v1\/sessions\?room_code/);
   assert.match(worker, /rest\/v1\/submissions\?session_id/);
-  assert.doesNotMatch(worker.slice(worker.indexOf('url.pathname === "/host-text-answers"'), worker.indexOf('url.pathname === "/media-assistant/search"')), /display_name|player_id/);
+  const textAnswerRoute = worker.slice(worker.indexOf('if (request.method === "GET" && url.pathname === "/host-text-answers")'), worker.indexOf('if (request.method === "GET" && url.pathname === "/host-closest-number-guesses")'));
+  assert.doesNotMatch(textAnswerRoute, /display_name|player_id/);
 });
 
 test("anonymous text-answer endpoint supports the cross-origin custom-header request", () => {
@@ -61,4 +62,12 @@ test("anonymous text-answer endpoint supports the cross-origin custom-header req
   assert.match(worker, /request\.method === "OPTIONS" && url\.pathname === "\/host-text-answers"/);
   assert.match(worker, /"access-control-allow-headers": "x-quiz-room, x-quiz-host-secret"/);
   assert.match(worker, /function hostTextAnswersResponse/);
+});
+
+test("closest-number guesses expose player identities only to the authorized reveal display", () => {
+  const closestRoute = worker.slice(worker.indexOf('if (request.method === "GET" && url.pathname === "/host-closest-number-guesses")'), worker.indexOf('if (request.method === "POST" && url.pathname === "/media-assistant/search")'));
+  assert.match(closestRoute, /roomState\.phase !== "answer_reveal"/);
+  assert.match(closestRoute, /player:session_players\(display_name,logo_key\)/);
+  assert.match(closestRoute, /private, no-store/);
+  assert.match(worker, /OPTIONS" && url\.pathname === "\/host-closest-number-guesses"/);
 });

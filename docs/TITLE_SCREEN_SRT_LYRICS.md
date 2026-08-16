@@ -8,6 +8,8 @@ Estimated effort: 4–8 focused hours, including tests and visual QA
 
 Allow a quiz author to import an `.srt` file for the opening theme song. While that title-page audio plays in Presentation, show the active lyric cue in a large, readable, semi-transparent bar. Fade the bar away during gaps with no active cue.
 
+`.ass` files are also supported. When an ASS dialogue line uses karaoke tags (`\k`, `\K`/`\kf`, or `\ko`), the title overlay retains their centisecond timing and lights each timed lyric segment yellow from the Presentation audio clock. Ordinary ASS and SRT cues remain plain, whole-line captions.
+
 The subtitle clock must be the Presentation tab's existing audio player. Do not create a second timer or attempt to synchronize captions through room state.
 
 ## User experience

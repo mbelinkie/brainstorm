@@ -32,10 +32,24 @@ const hostTextAnswersCorsHeaders = {
   "access-control-max-age": "86400"
 };
 
+const hostClosestNumberCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-host-secret",
+  "access-control-max-age": "86400"
+};
+
 function hostTextAnswersResponse(body, init = {}) {
   return Response.json(body, {
     ...init,
     headers: { ...hostTextAnswersCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
+function hostClosestNumberResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...hostClosestNumberCorsHeaders, ...(init.headers || {}) }
   });
 }
 
@@ -69,6 +83,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
     // while the API runs on workers.dev. Its custom host credential headers
     // require a successful CORS preflight before the browser will issue GET.
     if (request.method === "OPTIONS" && url.pathname === "/host-text-answers") return new Response(null, { status: 204, headers: hostTextAnswersCorsHeaders });
+    if (request.method === "OPTIONS" && url.pathname === "/host-closest-number-guesses") return new Response(null, { status: 204, headers: hostClosestNumberCorsHeaders });
     if (request.method === "GET" && url.pathname === "/media-health") {
       if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ ok: false, stage: "configuration" }, { status: 503 });
       const check = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?select=id&limit=1`, { headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY) });
@@ -107,6 +122,44 @@ if (request.method === "GET" && url.pathname === "/__version") {
       const answerData = await answersResponse.json();
       const answers = Array.isArray(answerData) ? answerData.map((submission) => typeof submission?.answer === "string" ? submission.answer.trim().slice(0, 180) : "").filter(Boolean) : [];
       return hostTextAnswersResponse({ answers }, { headers: { "cache-control": "private, no-store" } });
+    }
+    if (request.method === "GET" && url.pathname === "/host-closest-number-guesses") {
+      const roomCode = request.headers.get("x-quiz-room");
+      const hostSecret = request.headers.get("x-quiz-host-secret");
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return hostClosestNumberResponse({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
+      const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+      const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
+      if (!stateResponse.ok) return hostClosestNumberResponse({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
+      const roomState = await stateResponse.json();
+      const question = roomState.state?.question || {};
+      if (roomState.phase !== "answer_reveal" || question.type !== "closest_number" || !roomState.state?.questionId) return hostClosestNumberResponse({ guesses: [] }, { headers: { "cache-control": "private, no-store" } });
+
+      // The host credential above authorizes this display-only lookup. Names
+      // and guesses deliberately stay out of the public room state, which is
+      // broadcast to every player phone.
+      const sessionResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/sessions?room_code=eq.${encodeURIComponent(roomCode.trim().toUpperCase())}&select=id`, { headers });
+      if (!sessionResponse.ok) {
+        const failure = await sessionResponse.json().catch(() => ({}));
+        console.error("Closest-number session lookup failed", { upstreamStatus: sessionResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
+        return hostClosestNumberResponse({ error: "Could not load the active room." }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+      const [session] = await sessionResponse.json();
+      if (!session?.id) return hostClosestNumberResponse({ guesses: [] }, { headers: { "cache-control": "private, no-store" } });
+      const guessesResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/submissions?session_id=eq.${encodeURIComponent(session.id)}&question_id=eq.${encodeURIComponent(roomState.state.questionId)}&select=answer,player:session_players(display_name,logo_key)&order=submitted_at.asc`, { headers });
+      if (!guessesResponse.ok) {
+        const failure = await guessesResponse.json().catch(() => ({}));
+        console.error("Closest-number submission lookup failed", { upstreamStatus: guessesResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
+        return hostClosestNumberResponse({ error: "Could not load guesses." }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+      const guessData = await guessesResponse.json();
+      const guesses = Array.isArray(guessData)
+        ? guessData.map((submission) => ({
+          playerName: String(submission?.player?.display_name || "Guest").trim().slice(0, 32),
+          logoKey: String(submission?.player?.logo_key || "").trim().slice(0, 40),
+          guess: typeof submission?.answer === "string" ? submission.answer.trim().slice(0, 80) : ""
+        })).filter((guess) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(guess.guess))
+        : [];
+      return hostClosestNumberResponse({ guesses }, { headers: { "cache-control": "private, no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/media-assistant/search") {
       const openAiKey = env.OPENAI_QUIZ || env.OPENAI_API_KEY;

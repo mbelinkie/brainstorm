@@ -14,6 +14,55 @@ function parseAssTimestamp(value) {
   return ((Number(hours) * 60 * 60) + (Number(minutes) * 60) + Number(seconds)) * 1000 + Number(centiseconds.padEnd(2, "0")) * 10;
 }
 
+function assDisplayText(value) {
+  return value.replace(/\\[Nn]/g, "\n").replace(/\\h/g, " ");
+}
+
+function parseAssDialogueText(value, startMs, endMs) {
+  const karaoke = [];
+  const tagPattern = /\{([^}]*)\}/g;
+  let text = "";
+  let karaokeCursorMs = startMs;
+  let pendingKaraokeDurationMs = null;
+  let cursor = 0;
+
+  const appendText = (rawText) => {
+    const displayText = assDisplayText(rawText);
+    if (!displayText) return;
+    const startIndex = text.length;
+    text += displayText;
+    if (pendingKaraokeDurationMs !== null) {
+      karaoke.push({
+        startMs: karaokeCursorMs,
+        endMs: Math.min(endMs, karaokeCursorMs + pendingKaraokeDurationMs),
+        startIndex,
+        endIndex: text.length
+      });
+      karaokeCursorMs += pendingKaraokeDurationMs;
+      pendingKaraokeDurationMs = null;
+    }
+  };
+
+  for (const match of value.matchAll(tagPattern)) {
+    appendText(value.slice(cursor, match.index));
+    const karaokeTags = [...match[1].matchAll(/\\(?:[kK]|kf|ko)(\d+)/g)];
+    if (karaokeTags.length) pendingKaraokeDurationMs = Number(karaokeTags.at(-1)[1]) * 10;
+    cursor = match.index + match[0].length;
+  }
+  appendText(value.slice(cursor));
+
+  const leadingWhitespace = text.length - text.trimStart().length;
+  const trimmedText = text.trim();
+  const trimmedKaraoke = karaoke
+    .map((segment) => ({
+      ...segment,
+      startIndex: Math.max(0, segment.startIndex - leadingWhitespace),
+      endIndex: Math.min(trimmedText.length, segment.endIndex - leadingWhitespace)
+    }))
+    .filter((segment) => segment.endIndex > segment.startIndex && segment.endMs >= segment.startMs);
+  return trimmedKaraoke.length ? { text: trimmedText, karaoke: trimmedKaraoke } : { text: trimmedText };
+}
+
 export function parseSrt(source) {
   const normalized = String(source ?? "").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
   if (!normalized) return [];
@@ -60,10 +109,11 @@ export function parseAss(source) {
     if (fields.length < format.length) throw new Error(`ASS dialogue on line ${index + 1} has too few fields.`);
     const startMs = parseAssTimestamp(fields[startIndex]);
     const endMs = parseAssTimestamp(fields[endIndex]);
-    const text = fields.slice(textIndex).join(",").replace(/\{[^}]*\}/g, "").replace(/\\[Nn]/g, "\n").replace(/\\h/g, " ").trim();
+    const caption = parseAssDialogueText(fields.slice(textIndex).join(","), startMs, endMs);
+    const { text } = caption;
     if (endMs <= startMs) throw new Error(`ASS dialogue on line ${index + 1} must end after it starts.`);
     if (!text) throw new Error(`ASS dialogue on line ${index + 1} needs caption text.`);
-    cues.push({ startMs, endMs, text });
+    cues.push({ startMs, endMs, text, ...(caption.karaoke ? { karaoke: caption.karaoke } : {}) });
   }
 
   if (!format) throw new Error("ASS subtitles need an [Events] section with a Format line.");
@@ -80,4 +130,22 @@ export function activeCaptionAt(captions, timeMs) {
   let active = null;
   for (const cue of captions) if (cue && cue.startMs <= timeMs && timeMs < cue.endMs && (!active || cue.startMs >= active.startMs)) active = cue;
   return active;
+}
+
+export function visibleCaptionAt(captions, timeMs, continuityGapMs = 400) {
+  const active = activeCaptionAt(captions, timeMs);
+  if (active || !Array.isArray(captions) || !Number.isFinite(timeMs)) return active;
+
+  // Keep the current subtitle box in place when the following line is nearly
+  // contiguous. This prevents the box from flashing off between lyric lines,
+  // while a meaningful pause still lets the normal CSS fade-out run.
+  let previous = null;
+  let next = null;
+  for (const cue of captions) {
+    if (!cue || !Number.isFinite(cue.startMs) || !Number.isFinite(cue.endMs)) continue;
+    if (cue.endMs <= timeMs && (!previous || cue.endMs > previous.endMs)) previous = cue;
+    if (cue.startMs > timeMs && (!next || cue.startMs < next.startMs)) next = cue;
+  }
+  if (previous && next && next.startMs - previous.endMs <= continuityGapMs) return previous;
+  return null;
 }

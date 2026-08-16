@@ -256,6 +256,8 @@ body.is-presentation {
 }
 .presentation-title-caption.is-visible { opacity: 1; transform: translateY(0); visibility: visible; }
 .presentation-title-caption p { margin: 0; font-size: clamp(25px, 3.5vh, 46px); font-weight: 900; line-height: 1.18; text-align: center; white-space: pre-line; }
+.presentation-title-caption p.has-karaoke > span { color: rgba(255,255,255,.42); transition: color .1s ease, text-shadow .1s ease; }
+.presentation-title-caption p.has-karaoke > span.is-sung { color: var(--k-yellow); text-shadow: 0 0 18px rgba(255, 200, 46, .45); }
 @keyframes presentation-waiting-room-in { from { opacity: 0; transform: scaleY(.92); } to { opacity: 1; transform: none; } }
 @keyframes presentation-waiting-player-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
 
@@ -503,6 +505,19 @@ body.is-presentation .player-shell::after { content: none; }
 .player-logo--plus { background: linear-gradient(145deg,#ef6c00,#ffc82e); color: var(--k-purple); }
 .player-logo--kaplan { background: linear-gradient(145deg,#005de8 0 50%,#240f6e 50%); }
 
+/* A winner's logo should read like celebratory artwork, not a tiny avatar
+   inside another tile. The logo artwork supplies its own visual treatment. */
+.player-logo--player-finale {
+  width: min(62vw,310px);
+  height: auto;
+  aspect-ratio: 1;
+  margin: clamp(24px,5vh,42px) auto clamp(18px,3vh,28px);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .player-logo-picker { min-width: 0; margin: 22px 0; padding: 0; border: 0; }
 .player-logo-picker legend { margin-bottom: 10px; color: rgba(200,225,252,.82); font-size: 13px; font-weight: 700; }
 .player-logo-picker>div { display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; max-height: 520px; padding-right: 5px; overflow-y: auto; overscroll-behavior: contain; }
@@ -695,6 +710,47 @@ body.is-presentation .player-shell::after { content: none; }
   .player-logo-picker>div { grid-template-columns: minmax(0,1fr); gap: 10px; max-height: 430px; padding-right: 4px; }
   .player-logo-choice { display: flex; min-height: 0; justify-content: center; padding: 12px; border-radius: 28px; }
   .player-logo-choice .player-logo { width: min(62vw,260px); border-radius: 12%; }
+}
+
+/* Keep the join action in the visible iPhone viewport. The logo choices scroll
+   independently, so Safari's bottom toolbar cannot strand the button below it. */
+@media (max-width: 520px) {
+  .player-main--join {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+  .player-main--join .topbar { flex: 0 0 auto; }
+  .player-main--join .player-card--join {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .player-main--join .player-card--join .player-question {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .player-main--join .player-logo-picker {
+    display: flex;
+    min-height: 0;
+    margin: 14px 0;
+    overflow: hidden;
+  }
+  .player-main--join .player-logo-picker > div {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+  }
+  .player-main--join .player-join-action {
+    position: static;
+    margin: 0 -4px;
+    padding: 10px 4px max(10px, env(safe-area-inset-bottom));
+  }
 }
 
 @media (max-width: 520px) {

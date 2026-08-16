@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeCaptionAt, parseAss, parseSrt, parseSubtitle } from "../subtitle-core.js";
+import { activeCaptionAt, parseAss, parseSrt, parseSubtitle, visibleCaptionAt } from "../subtitle-core.js";
 
 test("parseSrt normalizes BOM, CRLF, multiline text, settings, and ordering", () => {
   const captions = parseSrt("\uFEFF2\r\n00:00:03.5 --> 00:00:05,000 align:start\r\nSecond line\r\n\r\n1\r\n00:00:01,020 --> 00:00:02,4\r\nFirst\r\nlyric");
@@ -27,6 +27,20 @@ test("parseAss reads dialogue cues, strips style tags, and preserves ASS line br
   assert.throws(() => parseAss("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:01.00,Default,,0,0,0,,Hello"), /end after/);
 });
 
+test("parseAss keeps karaoke tag timing for word-level highlighting", () => {
+  const [cue] = parseAss("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\k20}Hel{\\kf30}lo {\\ko10}there");
+  assert.deepEqual(cue, {
+    startMs: 1000,
+    endMs: 2000,
+    text: "Hello there",
+    karaoke: [
+      { startMs: 1000, endMs: 1200, startIndex: 0, endIndex: 3 },
+      { startMs: 1200, endMs: 1500, startIndex: 3, endIndex: 6 },
+      { startMs: 1500, endMs: 1600, startIndex: 6, endIndex: 11 }
+    ]
+  });
+});
+
 test("activeCaptionAt uses inclusive starts, exclusive ends, gaps, and latest overlap", () => {
   const captions = [{ startMs: 1000, endMs: 3000, text: "first" }, { startMs: 2000, endMs: 4000, text: "later" }];
   assert.equal(activeCaptionAt(captions, 999), null);
@@ -35,4 +49,16 @@ test("activeCaptionAt uses inclusive starts, exclusive ends, gaps, and latest ov
   assert.equal(activeCaptionAt(captions, 2000)?.text, "later");
   assert.equal(activeCaptionAt(captions, 3000)?.text, "later");
   assert.equal(activeCaptionAt(captions, 4000), null);
+});
+
+test("visibleCaptionAt bridges only brief gaps between subtitle lines", () => {
+  const captions = [
+    { startMs: 1000, endMs: 2000, text: "first" },
+    { startMs: 2200, endMs: 3000, text: "second" },
+    { startMs: 3600, endMs: 4400, text: "third" }
+  ];
+  assert.equal(visibleCaptionAt(captions, 2100)?.text, "first");
+  assert.equal(visibleCaptionAt(captions, 2200)?.text, "second");
+  assert.equal(visibleCaptionAt(captions, 3200), null);
+  assert.equal(visibleCaptionAt(captions, 3200, 700)?.text, "second");
 });
