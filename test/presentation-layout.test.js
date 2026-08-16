@@ -81,6 +81,13 @@ test("presentation reserves one title QR and uses a large corner QR with two-col
   assert.match(brand, /presentation-card--intermission \.player-logo--presentation \{[^}]*width:min\(100%,150px\)/);
 });
 
+test("title lyrics use a non-interactive animated overlay that preserves lines", () => {
+  assert.match(app, /presentation-title-caption/);
+  assert.match(brand, /\.presentation-title-caption \{[\s\S]*pointer-events: none[\s\S]*transition: opacity \.24s/);
+  assert.match(brand, /\.presentation-title-caption\.is-visible/);
+  assert.match(brand, /white-space: pre-line/);
+});
+
 test("round-transition scoreboard spans the full presenter canvas", () => {
   assert.match(styles, /\.is-presentation \.presentation-card--round-transition\{grid-row:1\/-1\}/);
 });

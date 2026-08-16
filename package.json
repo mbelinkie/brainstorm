@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "node server.mjs",
     "test": "node --test test/*.test.js",
-    "deploy": "node prepare-deploy.mjs && set -a; source .env.local; set +a; wrangler deploy"
+    "build:video": "node build-video-processor.mjs",
+    "prepare:deploy": "npm run build:video && node prepare-deploy.mjs",
+    "deploy": "npm run prepare:deploy && set -a; source .env.local; set +a; wrangler deploy"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.3"
+    "@supabase/supabase-js": "^2.112.3",
+    "mediabunny": "1.45.1"
   },
   "devDependencies": {
     "wrangler": "^4.121.0"

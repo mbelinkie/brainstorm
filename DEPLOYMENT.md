@@ -4,7 +4,17 @@ The app is a small Node static server. It does not need a private Supabase key: 
 
 ## Database migrations
 
-Apply every file in `supabase/migrations` in numeric order before deploying a newer app build. Migration `0021_player_logos.sql` is required for player logo selection, and `0026_late_join_catch_up.sql` adds server-authoritative late-join boosts.
+Production migration history is audited and baselined through `0031_jsonb_object_length.sql`. Migration `0031` provides the PostgreSQL-compatible JSONB object-cardinality helper used when scoring categorize questions. Apply `0032_video_media_assets.sql` before publishing video: it permits only private `video/mp4` derivatives, adds checked video metadata, and grants the author-only registration RPC.
+
+Before deploying a change with a new database migration, authenticate and link the Supabase CLI to the production project, then run:
+
+```sh
+npx supabase migration list --linked
+npx supabase db push --linked
+npx supabase migration list --linked
+```
+
+The first and last commands must show every local migration paired with the same remote version. If they show an empty, divergent, or out-of-order history, stop: audit the live schema, functions, policies, grants, and triggers before using `supabase migration repair`. Do not replay historical migrations against an existing production schema.
 
 ## Required environment variables
 
@@ -43,3 +53,4 @@ The included `Dockerfile` works on any Docker-compatible service. Build and run 
 3. Confirm the host locks an answer and the leaderboard changes.
 4. In Google Meet, share the browser tab and enable **Share tab audio**.
 5. Keep the host tab open; free Supabase projects pause after inactivity and may take a moment to wake.
+6. For a video question, click **Enable presentation media** in the Presentation tab before the Host cues playback. Verify tab audio, Play/Pause/Restart, a slow preload, and that a joined phone sees no video information.

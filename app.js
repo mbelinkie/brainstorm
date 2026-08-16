@@ -1,6 +1,7 @@
 import { randomRoomSecret, roomApi } from "./room-api.js";
 import { correctOptionId, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
+import { activeCaptionAt } from "./subtitle-core.js";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") || "landing";
@@ -23,9 +24,16 @@ let activeDrag = null;
 let scoreNotificationTimer = null;
 let handledPresentationAudioCommand = null;
 const presentationAudioPlayer = view === "presenter" ? new Audio() : null;
+const presentationVideoPlayer = view === "presenter" ? document.createElement("video") : null;
+if (presentationVideoPlayer) { presentationVideoPlayer.playsInline = true; presentationVideoPlayer.preload = "auto"; presentationVideoPlayer.controls = false; }
 let presentationAudioSourceKey = null;
+let presentationVideoSourceKey = null;
+let presentationVideoObjectUrl = null;
+let handledPresentationMediaCommand = null;
+let presentationMediaArmed = false;
 let loadedPrivateAudioAssetId = null;
 let presentationAudioArmed = false;
+let titleCaptionAnimationFrame = null;
 let anonymousTextAnswers = [];
 let anonymousTextAnswersError = false;
 let anonymousTextAnswersKey = "";
@@ -44,6 +52,23 @@ const betweenRoundAudio = (key) => doorBonusDefinition()?.audio?.[key] || null;
 const finaleDefinition = () => hostQuizDefinition?.finale || state.finale || null;
 const finaleAudio = (key) => finaleDefinition()?.audio?.[key] || null;
 const hasPlayableAudio = (audio) => Boolean(audio?.mediaAssetId || audio?.url);
+function normalizedAudioVolume(value) {
+  const volume = Number(value);
+  return Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+}
+function currentTitleAudioVolume() {
+  const lastTitleVolume = state.audioCommand?.audioScope === "title" ? state.audioCommand.volume : undefined;
+  return normalizedAudioVolume(state.titleAudioVolume ?? lastTitleVolume);
+}
+function setAudioCommand(command) {
+  const volume = command.audioScope === "title" ? currentTitleAudioVolume() : 1;
+  state.audioCommand = { id: crypto.randomUUID(), volume, ...command };
+}
+function questionPresentationMedia(question) {
+  if (question?.video?.mediaAssetId || question?.video?.url) return { kind: "video", ...question.video };
+  if (question?.audio?.mediaAssetId || question?.audio?.url) return { kind: "audio", ...question.audio };
+  return null;
+}
 function publicDoorBonus() {
   const definition = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
   if (!definition) return null;
@@ -143,6 +168,8 @@ function publicRoomState() {
     timerDurationSeconds: state.timerDurationSeconds || null,
     activeClipId: state.activeClipId || null,
     audioCommand: state.audioCommand || null,
+    titleAudioVolume: currentTitleAudioVolume(),
+    mediaCommand: state.mediaCommand ? { id: state.mediaCommand.id, kind: state.mediaCommand.kind, action: state.mediaCommand.action, mediaScope: state.mediaCommand.mediaScope, questionId: state.mediaCommand.questionId } : null,
     scoreNotification: state.scoreNotification?.expiresAt && new Date(state.scoreNotification.expiresAt).getTime() > Date.now() ? state.scoreNotification : null,
     doorBonus: publicDoorBonus(),
     doorPicks: state.doorPicks || [],
@@ -227,22 +254,20 @@ function cueBetweenRoundAudio(audioKey) {
   const audio = betweenRoundAudio(audioKey);
   // Send a pause command as well when no sound is authored. This prevents
   // suspense music from carrying into the scoreboard or next-round card.
-  state.audioCommand = {
-    id: crypto.randomUUID(),
+  setAudioCommand({
     action: hasPlayableAudio(audio) ? "play" : "pause",
     audioScope: "between_round",
     audioKey
-  };
+  });
 }
 
 function cueFinaleAudio(audioKey) {
   const audio = finaleAudio(audioKey);
-  state.audioCommand = {
-    id: crypto.randomUUID(),
+  setAudioCommand({
     action: hasPlayableAudio(audio) ? "play" : "pause",
     audioScope: "finale",
     audioKey
-  };
+  });
 }
 
 async function startFinale() {
@@ -429,14 +454,26 @@ async function showNextScreen() {
   if (state.phase === "locked") return revealQuestion();
   if (state.phase === "reveal") return advanceQuestion();
 }
-let playerId = sessionStorage.getItem("musicTriviaPlayerId") || crypto.randomUUID();
-sessionStorage.setItem("musicTriviaPlayerId", playerId);
-let playerName = sessionStorage.getItem("musicTriviaPlayerName") || "";
-let playerLogoKey = normalizePlayerLogoKey(sessionStorage.getItem("quizPlayerLogoKey"));
-let doorPlayerRecordId = sessionStorage.getItem(`quiz-door-player:${roomCode}`) || "";
+// A player token is the credential that lets a phone resume its existing
+// player record. Unlike a tab session, local storage survives closing the
+// browser and scanning the room QR code again on the same device.
+function persistedPlayerValue(key) {
+  const value = localStorage.getItem(key) || sessionStorage.getItem(key) || "";
+  if (value && !localStorage.getItem(key)) localStorage.setItem(key, value);
+  return value;
+}
+function savePlayerValue(key, value) {
+  localStorage.setItem(key, value);
+  sessionStorage.setItem(key, value);
+}
+let playerId = persistedPlayerValue("musicTriviaPlayerId") || crypto.randomUUID();
+savePlayerValue("musicTriviaPlayerId", playerId);
+let playerName = persistedPlayerValue("musicTriviaPlayerName");
+let playerLogoKey = normalizePlayerLogoKey(persistedPlayerValue("quizPlayerLogoKey"));
+let doorPlayerRecordId = persistedPlayerValue(`quiz-door-player:${roomCode}`);
 function rememberDoorPlayerRecord(id) {
   doorPlayerRecordId = id;
-  sessionStorage.setItem(`quiz-door-player:${roomCode}`, id);
+  savePlayerValue(`quiz-door-player:${roomCode}`, id);
 }
 let lateJoinBonus = null;
 
@@ -507,6 +544,7 @@ function receive(message) {
     else if (view === "presenter") {
       updatePresenterActiveClipState();
       if (presentationAudioArmed) applyPresentationAudioCommand().catch((error) => console.warn("Presentation clip unavailable.", error));
+      if (presentationMediaArmed) applyPresentationMediaCommand().catch((error) => console.warn("Presentation video unavailable.", error));
     }
   }
   if (data?.type === "submission") acceptSubmission(data.payload);
@@ -514,6 +552,7 @@ function receive(message) {
   if (data?.type === "presence") acceptPlayerPresence(data.payload);
   if (data?.type === "door-choice") acceptDoorChoice(data.payload);
   if (data?.type === "audio-ended" && view === "host" && data.questionId === hostQuestion.id && data.clipId === state.activeClipId) clearActiveClip();
+  if (data?.type === "media-ended" && view === "host" && data.questionId === hostQuestion.id) state.mediaPlayback = "ended";
 }
 
 function playerRenderKey(roomState) {
@@ -546,7 +585,9 @@ function presenterRenderKey(roomState) {
   // Audio controls increment the server revision and replace audioCommand, but
   // neither change is visual. Keep the presentation DOM mounted so a host cue
   // cannot flash the shared screen while still applying the command above.
-  const { activeClipId, audioCommand, revision, submitted, ...visualState } = roomState || {};
+  const { activeClipId, audioCommand, revision, submitted, ...withTitleAudioVolume } = roomState || {};
+  const { titleAudioVolume, ...withMediaCommand } = withTitleAudioVolume;
+  const { mediaCommand, ...visualState } = withMediaCommand;
   return JSON.stringify(visualState);
 }
 localChannel.onmessage = receive;
@@ -593,6 +634,48 @@ function announceAudioEnded() {
 }
 
 presentationAudioPlayer?.addEventListener("ended", announceAudioEnded);
+presentationVideoPlayer?.addEventListener("ended", () => {
+  const command = state.mediaCommand;
+  if (view !== "presenter" || command?.kind !== "video") return;
+  const payload = { type: "media-ended", questionId: command.questionId, kind: "video" };
+  localChannel.postMessage(payload);
+  realtimeChannel?.send({ type: "broadcast", event: "media-ended", payload });
+});
+
+function stopTitleCaptionClock() {
+  if (titleCaptionAnimationFrame !== null) cancelAnimationFrame(titleCaptionAnimationFrame);
+  titleCaptionAnimationFrame = null;
+}
+
+function updateTitleCaption() {
+  const overlay = document.querySelector("[data-title-caption-overlay]");
+  const text = document.querySelector("[data-title-caption-text]");
+  const captions = state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio?.captions : null;
+  const cue = activeCaptionAt(captions, (presentationAudioPlayer?.currentTime || 0) * 1000);
+  if (!overlay || !text || !cue) {
+    overlay?.classList.remove("is-visible");
+    if (text) text.textContent = "";
+    return;
+  }
+  text.textContent = cue.text;
+  overlay.classList.add("is-visible");
+}
+
+function startTitleCaptionClock() {
+  stopTitleCaptionClock();
+  const tick = () => {
+    updateTitleCaption();
+    if (presentationAudioPlayer && !presentationAudioPlayer.paused && state.presentationScreen === "title") titleCaptionAnimationFrame = requestAnimationFrame(tick);
+    else titleCaptionAnimationFrame = null;
+  };
+  tick();
+}
+
+presentationAudioPlayer?.addEventListener("play", startTitleCaptionClock);
+presentationAudioPlayer?.addEventListener("pause", () => { stopTitleCaptionClock(); updateTitleCaption(); });
+presentationAudioPlayer?.addEventListener("seeked", updateTitleCaption);
+presentationAudioPlayer?.addEventListener("timeupdate", updateTitleCaption);
+presentationAudioPlayer?.addEventListener("ended", () => { stopTitleCaptionClock(); updateTitleCaption(); });
 
 function announcePlayerPresence() {
   const payload = { playerId, playerName, playerLogoKey };
@@ -656,6 +739,7 @@ async function connectHostedRoom() {
     }
     if (view === "player" && params.has("room") && playerName) {
       const joined = await roomApi.joinRoom({ roomCode, displayName: playerName, playerToken: playerId, logoKey: playerLogoKey });
+      rememberDoorPlayerRecord(joined.playerId);
       state = { ...state, ...joined.state, revision: joined.revision };
       lateJoinBonus = joined.lateJoinBonus || null;
       announcePlayerPresence();
@@ -1102,8 +1186,18 @@ function audioPanel(sourceAudio = null, { opening = false, scope = "question", l
   if (!audio) return "";
   const playable = Boolean(hostQuizDefinition && params.has("room") && (audio.mediaAssetId || audio.url));
   const resolvedScope = opening ? "title" : scope;
-  const controls = playable ? `<div class="host-audio-actions"><button class="btn btn-primary" data-audio-command="play" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Play clip</button><button class="btn btn-secondary" data-audio-command="restart" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Restart</button><button class="btn btn-secondary" data-audio-command="pause" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Pause</button></div>` : "";
+  const volumePercent = Math.round(currentTitleAudioVolume() * 100);
+  const volumeControl = opening ? `<label class="host-audio-volume"><span>Theme volume</span><input data-audio-volume type="range" min="0" max="100" step="1" value="${volumePercent}" aria-label="Theme music volume" aria-valuetext="${volumePercent}%" /><output data-audio-volume-output>${volumePercent}%</output></label>` : "";
+  const controls = playable ? `<div class="host-audio-actions"><button class="btn btn-primary" data-audio-command="play" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Play clip</button><button class="btn btn-secondary" data-audio-command="restart" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Restart</button><button class="btn btn-secondary" data-audio-command="pause" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Pause</button>${volumeControl}</div>` : "";
   return `<div class="audio-panel audio-panel--host"><span class="audio-play is-external" aria-hidden="true">♫</span><div class="audio-copy"><strong>${escapeHtml(audio.suggestedWindow || (opening ? "Waiting-room music" : label === "drumroll" ? "Winner drumroll" : label === "outro" ? "Closing music" : hostQuestion.audioLabel) || "Audio clip")}</strong><span>${playable ? "Plays through the presentation tab when you cue it here." : escapeHtml(audio.cue || "Attach an uploaded clip in authoring to enable host controls.")}</span></div>${controls}</div>`;
+}
+
+function videoPanel() {
+  const video = questionPresentationMedia(hostQuestion);
+  if (video?.kind !== "video") return "";
+  const playable = Boolean(hostQuizDefinition && params.has("room") && (video.mediaAssetId || video.url));
+  const controls = playable ? `<div class="host-audio-actions"><button class="btn btn-primary" data-video-command="play">Play clip</button><button class="btn btn-secondary" data-video-command="restart">Restart</button><button class="btn btn-secondary" data-video-command="pause">Pause</button></div>` : "";
+  return `<div class="audio-panel audio-panel--host"><span class="audio-play is-external" aria-hidden="true">▶</span><div class="audio-copy"><strong>${escapeHtml(video.suggestedWindow || "Presentation video")}</strong><span>${playable ? "Video and sound play only through the Presentation tab." : escapeHtml(video.cue || "Attach an uploaded private video to enable Host controls.")}</span></div>${controls}</div>`;
 }
 
 function matchingClipControls() {
@@ -1133,6 +1227,48 @@ async function loadPrivateHostAudio(player, assetId = hostQuestion.audio?.mediaA
   loadedPrivateAudioAssetId = assetId;
 }
 
+async function loadPrivatePresentationVideo(assetId) {
+  if (!presentationVideoPlayer || !assetId || !params.has("room") || presentationVideoSourceKey === assetId) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) throw new Error("Presentation needs the Host room secret to fetch this private video.");
+  const response = await fetch(`/media/${encodeURIComponent(assetId)}`, { headers: { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret } });
+  if (!response.ok) throw new Error(`Private video could not be loaded${response.headers.get("x-quiz-media-stage") ? ` (${response.headers.get("x-quiz-media-stage")})` : ""}.`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  presentationVideoPlayer.pause();
+  if (presentationVideoObjectUrl) URL.revokeObjectURL(presentationVideoObjectUrl);
+  presentationVideoObjectUrl = objectUrl;
+  presentationVideoPlayer.src = objectUrl;
+  presentationVideoPlayer.load();
+  presentationVideoSourceKey = assetId;
+}
+
+async function preparePresentationVideo(command = state.mediaCommand) {
+  if (view !== "presenter" || !presentationVideoPlayer) return;
+  const authoredQuestion = questionDefinitionById(command?.questionId || state.questionId || state.question?.id) || presenterQuestionDefinition();
+  const video = questionPresentationMedia(authoredQuestion);
+  if (video?.kind !== "video" || !video.mediaAssetId) return;
+  await loadPrivatePresentationVideo(video.mediaAssetId);
+}
+
+async function startPresentationVideo() {
+  if (!presentationVideoPlayer) return;
+  try { await presentationVideoPlayer.play(); }
+  catch {
+    await new Promise((resolve) => { const done = () => { clearTimeout(timeout); resolve(); }; const timeout = setTimeout(done, 1800); presentationVideoPlayer.addEventListener("canplay", done, { once: true }); });
+    await presentationVideoPlayer.play();
+  }
+}
+
+async function applyPresentationMediaCommand() {
+  const command = state.mediaCommand;
+  if (view !== "presenter" || !presentationVideoPlayer || !presentationMediaArmed || command?.kind !== "video" || !command.id || command.id === handledPresentationMediaCommand) return;
+  handledPresentationMediaCommand = command.id;
+  await preparePresentationVideo(command);
+  if (command.action === "pause") { presentationVideoPlayer.pause(); return; }
+  if (command.action === "restart") presentationVideoPlayer.currentTime = 0;
+  await startPresentationVideo();
+}
+
 function questionDefinitionById(questionId) {
   if (!questionId) return null;
   for (const round of hostQuizDefinition?.rounds || []) {
@@ -1155,6 +1291,10 @@ async function preparePresentationAudio(command = state.audioCommand) {
     : commandedIntro || commandedQuestion?.audio || (state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio : hostQuestion.audio);
   const sourceKey = audio?.mediaAssetId || audio?.url || null;
   if (!sourceKey || sourceKey === presentationAudioSourceKey) return;
+  stopTitleCaptionClock();
+  document.querySelector("[data-title-caption-overlay]")?.classList.remove("is-visible");
+  const captionText = document.querySelector("[data-title-caption-text]");
+  if (captionText) captionText.textContent = "";
   presentationAudioPlayer.pause();
   presentationAudioPlayer.removeAttribute("src");
   presentationAudioPlayer.load();
@@ -1191,6 +1331,23 @@ async function armPresentationAudio() {
   render();
 }
 
+async function armPresentationMedia() {
+  await armPresentationAudio();
+  // A direct gesture is required in the Presentation tab. If the current
+  // private video is already preloaded, a muted play/pause primes its element
+  // without ever exposing a native control or a media URL.
+  if (presentationVideoPlayer?.src) {
+    const wasMuted = presentationVideoPlayer.muted;
+    presentationVideoPlayer.muted = true;
+    try { await presentationVideoPlayer.play(); presentationVideoPlayer.pause(); presentationVideoPlayer.currentTime = 0; } catch { /* The visible retry gate remains available. */ }
+    presentationVideoPlayer.muted = wasMuted;
+  }
+  presentationMediaArmed = true;
+  handledPresentationMediaCommand = null;
+  await preparePresentationVideo();
+  render();
+}
+
 async function startPresentationPlayback() {
   try {
     await presentationAudioPlayer.play();
@@ -1211,7 +1368,9 @@ async function applyPresentationAudioCommand() {
   const command = state.audioCommand;
   if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed || !command?.id || command.id === handledPresentationAudioCommand) return;
   handledPresentationAudioCommand = command.id;
+  presentationAudioPlayer.volume = normalizedAudioVolume(command.volume);
   await preparePresentationAudio(command);
+  if (command.action === "volume") return;
   if (command.action === "pause") { presentationAudioPlayer.pause(); return; }
   if (command.action === "restart") presentationAudioPlayer.currentTime = 0;
   try { await startPresentationPlayback(); } catch (error) { console.warn("Presentation audio needs to be enabled once in the presentation tab.", error); }
@@ -1365,7 +1524,7 @@ function renderHost() {
     ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N / →</span></button>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -1424,7 +1583,8 @@ function presentationTitlePage() {
     : `<p class="presentation-waiting-empty">Be the first to join.</p>`;
   const morePlayers = playerCount > visiblePlayers.length ? `<p class="presentation-waiting-more">and more!</p>` : "";
   const waitingRoom = `<aside class="presentation-waiting-room" aria-label="Players in the room"><div class="presentation-waiting-heading"><div><p class="eyebrow">In the room</p><h2>Players joining</h2></div><span>${playerCount} player${playerCount === 1 ? "" : "s"}</span></div>${playerList}${morePlayers}</aside>`;
-  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  const captionOverlay = Array.isArray(titlePage.audio?.captions) && titlePage.audio.captions.length ? '<div class="presentation-title-caption" data-title-caption-overlay aria-live="polite"><p data-title-caption-text></p></div>' : "";
+  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">Kaplan presents</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}${captionOverlay}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
 }
 
 function rankedPlayers() {
@@ -1475,7 +1635,8 @@ function renderPresenter() {
   const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
-  const soundGate = isHostedRoom && quizHasAudio && !presentationAudioArmed ? '<aside class="presentation-sound-gate"><div><p class="eyebrow">One-time setup</p><h2>Enable presentation sound</h2><p>Click once before sharing this tab. The setup disappears; all playback controls remain in Host view.</p><button class="btn btn-primary" data-arm-presentation-audio>Enable sound</button><span data-arm-audio-status role="status"></span></div></aside>' : "";
+  const quizHasVideo = Boolean(hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.video?.mediaAssetId || question.video?.url)));
+  const soundGate = isHostedRoom && (quizHasAudio || quizHasVideo) && !presentationMediaArmed ? '<aside class="presentation-sound-gate"><div><p class="eyebrow">One-time setup</p><h2>Enable presentation media</h2><p>Click once before sharing this tab. Audio and video play only in this Presentation tab.</p><button class="btn btn-primary" data-arm-presentation-media>Enable media</button><span data-arm-audio-status role="status"></span></div></aside>' : "";
   const presenterQuestion = presenterQuestionDefinition();
   const card = state.presentationScreen === "title"
     ? presentationTitlePage()
@@ -1493,7 +1654,7 @@ function renderPresenter() {
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
       ? presenterIntermission()
-    : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(presenterQuestion?.revealImageAssetId || presenterQuestion?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite"><p class="eyebrow">${state.phase === "locked" ? "Answers are in" : state.phase === "reveal" ? "Answer reveal" : `Question ${questionNumber}`}</p><h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
+    : `<section class="presentation-card presentation-card--question presentation-card--${state.phase} presentation-card--${escapeHtml(state.question?.type || "question")} ${(presenterQuestion?.revealImageAssetId || presenterQuestion?.questionImageAssetId) ? "presentation-card--with-side-image" : ""}" aria-live="polite"><p class="eyebrow">${state.phase === "locked" ? "Answers are in" : state.phase === "reveal" ? "Answer reveal" : `Question ${questionNumber}`}</p><h2>${escapeHtml(state.question?.prompt || "Waiting for the host to start…")}</h2>${presenterQuestion?.video?.mediaAssetId ? '<div class="presentation-video-stage" data-presentation-video-stage aria-label="Presentation video"></div>' : ""}${questionImage({ presenter: true })}${answerControl({ presenter: true })}${revealImage({ presenter: true })}</section>`;
   const displayedRound = ["door_choice", "door_reveal"].includes(state.phase) ? Number(state.targetRoundIndex) + 1 : state.question?.round || 1;
   const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Brainstorm";
   const isFullscreenFinale = ["final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen);
@@ -1507,6 +1668,11 @@ function renderPresenter() {
   // screen, replace the room badge with the corner QR and its room ID.
   const titleTopbar = brandTopbar(false, false, state.presentationScreen === "title");
   app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
+  const videoStage = document.querySelector("[data-presentation-video-stage]");
+  if (videoStage && presentationVideoPlayer) videoStage.append(presentationVideoPlayer);
+  updateTitleCaption();
+  if (presentationAudioPlayer && !presentationAudioPlayer.paused && state.presentationScreen === "title") startTitleCaptionClock();
+  else if (state.presentationScreen !== "title") stopTitleCaptionClock();
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
@@ -1750,8 +1916,9 @@ function attachEvents() {
     try {
       const joined = await roomApi.joinRoom({ roomCode, displayName: name, playerToken: playerId, logoKey: playerLogoKey });
       playerName = name;
-      sessionStorage.setItem("musicTriviaPlayerName", name);
-      sessionStorage.setItem("quizPlayerLogoKey", playerLogoKey);
+      savePlayerValue("musicTriviaPlayerName", name);
+      savePlayerValue("quizPlayerLogoKey", playerLogoKey);
+      rememberDoorPlayerRecord(joined.playerId);
       state = { ...state, ...joined.state, revision: joined.revision };
       lateJoinBonus = joined.lateJoinBonus || null;
       announcePlayerPresence();
@@ -1888,26 +2055,50 @@ function attachEvents() {
   });
   document.querySelectorAll("[data-audio-command]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "host" || !hostQuizDefinition) return;
-    state.audioCommand = { id: crypto.randomUUID(), action: button.dataset.audioCommand, audioScope: button.dataset.audioScope, audioKey: button.dataset.audioKey || null, questionId: button.dataset.audioScope === "question" ? hostQuestion.id : null };
+    setAudioCommand({ action: button.dataset.audioCommand, audioScope: button.dataset.audioScope, audioKey: button.dataset.audioKey || null, questionId: button.dataset.audioScope === "question" ? hostQuestion.id : null });
+    await persistHostState();
+    emit();
+  }));
+  document.querySelectorAll("[data-audio-volume]").forEach((input) => {
+    const updateVolume = () => {
+      const volume = normalizedAudioVolume(Number(input.value) / 100);
+      const volumePercent = Math.round(volume * 100);
+      state.titleAudioVolume = volume;
+      setAudioCommand({ action: "volume", audioScope: "title" });
+      input.setAttribute("aria-valuetext", `${volumePercent}%`);
+      const output = input.closest(".host-audio-volume")?.querySelector("[data-audio-volume-output]");
+      if (output) output.textContent = `${volumePercent}%`;
+      emit();
+    };
+    input.addEventListener("input", updateVolume);
+    input.addEventListener("change", async () => {
+      updateVolume();
+      await persistHostState();
+    });
+  });
+  document.querySelectorAll("[data-video-command]").forEach((button) => button.addEventListener("click", async () => {
+    if (view !== "host" || !hostQuizDefinition || !hostQuestion.video) return;
+    state.mediaCommand = { id: crypto.randomUUID(), kind: "video", action: button.dataset.videoCommand, mediaScope: "question", questionId: hostQuestion.id };
+    state.mediaPlayback = button.dataset.videoCommand === "pause" ? "paused" : "loading";
     await persistHostState();
     emit();
   }));
   document.querySelectorAll("[data-play-intro]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "host" || !hostQuizDefinition) return;
     state.activeClipId = button.dataset.playIntro;
-    state.audioCommand = { id: crypto.randomUUID(), action: "play", audioScope: "question", questionId: hostQuestion.id, clipId: state.activeClipId };
+    setAudioCommand({ action: "play", audioScope: "question", questionId: hostQuestion.id, clipId: state.activeClipId });
     await persistHostState();
     emit();
     render();
   }));
-  document.querySelector("[data-arm-presentation-audio]")?.addEventListener("click", async (event) => {
+  document.querySelector("[data-arm-presentation-media], [data-arm-presentation-audio]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     const status = document.querySelector("[data-arm-audio-status]");
     button.disabled = true;
     button.textContent = "Enabling…";
     if (status) status.textContent = "";
     try {
-      await armPresentationAudio();
+      await armPresentationMedia();
     } catch (error) {
       button.disabled = false;
       button.textContent = "Try again";
@@ -1916,6 +2107,9 @@ function attachEvents() {
   });
   if (view === "presenter" && presentationAudioArmed) {
     preparePresentationAudio().then(applyPresentationAudioCommand).catch((error) => console.warn("Presentation clip unavailable.", error));
+  }
+  if (view === "presenter") {
+    preparePresentationVideo().then(() => presentationMediaArmed && applyPresentationMediaCommand()).catch((error) => console.warn("Presentation video unavailable.", error));
   }
   refreshAnonymousTextAnswers();
   document.querySelectorAll("[data-private-image]").forEach((image) => {

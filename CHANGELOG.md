@@ -2,6 +2,14 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-15
+
+- Added private, browser-rendered presentation video clips for ordinary questions: trim, independent visual/audio fades, standardized MP4 generation, resumable upload, private-library reuse, and Host Play/Pause/Restart controls. Player payloads remain video-free.
+- Added optional locally parsed SRT lyric captions for opening waiting-room music, including author import/replace/remove controls and a Presentation-only audio-clock overlay.
+- Fixed production categorize-question scoring by adding migration `0031_jsonb_object_length.sql`, which provides the PostgreSQL-compatible JSONB object-cardinality helper used by the scoring RPC.
+- Added a regression contract test for that helper and verified the full test suite passes.
+- Audited the production Supabase schema and baselined migration history through `0031`; normal `supabase db push --linked` workflows are now safe again.
+
 ## 2026-08-14
 
 - Added a reusable multiple-fill-in-the-blank audio format with per-blank partial credit, ten autosaved title fields, clip-following player and Presentation highlights, reveal feedback, and author-managed accepted spellings. Clip highlights now clear when playback ends for both this format and existing matching questions.

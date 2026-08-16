@@ -5,6 +5,7 @@
 # Dependencies and generated deploy/runtime files
 node_modules/
 .deploy-assets/
+video-processor.worker.bundle.js
 .codex-tmp/
 .wrangler/
 .next/

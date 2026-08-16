@@ -11,8 +11,15 @@ test("players select a square logo before joining", () => {
   assert.match(app, /name="player-logo"/);
   assert.match(app, /player-logo-picker/);
   assert.ok(app.indexOf("player-logo-picker") < app.indexOf("player-join-action"));
-  assert.match(app, /sessionStorage\.setItem\("quizPlayerLogoKey"/);
+  assert.match(app, /savePlayerValue\("quizPlayerLogoKey", playerLogoKey\)/);
   assert.match(api, /p_logo_key: logoKey/);
+});
+
+test("a player identity survives closing the browser and rejoining from the room QR", () => {
+  assert.match(app, /function persistedPlayerValue\(key\)/);
+  assert.match(app, /localStorage\.getItem\(key\) \|\| sessionStorage\.getItem\(key\)/);
+  assert.match(app, /savePlayerValue\("musicTriviaPlayerId", playerId\)/);
+  assert.match(app, /rememberDoorPlayerRecord\(joined\.playerId\)/);
 });
 
 test("mobile logo selection uses one column with large artwork", () => {

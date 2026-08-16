@@ -1,5 +1,7 @@
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { cropRect, panCrop } from "./image-crop.js";
+import { parseAss, parseSrt } from "./subtitle-core.js";
+import { MAX_VIDEO_BYTES } from "./video-utils.js";
 
 const BANK_URL = "./music-trivia.question-bank.json";
 const DRAFT_KEY = "quiz-control:author-draft:v1";
@@ -36,8 +38,10 @@ let navTypeFilter = "";
 let mediaPreviewUrls = [];
 const uploadedImagePreviewUrls = new Map();
 const uploadedAudioPreviewUrls = new Map();
+const uploadedVideoPreviewUrls = new Map();
 let cropperSession = null;
 let audioClipperSession = null;
+let videoClipperSession = null;
 let imageFinderTarget = null;
 let pasteImageTarget = null;
 
@@ -140,6 +144,9 @@ function validateQuiz(candidate) {
   if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
+  const titleAudio = candidate.titlePage?.audio;
+  if (titleAudio?.captionSourceName !== undefined && (typeof titleAudio.captionSourceName !== "string" || titleAudio.captionSourceName.length > 255)) errors.push("Title page caption source name must be a string of 255 characters or fewer.");
+  if (titleAudio?.captions !== undefined && (!Array.isArray(titleAudio.captions) || titleAudio.captions.length > 500 || titleAudio.captions.some((cue) => !cue || Object.getPrototypeOf(cue) !== Object.prototype || !Number.isFinite(cue.startMs) || cue.startMs < 0 || !Number.isFinite(cue.endMs) || cue.endMs <= cue.startMs || typeof cue.text !== "string" || !cue.text.trim() || cue.text.length > 500))) errors.push("Title page captions must contain at most 500 valid timed text cues.");
   for (const [key, audio] of Object.entries(candidate.finale?.audio || {})) if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Finale ${key} has an invalid private audio asset ID.`);
   if (candidate.betweenRoundBonus?.enabled) {
     const doors = candidate.betweenRoundBonus.doors;
@@ -183,6 +190,9 @@ function validateQuiz(candidate) {
       if (!supportedTypes.has(item.type)) errors.push(`${label} has an unsupported question type.`);
       if (!requiredText(item.prompt)) errors.push(`${label} needs a player prompt.`);
       if (item.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.audio.mediaAssetId)) errors.push(`${label} has an invalid private media asset ID.`);
+      if (item.video !== undefined && (!item.video || typeof item.video !== "object" || Array.isArray(item.video))) errors.push(`${label} video must be an object.`);
+      if (item.video?.mediaAssetId && !validAssetId(item.video.mediaAssetId)) errors.push(`${label} has an invalid private video asset ID.`);
+      if ((item.audio?.mediaAssetId || item.audio?.url) && (item.video?.mediaAssetId || item.video?.url)) errors.push(`${label} may have either presentation audio or presentation video, not both.`);
       // Image asset IDs may be opaque local placeholders (for planned artwork) or
       // UUIDs issued by the private-media library. Both are valid authoring states.
       const questionPoints = item.points ?? item.scoring?.points;
@@ -226,6 +236,7 @@ function changeQuestionType(type) {
   const current = question();
   const base = { id: current.id, type, prompt: current.prompt, points: current.points || 1, hostReveal: current.hostReveal || "Add the answer reveal note." };
   if (current.audio) base.audio = current.audio;
+  if (current.video) base.video = current.video;
   if (["single_choice", "multiple_choice", "image_selection"].includes(type)) Object.assign(base, { options: [{ id: "a", label: "Option A" }, { id: "b", label: "Option B" }], correctOptionIds: ["a"] });
   if (type === "true_false") Object.assign(base, { options: [{ id: "true", label: "True" }, { id: "false", label: "False" }], correctOptionIds: ["true"] });
   if (type === "short_answer") base.acceptedAnswers = ["Answer"];
@@ -273,7 +284,8 @@ function renderQuizHealth() {
   const typeCount = new Set(questions.map((item) => item.type)).size;
   const privateImages = questions.reduce((count, item) => count + (item.options || []).filter((option) => option.imageAssetId).length + (item.questionImageAssetId ? 1 : 0) + (item.revealImageAssetId ? 1 : 0), 0) + (bank.titlePage?.imageAssetId ? 1 : 0);
   const privateAudio = questions.filter((item) => item.audio?.mediaAssetId).length + (bank.titlePage?.audio?.mediaAssetId ? 1 : 0) + Object.values(bank.finale?.audio || {}).filter((audio) => audio?.mediaAssetId).length;
-  target.innerHTML = `<p class="eyebrow">Quiz health</p><strong>${questions.length} questions · ${typeCount} formats</strong><span>${privateAudio} private audio clip${privateAudio === 1 ? "" : "s"} · ${privateImages} private image${privateImages === 1 ? "" : "s"}</span><span class="${errors.length ? "health-warning" : "health-good"}">${errors.length ? `${errors.length} issue${errors.length === 1 ? "" : "s"} to fix before publishing` : "Ready to publish"}</span>`;
+  const privateVideo = questions.filter((item) => item.video?.mediaAssetId).length;
+  target.innerHTML = `<p class="eyebrow">Quiz health</p><strong>${questions.length} questions · ${typeCount} formats</strong><span>${privateAudio} private audio clip${privateAudio === 1 ? "" : "s"} · ${privateVideo} private video${privateVideo === 1 ? "" : "s"} · ${privateImages} private image${privateImages === 1 ? "" : "s"}</span><span class="${errors.length ? "health-warning" : "health-good"}">${errors.length ? `${errors.length} issue${errors.length === 1 ? "" : "s"} to fix before publishing` : "Ready to publish"}</span>`;
 }
 
 function mediaAssetOptions(kind, currentId = "") {
@@ -345,6 +357,20 @@ function audioEditor(item) {
   return `<section class="section"><div class="section-head"><span class="section-label">Presentation audio cue</span><label class="button button-quiet">Trim and upload clip<input data-upload-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">Choose a source file, trim it in the browser, and optionally fade in or out. The presentation view plays the uploaded clip.</p>${privateAudioPreview(audio.mediaAssetId, audio.suggestedWindow || "Preview audio", "question")}<div class="field-grid">${field("Opaque asset ID", "audio.assetId", audio.assetId || "")}${field("Suggested window", "audio.suggestedWindow", audio.suggestedWindow || "")}</div>${field("Audio URL (optional fallback)", "audio.url", audio.url || "", { type: "url" })}${field("Production cue", "audio.cue", audio.cue || "", { textarea: true })}</section>`;
 }
 
+function privateVideoPreview(assetId, label = "Presentation video") {
+  if (!assetId) return "";
+  const asset = mediaAssets.find((entry) => entry.id === assetId && entry.kind === "video");
+  const details = asset ? `${asset.duration_ms ? `${formatSeconds(asset.duration_ms / 1000)} · ` : ""}${asset.width && asset.height ? `${asset.width}×${asset.height} · ` : ""}${formatBytes(asset.byte_size)}` : "Loading private video…";
+  return `<div class="video-preview"><strong>${escapeHtml(label)}</strong><video data-media-preview="${escapeHtml(assetId)}" controls preload="metadata"></video><span>${escapeHtml(details)}</span><button class="button button-danger asset-unlink" data-remove-video type="button">Remove video</button></div>`;
+}
+
+function videoEditor(item) {
+  const video = item.video || {};
+  const audioAttached = Boolean(item.audio?.mediaAssetId || item.audio?.url);
+  const videoAssets = mediaAssets.filter((asset) => asset.kind === "video");
+  return `<section class="section"><div class="section-head"><span class="section-label">Presentation video cue</span><label class="button button-quiet ${audioAttached ? "is-disabled" : ""}">Trim and upload video<input data-upload-video type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" ${audioAttached ? "disabled" : ""} hidden /></label></div><p class="audio-editor-help">Video appears with its sound only in the shared Presentation tab. It is never sent to player phones. ${audioAttached ? "Remove the primary audio cue before attaching video." : "Only the trimmed MP4 derivative is uploaded; the source stays local."}</p><label class="field"><span>Reuse private video</span><select data-existing-video ${audioAttached ? "disabled" : ""}><option value="">Choose uploaded video</option>${videoAssets.map((asset) => `<option value="${asset.id}" ${asset.id === video.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.id.slice(0, 8))} · ${asset.duration_ms ? formatSeconds(asset.duration_ms / 1000) : "Video"}</option>`).join("")}</select></label>${privateVideoPreview(video.mediaAssetId, video.suggestedWindow || "Presentation video")}<div class="field-grid">${field("Suggested window", "video.suggestedWindow", video.suggestedWindow || "Video clip")}${field("Production cue", "video.cue", video.cue || "", { textarea: true })}</div></section>`;
+}
+
 function betweenRoundSoundEditor(config) {
   const slots = [
     ["roundEnd", "End-of-round transition", "A short sting when the End of Round card arrives."],
@@ -374,7 +400,9 @@ function betweenRoundBonusEditor() {
 function titlePageEditor() {
   const opening = titlePage();
   const audio = opening.audio || {};
-  return `<section class="section section-first title-page-editor"><div class="section-head"><span class="section-label">Opening title page</span><span class="asset-status">Presentation waiting room</span></div><p class="audio-editor-help">This appears before the first question. Add optional transparent theme art and waiting-room music; neither is a scored question.</p><div class="field-grid">${field("Quiz title", "quiz-title", bank.title)}<div class="field"><label>Title-page subtitle</label><textarea data-title-field="subtitle">${escapeHtml(opening.subtitle || "Get your phone ready — we’ll begin shortly.")}</textarea></div><div class="field"><label>Title-card circle icon</label><input data-title-field="icon" maxlength="8" value="${escapeHtml(opening.icon || "♫")}" /><small>Use an emoji or a short symbol; it replaces the yellow music note on the title card.</small></div><div class="field"><label>Theme artwork alt text</label><input data-title-field="imageAlt" value="${escapeHtml(opening.imageAlt || "Quiz theme artwork")}" /></div></div><div class="section-head"><span class="section-label">Theme artwork</span>${imageActionControls("title", '<input data-upload-title-image type="file" accept="image/jpeg,image/png,image/webp" hidden />')}</div><div class="field"><label>Reuse private image</label><select data-existing-title-image><option value="">Choose uploaded image</option>${mediaAssets.filter((asset) => asset.kind === "image").map((asset) => `<option value="${asset.id}" ${asset.id === opening.imageAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${opening.imageAssetId ? `<div class="asset-attached">${attachedImagePreview(opening.imageAssetId, opening.imageAlt || "Title-page art preview")}<p class="asset-status">Title artwork attached</p>${imageReformatButton("title")}<button class="button button-danger asset-unlink" data-remove-title-image type="button">Remove image</button></div>` : ""}<div class="section-head"><span class="section-label">Waiting-room music</span><label class="button button-quiet">Trim and upload clip<input data-upload-title-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">The host alone gets playback controls. Audio plays through Presentation after its one-time sound setup.</p><div class="field-grid">${field("Music label", "title-audio.suggestedWindow", audio.suggestedWindow || "Waiting-room music")}${field("Audio URL (optional fallback)", "title-audio.url", audio.url || "", { type: "url" })}</div><div class="field"><label>Reuse private audio</label><select data-existing-title-audio><option value="">Choose uploaded audio</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${audio.mediaAssetId ? '<button class="button button-danger asset-unlink" data-remove-title-audio type="button">Remove waiting-room music</button>' : ""}</section>`;
+  const captions = Array.isArray(audio.captions) ? audio.captions : [];
+  const lyricControls = `<div class="field title-caption-editor"><label>Title-screen lyrics</label><div class="option-image-actions"><label class="button button-quiet">${captions.length ? "Replace lyrics" : "Import lyrics"}<input data-import-title-captions type="file" accept=".srt,.ass,application/x-subrip,text/x-ass,text/x-ssa,text/plain" hidden /></label>${captions.length ? '<button class="button button-danger asset-unlink" data-remove-title-captions type="button">Remove lyrics</button>' : ""}</div><small data-title-caption-status>${captions.length ? `${escapeHtml(audio.captionSourceName || "Imported subtitles")} · ${captions.length} cue${captions.length === 1 ? "" : "s"}` : "Optional SRT or ASS captions are parsed locally and stored with this title audio."}</small></div>`;
+  return `<section class="section section-first title-page-editor"><div class="section-head"><span class="section-label">Opening title page</span><span class="asset-status">Presentation waiting room</span></div><p class="audio-editor-help">This appears before the first question. Add optional transparent theme art and waiting-room music; neither is a scored question.</p><div class="field-grid">${field("Quiz title", "quiz-title", bank.title)}<div class="field"><label>Title-page subtitle</label><textarea data-title-field="subtitle">${escapeHtml(opening.subtitle || "Get your phone ready — we’ll begin shortly.")}</textarea></div><div class="field"><label>Title-card circle icon</label><input data-title-field="icon" maxlength="8" value="${escapeHtml(opening.icon || "♫")}" /><small>Use an emoji or a short symbol; it replaces the yellow music note on the title card.</small></div><div class="field"><label>Theme artwork alt text</label><input data-title-field="imageAlt" value="${escapeHtml(opening.imageAlt || "Quiz theme artwork")}" /></div></div><div class="section-head"><span class="section-label">Theme artwork</span>${imageActionControls("title", '<input data-upload-title-image type="file" accept="image/jpeg,image/png,image/webp" hidden />')}</div><div class="field"><label>Reuse private image</label><select data-existing-title-image><option value="">Choose uploaded image</option>${mediaAssets.filter((asset) => asset.kind === "image").map((asset) => `<option value="${asset.id}" ${asset.id === opening.imageAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${opening.imageAssetId ? `<div class="asset-attached">${attachedImagePreview(opening.imageAssetId, opening.imageAlt || "Title-page art preview")}<p class="asset-status">Title artwork attached</p>${imageReformatButton("title")}<button class="button button-danger asset-unlink" data-remove-title-image type="button">Remove image</button></div>` : ""}<div class="section-head"><span class="section-label">Waiting-room music</span><label class="button button-quiet">Trim and upload clip<input data-upload-title-audio type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label></div><p class="audio-editor-help">The host alone gets playback controls. Audio plays through Presentation after its one-time sound setup.</p><div class="field-grid">${field("Music label", "title-audio.suggestedWindow", audio.suggestedWindow || "Waiting-room music")}${field("Audio URL (optional fallback)", "title-audio.url", audio.url || "", { type: "url" })}</div><div class="field"><label>Reuse private audio</label><select data-existing-title-audio><option value="">Choose uploaded audio</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></div>${lyricControls}${audio.mediaAssetId ? '<button class="button button-danger asset-unlink" data-remove-title-audio type="button">Remove waiting-room music</button>' : ""}</section>`;
 }
 
 function finaleEditor() {
@@ -397,7 +425,7 @@ function renderEditor() {
     <div class="field-grid">${field("Question ID", "id", item.id)}<div class="field"><label>Question type</label><select data-field="type" aria-label="Question type">${["single_choice","multiple_choice","true_false","image_selection","arrange_in_order","categorize","fill_in_the_blank","multi_fill_in_the_blank","short_answer","closest_number","matching"].map((type) => `<option value="${type}" ${item.type === type ? "selected" : ""}>${escapeHtml(typeLabel(type))}</option>`).join("")}</select></div></div>
     ${field("Player prompt", "prompt", item.prompt, { textarea: true })}
     <div class="field-grid">${field(item.type === "matching" ? "Points per pair" : item.type === "multi_fill_in_the_blank" ? "Points per blank" : "Points", item.type === "matching" ? "pointsPerPair" : item.type === "multi_fill_in_the_blank" ? "pointsPerBlank" : "points", item.type === "matching" ? item.pointsPerPair : item.type === "multi_fill_in_the_blank" ? item.pointsPerBlank : item.points, { type: "number" })}${field("Host reveal", "hostReveal", item.hostReveal || "", { textarea: true })}</div>
-    ${audioEditor(item)}${questionImageEditor(item)}${optionsEditor(item)}${answerEditor(item)}${["fill_in_the_blank", "multi_fill_in_the_blank", "short_answer", "arrange_in_order", "categorize", "matching", "closest_number"].includes(item.type) ? revealImageEditor(item) : ""}
+    ${audioEditor(item)}${videoEditor(item)}${questionImageEditor(item)}${optionsEditor(item)}${answerEditor(item)}${["fill_in_the_blank", "multi_fill_in_the_blank", "short_answer", "arrange_in_order", "categorize", "matching", "closest_number"].includes(item.type) ? revealImageEditor(item) : ""}
   `;
   bindEditorEvents();
 }
@@ -422,7 +450,7 @@ function render() { renderNav(); renderQuizHealth(); renderEditor(); renderPrevi
 
 function updateField(key, value) {
   const item = question();
-  if (key.startsWith("title-audio.")) { titlePage().audio ||= {}; titlePage().audio[key.slice(12)] = value; } else if (key.startsWith("audio.")) { item.audio ||= {}; item.audio[key.slice(6)] = value; } else item[key] = ["points", "pointsPerPair", "pointsPerBlank", "targetNumber"].includes(key) ? Number(value) : value;
+  if (key.startsWith("title-audio.")) { titlePage().audio ||= {}; titlePage().audio[key.slice(12)] = value; } else if (key.startsWith("audio.")) { item.audio ||= {}; item.audio[key.slice(6)] = value; } else if (key.startsWith("video.")) { item.video ||= {}; item.video[key.slice(6)] = value; } else item[key] = ["points", "pointsPerPair", "pointsPerBlank", "targetNumber"].includes(key) ? Number(value) : value;
   markChanged(); renderNav(); renderQuizHealth(); renderPreview();
 }
 
@@ -441,7 +469,7 @@ function bindEditorEvents() {
     else input.addEventListener("input", () => {
       const key = input.dataset.field;
       const item = question();
-      if (key.startsWith("title-audio.")) { titlePage().audio ||= {}; titlePage().audio[key.slice(12)] = input.value; } else if (key.startsWith("audio.")) { item.audio ||= {}; item.audio[key.slice(6)] = input.value; } else item[key] = input.value;
+      if (key.startsWith("title-audio.")) { titlePage().audio ||= {}; titlePage().audio[key.slice(12)] = input.value; } else if (key.startsWith("audio.")) { item.audio ||= {}; item.audio[key.slice(6)] = input.value; } else if (key.startsWith("video.")) { item.video ||= {}; item.video[key.slice(6)] = input.value; } else item[key] = input.value;
       markChanged(); renderNav(); renderPreview();
     });
   });
@@ -465,7 +493,9 @@ function bindEditorEvents() {
   document.querySelectorAll("[data-pair]").forEach((select) => select.addEventListener("change", () => { const clip = question().clips[Number(select.dataset.pair)]; question().correctPairs[clip.id] = select.value; markChanged(); renderPreview(); }));
   $("[data-add-audio]")?.addEventListener("click", () => { question().audio = { assetId: "audio-clip", suggestedWindow: "0:00–0:10", cue: "Describe when to play this clip." }; markChanged(); render(); });
   $("[data-upload-audio]")?.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0]); } catch (error) { alert(`Could not upload private audio: ${error.message}`); $("#save-state").textContent = "Audio upload failed"; } finally { event.target.value = ""; } });
+  $("[data-upload-video]")?.addEventListener("change", async (event) => { try { await uploadPrivateVideo(event.target.files?.[0]); } catch (error) { alert(`Could not upload private video: ${error.message}`); $("#save-state").textContent = "Video upload failed"; } finally { event.target.value = ""; } });
   $("[data-upload-title-audio]")?.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0], "title"); } catch (error) { alert(`Could not upload waiting-room music: ${error.message}`); $("#save-state").textContent = "Waiting-room music upload failed"; } finally { event.target.value = ""; } });
+  $("[data-import-title-captions]")?.addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const captions = /\.ass$/i.test(file.name) ? parseAss(await file.text()) : parseSrt(await file.text()); titlePage().audio ||= {}; titlePage().audio.captions = captions; titlePage().audio.captionSourceName = file.name.slice(0, 255); markChanged(); renderEditor(); renderPreview(); } catch (error) { const status = $("[data-title-caption-status]"); if (status) status.textContent = `Could not import ${file.name}: ${error.message}`; } finally { event.target.value = ""; } });
   document.querySelectorAll("[data-upload-finale-audio]").forEach((input) => input.addEventListener("change", async (event) => { const audioKey = event.target.dataset.uploadFinaleAudio; try { await uploadPrivateAudio(event.target.files?.[0], { finaleAudioKey: audioKey }); } catch (error) { alert(`Could not upload finale audio: ${error.message}`); $("#save-state").textContent = "Finale audio upload failed"; } finally { event.target.value = ""; } }));
   document.querySelectorAll("[data-upload-between-round-audio]").forEach((input) => input.addEventListener("change", async (event) => { const audioKey = event.target.dataset.uploadBetweenRoundAudio; try { await uploadPrivateAudio(event.target.files?.[0], { betweenRoundAudioKey: audioKey }); } catch (error) { alert(`Could not upload between-round sound: ${error.message}`); $("#save-state").textContent = "Between-round sound upload failed"; } finally { event.target.value = ""; } }));
   document.querySelectorAll("[data-upload-clip-audio]").forEach((input) => input.addEventListener("change", async (event) => { try { await uploadPrivateAudio(event.target.files?.[0], { clipIndex: Number(event.target.dataset.uploadClipAudio) }); } catch (error) { alert(`Could not upload intro clip: ${error.message}`); $("#save-state").textContent = "Intro clip upload failed"; } finally { event.target.value = ""; } }));
@@ -485,6 +515,7 @@ function bindEditorEvents() {
   document.querySelectorAll("[data-existing-between-round-audio]").forEach((select) => select.addEventListener("change", () => { const audioKey = select.dataset.existingBetweenRoundAudio; bonusConfig().audio ||= {}; if (select.value) { bonusConfig().audio[audioKey] ||= {}; bonusConfig().audio[audioKey].mediaAssetId = select.value; } else delete bonusConfig().audio[audioKey]; markChanged(); renderEditor(); renderPreview(); }));
   $("[data-remove-title-image]")?.addEventListener("click", () => { delete titlePage().imageAssetId; markChanged(); renderEditor(); renderPreview(); });
   $("[data-remove-title-audio]")?.addEventListener("click", () => { delete titlePage().audio; markChanged(); renderEditor(); renderPreview(); });
+  $("[data-remove-title-captions]")?.addEventListener("click", () => { delete titlePage().audio?.captions; delete titlePage().audio?.captionSourceName; markChanged(); renderEditor(); renderPreview(); });
   document.querySelectorAll("[data-remove-between-round-audio]").forEach((button) => button.addEventListener("click", () => { if (bonusConfig().audio) delete bonusConfig().audio[button.dataset.removeBetweenRoundAudio]; markChanged(); renderEditor(); renderPreview(); }));
   document.querySelectorAll("[data-remove-audio]").forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.removeAudio;
@@ -503,6 +534,8 @@ function bindEditorEvents() {
   document.querySelectorAll("[data-remove-image]").forEach((button) => button.addEventListener("click", () => { const target = resolveImageFinderTarget(button.dataset.removeImage); if (!target) return; if (target.target === "reveal") delete question().revealImageAssetId; else if (target.target === "question-image") delete question().questionImageAssetId; else delete question().options[target.optionIndex].imageAssetId; markChanged(); renderEditor(); renderPreview(); }));
   document.querySelectorAll("[data-reformat-image]").forEach((button) => button.addEventListener("click", () => reformatAttachedImage(button.dataset.reformatImage).catch((error) => { alert(`Could not reformat image: ${error.message}`); $("#save-state").textContent = "Image reformat failed"; })));
   document.querySelectorAll("[data-existing-media='audio']").forEach((select) => select.addEventListener("change", () => { if (!select.value) return; question().audio ||= {}; question().audio.mediaAssetId = select.value; markChanged(); renderEditor(); renderPreview(); }));
+  $("[data-existing-video]")?.addEventListener("change", (event) => { if (event.target.value) { delete question().audio; question().video ||= {}; question().video.mediaAssetId = event.target.value; } else delete question().video?.mediaAssetId; markChanged(); renderEditor(); renderPreview(); });
+  $("[data-remove-video]")?.addEventListener("click", () => { delete question().video; markChanged(); renderEditor(); renderPreview(); });
   document.querySelectorAll(".editor-card [data-media-preview]").forEach((element) => loadMediaPreview(element));
 }
 
@@ -630,12 +663,101 @@ async function uploadPrivateAudio(file, target = "question") {
   else if (target?.finaleAudioKey) { finaleConfig().audio ||= {}; finaleConfig().audio[target.finaleAudioKey] ||= {}; finaleConfig().audio[target.finaleAudioKey].mediaAssetId = asset.id; }
   else if (target?.betweenRoundAudioKey) { bonusConfig().audio ||= {}; bonusConfig().audio[target.betweenRoundAudioKey] ||= {}; bonusConfig().audio[target.betweenRoundAudioKey].mediaAssetId = asset.id; }
   else if (Number.isInteger(target?.clipIndex)) question().clips[target.clipIndex].mediaAssetId = asset.id;
-  else { question().audio ||= {}; question().audio.mediaAssetId = asset.id; }
+  else { delete question().video; question().audio ||= {}; question().audio.mediaAssetId = asset.id; }
   await loadMediaAssets();
   markChanged();
   $("#save-state").textContent = `Rendered and loudness-leveled clip uploaded (${formatSeconds(clipped.duration)} · ${formatBytes(clipped.blob.size)}) — publish a new quiz version to use it.`;
   renderEditor();
   renderPreview();
+}
+
+async function tusUploadVideo(storagePath, blob, onProgress) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error("Your author sign-in has expired. Sign in again, then retry.");
+  const endpoint = `${config.supabaseUrl.replace(/^https:\/\/([^./]+)\.supabase\.co$/, "https://$1.storage.supabase.co")}/storage/v1/upload/resumable`;
+  const metadata = (value) => btoa(unescape(encodeURIComponent(value)));
+  const create = await fetch(endpoint, { method: "POST", headers: { "Tus-Resumable": "1.0.0", "Upload-Length": String(blob.size), Authorization: `Bearer ${session.access_token}`, "x-upsert": "false", "Upload-Metadata": `bucketName ${metadata("quiz-media")},objectName ${metadata(storagePath)},contentType ${metadata("video/mp4")},cacheControl ${metadata("private, no-store")}` } });
+  if (!create.ok) throw new Error(`Could not start resumable video upload (${create.status}).`);
+  const uploadUrl = create.headers.get("location");
+  if (!uploadUrl) throw new Error("The resumable upload service did not return an upload location.");
+  let offset = 0;
+  const chunkSize = 6 * 1024 * 1024;
+  while (offset < blob.size) {
+    const chunk = blob.slice(offset, Math.min(blob.size, offset + chunkSize));
+    const patch = await fetch(new URL(uploadUrl, endpoint).href, { method: "PATCH", headers: { "Tus-Resumable": "1.0.0", "Upload-Offset": String(offset), "Content-Type": "application/offset+octet-stream", Authorization: `Bearer ${session.access_token}` }, body: chunk });
+    if (!patch.ok) throw new Error(`Video upload stopped at ${Math.round(offset / 1024 / 1024)} MB (${patch.status}).`);
+    offset = Number(patch.headers.get("upload-offset"));
+    if (!Number.isFinite(offset)) throw new Error("The resumable upload service returned an invalid upload offset.");
+    onProgress?.(offset / blob.size);
+  }
+}
+
+async function uploadPrivateVideo(file) {
+  if (!file) return;
+  if (!supabase || !currentUser) throw new Error("Sign in as an authorized quiz author before uploading media.");
+  if (!["video/mp4", "video/quicktime", "video/webm"].includes(file.type) && !/\.(mp4|mov|webm)$/i.test(file.name)) throw new Error("Choose an MP4, MOV, or WebM video.");
+  if (!window.Worker || !window.HTMLDialogElement || !window.OffscreenCanvas) throw new Error("Video editing requires current desktop Chrome or Edge with WebCodecs and OffscreenCanvas.");
+  // Originals folder is optional and never prevents a derivative from rendering.
+  void saveOriginalMedia(file);
+  const rendered = await chooseVideoClip(file);
+  if (!rendered) { $("#save-state").textContent = "Video upload cancelled"; return; }
+  if (rendered.blob.size > MAX_VIDEO_BYTES) throw new Error("The rendered MP4 is over 25 MB. Shorten the selection and try again.");
+  const storagePath = `${currentUser.id}/${crypto.randomUUID()}.mp4`;
+  try {
+    $("#save-state").textContent = "Uploading rendered video (0%)…";
+    await tusUploadVideo(storagePath, rendered.blob, (fraction) => { $("#save-state").textContent = `Uploading rendered video (${Math.round(fraction * 100)}%)…`; });
+    const { data: asset, error } = await supabase.rpc("register_video_media_asset", { p_storage_path: storagePath, p_mime_type: "video/mp4", p_byte_size: rendered.blob.size, p_duration_ms: rendered.durationMs, p_width: rendered.width, p_height: rendered.height, p_has_audio: rendered.hasAudio });
+    if (error) throw error;
+    uploadedVideoPreviewUrls.set(asset.id, URL.createObjectURL(rendered.blob));
+    await nameMediaAsset(asset.id, `${file.name.replace(/\.[^.]+$/, "")} · ${formatSeconds(rendered.durationMs / 1000)}`);
+    delete question().audio;
+    question().video = { mediaAssetId: asset.id, suggestedWindow: "Video clip", cue: "Play after reading the prompt" };
+    await loadMediaAssets();
+    markChanged();
+    $("#save-state").textContent = `Private MP4 uploaded (${formatSeconds(rendered.durationMs / 1000)} · ${rendered.width}×${rendered.height} · ${formatBytes(rendered.blob.size)}).`;
+    renderEditor(); renderPreview();
+  } catch (error) {
+    // Registration can fail after Storage succeeds. Keep an orphan only if
+    // cleanup itself fails, and always report the registration/upload error.
+    await supabase.storage.from("quiz-media").remove([storagePath]).catch(() => {});
+    throw error;
+  }
+}
+
+async function chooseVideoClip(file) {
+  const dialog = $("#video-clipper");
+  const player = $("#video-source-player");
+  const sourceUrl = URL.createObjectURL(file);
+  player.src = sourceUrl;
+  await new Promise((resolve, reject) => { player.onloadedmetadata = resolve; player.onerror = () => reject(new Error("This video could not be previewed in this browser.")); });
+  const maximum = Math.min(45, player.duration || 45);
+  const edit = { startSeconds: 0, endSeconds: maximum, videoFadeInSeconds: 0, videoFadeOutSeconds: 0, audioFadeInSeconds: 0, audioFadeOutSeconds: 0 };
+  const fields = Object.fromEntries(["startSeconds", "endSeconds", "videoFadeInSeconds", "videoFadeOutSeconds", "audioFadeInSeconds", "audioFadeOutSeconds"].map((key) => [key, dialog.querySelector(`[data-video-edit="${key}"]`)]));
+  const refresh = () => { Object.entries(fields).forEach(([key, input]) => { input.value = edit[key]; input.max = key === "endSeconds" ? player.duration : Math.min(22.5, edit.endSeconds - edit.startSeconds); }); dialog.querySelector("[data-video-duration]").textContent = `${formatSeconds(edit.endSeconds - edit.startSeconds)} selected · MP4 H.264, up to 1280×720 / 30 fps`; };
+  refresh();
+  return new Promise((resolve, reject) => {
+    const close = () => { player.pause(); player.removeAttribute("src"); player.load(); URL.revokeObjectURL(sourceUrl); dialog.close(); videoClipperSession = null; };
+    const startRender = () => {
+      const worker = new Worker(new URL("./video-processor.worker.bundle.js", import.meta.url), { type: "module" });
+      const jobId = crypto.randomUUID(); const status = dialog.querySelector("[data-video-status]");
+      status.textContent = "Inspecting source and browser codec support…";
+      videoClipperSession = { cancel: () => worker.postMessage({ type: "cancel", jobId }) };
+      worker.onmessage = ({ data }) => {
+        if (data.jobId !== jobId) return;
+        if (data.type === "progress") { status.textContent = `${data.phase === "encode" ? "Rendering private MP4" : "Inspecting source"} (${Math.round(data.progress * 100)}%)…`; }
+        if (data.type === "error") { worker.terminate(); videoClipperSession = null; status.textContent = data.message; reject(new Error(data.message)); close(); }
+        if (data.type === "result") { worker.terminate(); close(); resolve({ ...data, blob: new Blob([data.buffer], { type: data.mimeType }) }); }
+      };
+      worker.onerror = (event) => { worker.terminate(); close(); reject(new Error(event.message || "The video processor failed to start.")); };
+      worker.postMessage({ type: "encode", jobId, file, edit });
+    };
+    dialog.querySelectorAll("[data-video-edit]").forEach((input) => input.oninput = () => { edit[input.dataset.videoEdit] = Number(input.value) || 0; refresh(); });
+    dialog.querySelector("[data-video-set-start]").onclick = () => { edit.startSeconds = Math.min(player.currentTime, edit.endSeconds - .1); refresh(); };
+    dialog.querySelector("[data-video-set-end]").onclick = () => { edit.endSeconds = Math.max(player.currentTime, edit.startSeconds + .1); refresh(); };
+    dialog.querySelector("[data-video-render]").onclick = startRender;
+    dialog.querySelectorAll("[data-video-cancel]").forEach((button) => button.onclick = () => { videoClipperSession?.cancel?.(); close(); resolve(null); });
+    dialog.showModal();
+  });
 }
 
 async function uploadPrivateImage(file, optionIndex, source = null) {
@@ -1134,8 +1256,9 @@ function renderMediaLibrary() {
   list.innerHTML = mediaAssets.map((asset) => {
     const inDraft = JSON.stringify(bank).includes(asset.id);
     const title = asset.display_name || asset.source_title || `${asset.kind} · ${asset.id.slice(0, 8)}`;
-    const preview = asset.kind === "image" ? `<img class="media-thumb" data-media-preview="${asset.id}" alt="${escapeHtml(title)}" />` : `<audio class="media-audio" data-media-preview="${asset.id}" controls preload="none"></audio>`;
-    return `<li>${preview}<div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(formatBytes(asset.byte_size))}${asset.source_license ? ` · ${escapeHtml(asset.source_license)}` : ""}</span>${asset.source_url ? `<a href="${escapeHtml(asset.source_url)}" target="_blank" rel="noreferrer">Source</a>` : ""}</div><button class="media-rename" data-rename-media="${asset.id}">Rename</button>${inDraft ? '<em>Used in open draft</em>' : `<button class="media-delete" data-delete-media="${asset.id}">Delete</button>`}</li>`;
+    const preview = asset.kind === "image" ? `<img class="media-thumb" data-media-preview="${asset.id}" alt="${escapeHtml(title)}" />` : asset.kind === "video" ? `<video class="media-thumb" data-media-preview="${asset.id}" muted preload="metadata"></video>` : `<audio class="media-audio" data-media-preview="${asset.id}" controls preload="none"></audio>`;
+    const videoInfo = asset.kind === "video" ? `${asset.duration_ms ? ` · ${formatSeconds(asset.duration_ms / 1000)}` : ""}${asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}` : "";
+    return `<li>${preview}<div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(formatBytes(asset.byte_size))}${videoInfo}${asset.source_license ? ` · ${escapeHtml(asset.source_license)}` : ""}</span>${asset.source_url ? `<a href="${escapeHtml(asset.source_url)}" target="_blank" rel="noreferrer">Source</a>` : ""}</div><button class="media-rename" data-rename-media="${asset.id}">Rename</button>${inDraft ? '<em>Used in open draft</em>' : `<button class="media-delete" data-delete-media="${asset.id}">Delete</button>`}</li>`;
   }).join("");
   document.querySelectorAll("[data-rename-media]").forEach((button) => button.addEventListener("click", () => promptRenameMediaAsset(button.dataset.renameMedia)));
   document.querySelectorAll("[data-delete-media]").forEach((button) => button.addEventListener("click", () => deleteUnusedMediaAsset(button.dataset.deleteMedia)));
@@ -1199,7 +1322,8 @@ async function loadMediaPreview(element) {
   const status = element.closest(".audio-preview")?.querySelector("[data-audio-preview-status]");
   const uploadedPreview = uploadedImagePreviewUrls.get(element.dataset.mediaPreview);
   const uploadedAudioPreview = uploadedAudioPreviewUrls.get(element.dataset.mediaPreview);
-  if (uploadedPreview || uploadedAudioPreview) { element.src = uploadedPreview || uploadedAudioPreview; element.load?.(); if (status) status.textContent = "Private clip attached"; return; }
+  const uploadedVideoPreview = uploadedVideoPreviewUrls.get(element.dataset.mediaPreview);
+  if (uploadedPreview || uploadedAudioPreview || uploadedVideoPreview) { element.src = uploadedPreview || uploadedAudioPreview || uploadedVideoPreview; element.load?.(); if (status) status.textContent = "Private clip attached"; return; }
   if (!supabase) { if (status) status.textContent = "Sign in to preview this private clip."; return; }
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) { if (status) status.textContent = "Your author sign-in has expired. Sign in again to preview audio."; return; }
@@ -1226,7 +1350,7 @@ async function loadMediaPreview(element) {
 async function loadMediaAssets() {
   if (!supabase || !currentUser) { mediaAssets = []; mediaAssetsLoaded = false; renderMediaLibrary(); return; }
   mediaAssetsLoaded = false;
-  let { data, error } = await supabase.from("media_assets").select("id,kind,byte_size,storage_path,display_name,source_url,source_title,source_license,created_at").order("created_at", { ascending: false });
+  let { data, error } = await supabase.from("media_assets").select("id,kind,mime_type,byte_size,storage_path,display_name,source_url,source_title,source_license,duration_ms,width,height,has_audio,created_at").order("created_at", { ascending: false });
   if (error) {
     // Optional naming/source columns were added in later migrations. Loading
     // core asset records must still work if those metadata migrations lag.

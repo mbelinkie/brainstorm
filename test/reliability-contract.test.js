@@ -64,11 +64,30 @@ test("presentation replaces its loaded private audio when the host cues another 
   assert.match(app, /loadedPrivateAudioAssetId = assetId/);
 });
 
+test("title-page SRT captions stay local to the presentation audio clock", () => {
+  assert.match(author, /parseSrt/);
+  assert.match(author, /data-import-title-captions/);
+  assert.match(author, /data-remove-title-captions/);
+  assert.match(app, /activeCaptionAt\(captions, \(presentationAudioPlayer\?\.currentTime \|\| 0\) \* 1000\)/);
+  assert.match(app, /data-title-caption-overlay/);
+  assert.match(app, /text\.textContent = cue\.text/);
+  assert.match(app, /requestAnimationFrame/);
+  assert.doesNotMatch(app.match(/state\.audioCommand = \{[\s\S]*?\};/)?.[0] || "", /captions/);
+});
+
 test("audio commands identify the exact authored question and clip", () => {
   assert.match(app, /questionId: hostQuestion\.id, clipId: state\.activeClipId/);
   assert.match(app, /function questionDefinitionById/);
   assert.match(app, /questionDefinitionById\(command\?\.questionId\)/);
   assert.match(app, /commandedQuestion\?\.clips\?\.find/);
+});
+
+test("Host can adjust title music volume without interrupting playback", () => {
+  assert.match(app, /data-audio-volume/);
+  assert.match(app, /action: "volume", audioScope: "title"/);
+  const command = app.slice(app.indexOf("async function applyPresentationAudioCommand"), app.indexOf("async function clearActiveClip"));
+  assert.match(command, /presentationAudioPlayer\.volume = normalizedAudioVolume\(command\.volume\)/);
+  assert.ok(command.indexOf('command.action === "volume"') < command.indexOf('command.action === "pause"'));
 });
 
 test("host setup and join controls appear only on the title screen", () => {

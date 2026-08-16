@@ -164,14 +164,14 @@ For every meaningful fix, record:
 
 When migration `0030_multi_fill_in_the_blank_scoring.sql` was ready, the authenticated Supabase project had a working live schema but an empty remote migration-history table. A normal `supabase db push` therefore considered migrations 0001–0030 pending and would have tried to replay the entire database setup. The safe workaround was to execute only migration 0030 with `supabase db query --linked --file ...` and then inspect the live function definition to verify the new scoring branch.
 
-That avoided a destructive replay, but it did not repair the underlying bookkeeping: the live project still cannot safely use ordinary migration pushes until its existing schema and migration files are audited and baselined. A migration file existing locally is not proof that the remote system recorded or applied it.
+On 2026-08-15, the production public schema, functions, RLS state, policies, critical grants, and triggers were audited against local migrations `0001`–`0031`. The checked versions were then recorded as applied, and a `supabase db push --linked --dry-run` confirmed there was nothing pending. Normal migration pushes are now safe. The separately provisioned `ensure_rls` event trigger remains a production security guardrail outside this repository's migration set.
 
 ### What to do next time
 
 - Link the repository to its Supabase project when the project is created, and keep the link/configuration reproducible for maintainers.
 - Run `supabase migration list --linked` before every database push; stop if history is unexpectedly empty, divergent, or out of order.
 - Never mark old migrations as applied merely because the application appears to work. Compare the live schema, functions, policies, grants, and relevant migration checksums first.
-- After that audit, baseline migrations 0001–0030 in the remote history table so future `supabase db push` operations apply only genuinely pending files.
+- After that audit, baseline the confirmed migrations in the remote history table so future `supabase db push` operations apply only genuinely pending files.
 - Add a deployment preflight that fails when the live schema exists but the migration-history table is empty.
 - Verify high-risk migrations by querying the resulting live function or schema, not only by trusting a zero exit code.
 

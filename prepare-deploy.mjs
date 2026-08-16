@@ -16,6 +16,8 @@ const publicFiles = [
   "author.html",
   "author.css",
   "author.js",
+  "subtitle-core.js",
+  "video-processor.worker.bundle.js",
   "config.js",
   "music-trivia.question-bank.json",
   "quiz.sample.json"

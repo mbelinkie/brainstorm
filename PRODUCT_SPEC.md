@@ -13,7 +13,7 @@ Last updated: 2026-08-14
 | 0 — Product decisions and technical spike | Complete | Architecture, audio constraint, local transport proof, and quiz schema selected. A Supabase Free project in US East is live with the initial schema and RLS enabled. |
 | 1 — UX and visual design | Substantially complete for MVP | Kaplan-inspired host, player, landing, and authoring surfaces are deployed. Visual polish remains. |
 | 2 — Realtime game foundation | Complete for MVP | Public Cloudflare deployment, named-player join, host controls, refresh recovery, protected room state, server scoring, and the shared leaderboard have been rehearsed end-to-end. |
-| 3 — Core questions, scoring, and leaderboard | Complete for MVP | Choice, text, matching, ordering, closest-number, and leaderboard scoring are implemented. Manual score adjustment and richer reveal/leaderboard modes remain. |
+| 3 — Core questions, scoring, and leaderboard | Complete for MVP | Choice, text, matching, ordering, closest-number, categorize, and leaderboard scoring are implemented, along with manual score adjustment and richer reveal/leaderboard modes. |
 | 4 — Music and advanced question formats | In progress | Matching, host-only audio cues/URLs, fill-in, ordering, categorization, and private audio/image upload are implemented. Real clip and image preparation remain. |
 | 5 — Authoring workflow | In progress | Browser editor, JSON import/export, client-side schema validation, magic-link author authentication, protected publishing, host quiz selection, basic quiz/round management, search/filtering, templates for every supported question type, and a private media library with previews, names, asset reuse, and safe cleanup are live. |
 | 6 — Hardening and dress rehearsal | Planned | Needs a complete real-content Google Meet rehearsal with several phones. |
@@ -405,7 +405,7 @@ The design system should validate contrast for all semantic color pairings. Colo
 - **Frontend:** vanilla HTML, CSS, and ES modules; deliberately small and dependency-light for the 10–20 player target
 - **UI:** CSS variables/design tokens with Kaplan-inspired host, player, and authoring views
 - **Database/auth:** Supabase Postgres, protected RPCs, Realtime Broadcast, and magic-link author authentication
-- **Realtime:** Supabase Realtime Broadcast/Presence or a small Socket.IO service
+- **Realtime:** Supabase Realtime Broadcast for synchronized room and player state
 - **Hosting:** Cloudflare Workers static assets; Supabase managed backend
 - **Validation:** structured JSON quiz definitions with editor and RPC boundary checks
 
@@ -707,3 +707,7 @@ Do not wait for a drag-and-drop visual editor. The live runner, scoreboard, and 
 - Google Meet recommends sharing a browser tab when presentation audio needs to be shared: https://support.google.com/meet/answer/9308856
 - Browser autoplay with sound can be blocked, so direct user-controlled playback is required: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/autoplay
 - Supabase Realtime supports low-latency Broadcast and Presence suitable for synchronized game state and player presence: https://supabase.com/docs/guides/realtime
+
+## 18. Presentation video clips
+
+Ordinary questions may carry one private presentation medium: either audio or a video derivative, never both. Authors trim MP4, MOV, or WebM source locally and upload only a standardized private MP4; the source file and edit metadata remain local. Video is Host-cued but rendered only in Presentation, including embedded audio. Player payloads intentionally omit the video asset UUID, labels, source metadata, and playback URL.
