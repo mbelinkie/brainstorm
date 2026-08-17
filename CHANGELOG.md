@@ -10,6 +10,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 - Added an optional manual volume override to the audio-clip upload dialog: a checkbox and slider let an author bypass automatic −16 dBFS loudness leveling and bake in a fixed volume (1–150%) for any clip instead, for clips that are deliberately meant to be quieter (or louder) than the automatic target. Removed the old door-background-music-only fixed-50% mechanism (`DOOR_BACKGROUND_AUDIO_GAIN`), which the door slot now achieves through the same general override.
 - Fixed the Host "answers received" count sometimes showing roughly double the real number of connected players (e.g. 6/12 for 6 players). Submission and presence broadcasts were using each player's local join credential instead of the server-assigned roster ID, so the host's player list could gain a duplicate entry per player on questions after the first score lock.
 - Added a "Who got it right" summary to the Host screen after answer reveal, showing how many submitted answers were fully correct. For multi-part questions (matching, categorize, and multi-fill-in-the-blank), it also breaks down how many players got each individual part right.
+- Removed the author-only image suggestion assistant: the "Image suggestion assistant" panel on the main authoring screen and the per-image "Find image" control are gone, along with the underlying Wikimedia Commons/Google Images search flow and the `/media-assistant/search` Worker route. Pasting and uploading images are unaffected.
 
 ## 2026-08-15
 

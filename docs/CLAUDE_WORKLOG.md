@@ -268,3 +268,41 @@ $ npm test
 - **Visual/manual verification of the new Host panel.** Did not open `?view=host` in a browser to confirm `.answer-results` renders acceptably alongside the existing `.stat`/`.manual-score` blocks at host-panel widths, or that it's absent outside the reveal phase and outside the host view. CSS was written to match the existing `.manual-score`/`.stat` variables and minified style in `styles.css`, but not screenshot-checked.
 - **`closest_number` "correct" definition.** `tallyQuestionResults()` treats "correct" as tied-for-closest, matching the SQL's shared-points winner logic. This is a judgment call, not something the product spec states explicitly as "correct" for that question type — flagging it in case the user wants different framing (e.g. "within X of the target" instead of "closest of those who answered").
 - Did not touch `supabase/migrations/` — no schema change, no `supabase db push`, per the task boundaries.
+
+## 2026-08-17 — Removed the image suggestion assistant
+
+- **Branch:** `claude/remove-image-suggest`. The task arrived pointed at a `quiz-<name>` worktree that didn't actually exist yet — the main checkout (`Quiz Platform/`) was on `main` with an unrelated in-progress edit to `docs/RELEASE_PROCESS.md` (not touched). Created this worktree per that same doc's documented `git worktree add ../quiz-<name> -b claude/<name> main` procedure before doing any task work.
+- **Request:** remove the author-only "image suggestion assistant" feature entirely — both its entry point on the main authoring screen and its entry point on each image upload control — because the user does not want the feature at all.
+- **Scope:** this was a full feature removal, not just a UI hide. Traced the feature end-to-end from the two named UI entry points through to its dedicated backend route and removed all of it, since leaving a dead `/media-assistant/search` Worker route, local dev proxy, and Wikimedia/OpenAI-calling code behind an unreachable UI would be dead weight, not a partial removal.
+- **Files touched:**
+  - `author.html` — removed the `<section class="media-assistant">` panel (the "Image suggestion assistant" heading, "Open image finder" button, and draft-mode checkbox) from the preview column, and removed the `<dialog id="image-finder">` element entirely.
+  - `author.js` — removed the "Find image" menu item from `imageActionControls()` (shared by every image upload slot: title, reveal, question, and each option); removed `openImageFinder`, `draftImageSearch`, `findImageIdeas`, `approveSuggestedImage`, the `IMAGE_SEARCH_DRAFT_KEY` constant, the `imageFinderTarget` module variable (and its now-unnecessary default parameter on `resolveImageFinderTarget`), and all associated event-listener wiring (`#suggest-images`, `#image-draft-mode`, `#image-finder-*`, `[data-find-image]`).
+  - `author.css` — removed the now-unused `.media-assistant`, `.suggested-queries`, and `.media-candidate` rules. Kept `.assistant-setting` (still used by the audio-clipper's volume-override checkbox) and `.image-finder` (still used as generic modal styling by the rename-asset and sign-in dialogs).
+  - `cloudflare-worker.js` — removed the `POST /media-assistant/search` route (author auth check, OpenAI prompt, Wikimedia Commons query, and candidate assembly).
+  - `server.mjs` — removed the local dev-server proxy for `/media-assistant/search`.
+  - `wrangler.jsonc` — removed `/media-assistant/*` from `run_worker_first`.
+  - `test/access-control.test.js` — removed the now-obsolete "media assistant requires author authentication" test and the `media-assistant` assertion in "media routes bypass the static-asset handler"; updated the slice-boundary marker in "closest-number guesses expose player identities…" from the removed route to the next real route (`/author-media/`) so the slice still isolates the intended handler.
+  - `test/reliability-contract.test.js` — removed the obsolete "local authoring proxies image-assistant requests to the Worker" test and its now-unused `server` file read.
+  - `test/image-suggestion-removal.test.js` — new. Asserts the panel, dialog, JS wiring, and backend route are all absent, and that the remaining paste/upload image actions are untouched.
+  - `PRODUCT_SPEC.md` — removed the sentence describing the media assistant from the image-selection bullet (this file documents current behavior, unlike `CHANGELOG.md`'s historical log, which was left alone and instead given a new dated entry).
+  - `CHANGELOG.md` — added one line under today's existing `## 2026-08-17` section.
+- **Commands run and actual output:**
+
+```
+$ npm test
+...
+ℹ tests 143
+ℹ suites 0
+ℹ pass 143
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+  Before writing the new test file, verified it actually discriminates: `git stash push` on just the changed files (leaving the new test file in place) reproduced the pre-removal source, ran `node --test test/image-suggestion-removal.test.js` directly and saw it fail with the expected `doesNotMatch`/`/media-assistant/search` assertion error, then `git stash pop` to restore the fix.
+- **One pre-existing, unrelated gap found and worked around:** a fresh `git worktree add` checkout has no `video-processor.worker.bundle.js` (git-ignored generated build output) and no `node_modules` (this repo's tests only need `node:` builtins, so `npm test` doesn't need `npm install`, but `npm run build:video` does need the `esbuild` devDependency, which isn't installed here). `test/deploy-manifest.test.js` failed on that missing bundle before I touched anything. Copied the already-built bundle from the main checkout (`Quiz Platform/video-processor.worker.bundle.js`) into this worktree to unblock a clean full-suite run; did not rebuild it, install anything, or touch `package-lock.json`. This file is git-ignored and irrelevant to my diff.
+- **Could not verify:**
+  - Did not open `author.html` in a browser to visually confirm the preview-column layout looks correct with the assistant panel gone, or that the per-image "⌄" menu (now containing only "Upload image") still opens/closes and looks reasonable with one item instead of two.
+  - Did not deploy or exercise the live Cloudflare Worker — confirmed by source inspection and the regression test that `/media-assistant/search` is gone from `cloudflare-worker.js`, `server.mjs`, and `wrangler.jsonc`, but did not hit a running Worker to confirm the route now 404s.
+  - Left the `source` parameter on `author.js`'s `uploadPrivateImage(file, optionIndex, source = null)` in place even though the only caller that ever passed a non-null `source` (`approveSuggestedImage`) is gone — it's dead but harmless (defaults to `null`, which is also what plain manual uploads already pass), and removing it would touch a function several other tests slice by name; left it rather than risk an unrelated regression for a cosmetic cleanup.

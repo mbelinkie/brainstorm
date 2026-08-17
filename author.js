@@ -6,7 +6,6 @@ import { MAX_VIDEO_BYTES, resolveAudioClipProcessing, clampManualAudioVolumePerc
 const BANK_URL = "./music-trivia.question-bank.json";
 const DRAFT_KEY = "quiz-control:author-draft:v1";
 const PUBLISHED_SNAPSHOT_KEY = "quiz-control:last-published-bank:v1";
-const IMAGE_SEARCH_DRAFT_KEY = "quiz-control:image-search-draft-mode:v1";
 const ORIGINAL_SOURCE_INDEX_KEY = "quiz-control:original-image-sources:v1";
 const ORIGINALS_DIRECTORY_DB = "quiz-control-originals";
 const ORIGINALS_DIRECTORY_STORE = "directories";
@@ -42,7 +41,6 @@ const uploadedVideoPreviewUrls = new Map();
 let cropperSession = null;
 let audioClipperSession = null;
 let videoClipperSession = null;
-let imageFinderTarget = null;
 let pasteImageTarget = null;
 
 const $ = (selector) => document.querySelector(selector);
@@ -64,7 +62,7 @@ const DEFAULT_BETWEEN_ROUND_BONUS = Object.freeze({ enabled: true, audio: {}, do
 const bonusConfig = () => (bank.betweenRoundBonus ||= clone(DEFAULT_BETWEEN_ROUND_BONUS));
 
 function imageActionControls(target, uploadInput) {
-  return `<div class="option-image-actions image-split" data-image-split><button class="button button-quiet image-paste-button" data-paste-image="${escapeHtml(target)}" type="button">Paste image</button><button class="button button-quiet image-menu-button" data-image-menu type="button" aria-label="More image options" aria-expanded="false">⌄</button><div class="image-action-menu" role="menu"><label class="image-menu-item" role="menuitem">Upload image${uploadInput}</label><button class="image-menu-item" data-find-image="${escapeHtml(target)}" type="button" role="menuitem">Find image</button></div></div>`;
+  return `<div class="option-image-actions image-split" data-image-split><button class="button button-quiet image-paste-button" data-paste-image="${escapeHtml(target)}" type="button">Paste image</button><button class="button button-quiet image-menu-button" data-image-menu type="button" aria-label="More image options" aria-expanded="false">⌄</button><div class="image-action-menu" role="menu"><label class="image-menu-item" role="menuitem">Upload image${uploadInput}</label></div></div>`;
 }
 
 function attachedImagePreview(assetId, alt) {
@@ -509,7 +507,6 @@ function bindEditorEvents() {
   $("[data-upload-title-image]")?.addEventListener("change", async (event) => { try { await uploadPrivateImage(event.target.files?.[0], "title"); } catch (error) { alert(`Could not upload title artwork: ${error.message}`); $("#save-state").textContent = "Title artwork upload failed"; } finally { event.target.value = ""; } });
   document.querySelectorAll("[data-paste-image]").forEach((button) => button.addEventListener("click", () => armImagePaste(button.dataset.pasteImage)));
   document.querySelectorAll("[data-image-menu]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); const split = button.closest("[data-image-split]"); const isOpen = split.classList.toggle("is-open"); button.setAttribute("aria-expanded", String(isOpen)); document.querySelectorAll("[data-image-split].is-open").forEach((entry) => { if (entry !== split) { entry.classList.remove("is-open"); entry.querySelector("[data-image-menu]")?.setAttribute("aria-expanded", "false"); } }); }));
-  document.querySelectorAll("[data-find-image]").forEach((button) => button.addEventListener("click", () => openImageFinder(button.dataset.findImage)));
   document.querySelectorAll("[data-existing-image]").forEach((select) => select.addEventListener("change", () => { const option = question().options[Number(select.dataset.existingImage)]; if (select.value) option.imageAssetId = select.value; else delete option.imageAssetId; markChanged(); renderEditor(); renderPreview(); }));
   $("[data-existing-reveal-image]")?.addEventListener("change", (event) => { question().revealImageAssetId = event.target.value || undefined; markChanged(); renderEditor(); renderPreview(); });
   $("[data-existing-question-image]")?.addEventListener("change", (event) => { question().questionImageAssetId = event.target.value || undefined; markChanged(); renderEditor(); renderPreview(); });
@@ -838,75 +835,13 @@ async function reformatAttachedImage(target) {
   renderPreview();
 }
 
-function resolveImageFinderTarget(target = imageFinderTarget) {
+function resolveImageFinderTarget(target) {
   if (target === "title") return { target: "title", label: "the opening title-page artwork" };
   if (target === "reveal") return { target: "reveal", label: "the answer reveal" };
   if (target === "question-image") return { target: "question-image", label: "the question image" };
   const index = Number(String(target || "").replace(/^option:/, ""));
   const option = question()?.options?.[index];
   return option ? { target: `option:${index}`, optionIndex: index, label: option.label } : null;
-}
-
-function openImageFinder(target) {
-  const resolved = resolveImageFinderTarget(target);
-  if (!resolved) return;
-  imageFinderTarget = resolved.target;
-  const item = question();
-  const dialog = $("#image-finder");
-  $("#image-finder-target").textContent = `Finding an image for ${resolved.label}. The assistant also sees this quiz: ${bank.title}${item ? ` · ${item.prompt}` : ""}`;
-  $("#image-finder-query").value = resolved.label;
-  $("#image-finder-status").textContent = "Describe the image you want, then search.";
-  $("#image-finder-results").innerHTML = "";
-  $("#image-finder-draft-mode").checked = localStorage.getItem(IMAGE_SEARCH_DRAFT_KEY) === "true";
-  $("#image-finder-search").textContent = $("#image-finder-draft-mode").checked ? "Open Google Images" : "Find cleared images";
-  dialog.showModal();
-}
-
-function draftImageSearch(query, target) {
-  const item = question();
-  const terms = [target.label, query, item?.prompt].filter(Boolean).join(" ");
-  window.open(`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(terms)}`, "_blank", "noopener,noreferrer");
-  $("#image-finder-status").textContent = "Google Images opened in a new tab for drafting reference only. Clear rights before adding an image to the final quiz.";
-}
-
-async function findImageIdeas() {
-  const item = question();
-  const status = $("#image-finder-status");
-  const results = $("#image-finder-results");
-  const target = resolveImageFinderTarget();
-  const requestedImage = $("#image-finder-query").value.trim();
-  if (!target) { status.textContent = "Choose an image target first."; return; }
-  if ($("#image-finder-draft-mode").checked) { draftImageSearch(requestedImage, target); return; }
-  if (!currentUser) { status.textContent = "Sign in as an authorized author to use image suggestions."; return; }
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) { status.textContent = "Your sign-in has expired. Sign in again to use image suggestions."; return; }
-  status.textContent = "Researching image ideas…";
-  results.innerHTML = "";
-  try {
-    const response = await fetch("/media-assistant/search", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ prompt: item.prompt, options: item.options, targetLabel: target.label, imageRequest: requestedImage }) });
-    const responseText = await response.text();
-    let data;
-    try { data = JSON.parse(responseText); } catch { throw new Error(response.ok ? "The image assistant returned an unreadable response." : `Image assistant request failed (${response.status}): ${responseText.slice(0, 120) || "no response"}`); }
-    if (!response.ok) throw new Error(data.error || "Could not find image ideas.");
-    status.textContent = data.guidance || "Review each source and license before approval.";
-    results.innerHTML = `<p class="suggested-queries">${(data.queries || []).map((query) => `<span>${escapeHtml(query)}</span>`).join("")}</p>${(data.candidates || []).map((candidate, index) => `<article class="media-candidate"><img src="${escapeHtml(candidate.thumbnailUrl)}" alt="${escapeHtml(candidate.title)}" /><div><strong>${escapeHtml(candidate.title)}</strong><small>${escapeHtml(candidate.license)}</small><a href="${escapeHtml(candidate.pageUrl)}" target="_blank" rel="noreferrer">View source & license</a><button class="button button-primary" data-use-suggestion="${index}">Approve and attach</button></div></article>`).join("") || "<p>No Wikimedia Commons images matched. Try a more specific request or upload your own image.</p>"}`;
-    document.querySelectorAll("[data-use-suggestion]").forEach((button) => button.addEventListener("click", () => approveSuggestedImage(data.candidates[Number(button.dataset.useSuggestion)], button)));
-  } catch (error) { status.textContent = error.message; }
-}
-
-async function approveSuggestedImage(candidate, button) {
-  const target = resolveImageFinderTarget();
-  if (!candidate?.originalUrl || !target) return;
-  button.disabled = true;
-  button.textContent = "Downloading…";
-  try {
-    const response = await fetch(candidate.originalUrl);
-    if (!response.ok) throw new Error("The source image could not be downloaded. Use the source page to download it manually, then upload your own copy.");
-    const blob = await response.blob();
-    const type = ["image/jpeg", "image/png", "image/webp"].includes(blob.type) ? blob.type : "image/jpeg";
-    await uploadPrivateImage(new File([blob], candidate.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "suggested-image", { type }), ["title", "reveal", "question-image"].includes(target.target) ? target.target : target.optionIndex, candidate);
-    $("#image-finder-status").textContent = "Approved image optimized and attached. Publish a new version when ready.";
-  } catch (error) { button.disabled = false; button.textContent = "Approve and attach"; $("#image-finder-status").textContent = error.message; }
 }
 
 async function chooseImageCrop(file) {
@@ -1593,13 +1528,6 @@ $("#download").addEventListener("click", download);
 $("#refresh-media").addEventListener("click", () => loadMediaAssets());
 $("#download-diagnostics").addEventListener("click", downloadDiagnostics);
 $("#choose-originals-folder").addEventListener("click", chooseOriginalsFolder);
-$("#suggest-images").addEventListener("click", () => { const item = question(); openImageFinder(item?.options?.length ? "option:0" : "reveal"); });
-$("#image-draft-mode").checked = localStorage.getItem(IMAGE_SEARCH_DRAFT_KEY) === "true";
-$("#image-draft-mode").addEventListener("change", (event) => localStorage.setItem(IMAGE_SEARCH_DRAFT_KEY, String(event.target.checked)));
-$("#image-finder-draft-mode").addEventListener("change", (event) => { localStorage.setItem(IMAGE_SEARCH_DRAFT_KEY, String(event.target.checked)); $("#image-draft-mode").checked = event.target.checked; $("#image-finder-search").textContent = event.target.checked ? "Open Google Images" : "Find cleared images"; });
-$("#image-finder-search").addEventListener("click", findImageIdeas);
-$("#image-finder-close").addEventListener("click", () => $("#image-finder").close());
-$("#image-finder-cancel").addEventListener("click", () => $("#image-finder").close());
 document.addEventListener("paste", pasteClipboardImage);
 document.addEventListener("click", () => document.querySelectorAll("[data-image-split].is-open").forEach((entry) => { entry.classList.remove("is-open"); entry.querySelector("[data-image-menu]")?.setAttribute("aria-expanded", "false"); }));
 $("#nav-search").addEventListener("input", (event) => { navSearch = event.target.value; renderNav(); });

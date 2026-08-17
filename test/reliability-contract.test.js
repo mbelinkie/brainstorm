@@ -5,7 +5,6 @@ import fs from "node:fs";
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const author = fs.readFileSync(new URL("../author.js", import.meta.url), "utf8");
 const authorHtml = fs.readFileSync(new URL("../author.html", import.meta.url), "utf8");
-const server = fs.readFileSync(new URL("../server.mjs", import.meta.url), "utf8");
 
 test("player UI waits for server confirmation before recording submission", () => {
   const submit = app.slice(app.indexOf('document.querySelector("[data-submit]")'), app.indexOf('document.querySelector("[data-player]")'));
@@ -17,11 +16,6 @@ test("temporarily invalid author drafts survive refresh", () => {
   const restore = author.slice(author.indexOf("function restoredDraft"), author.indexOf("function validateQuiz"));
   assert.doesNotMatch(restore, /validateQuiz/);
   assert.match(restore, /Array\.isArray\(draft\.bank\.rounds\)/);
-});
-
-test("local authoring proxies image-assistant requests to the Worker", () => {
-  assert.match(server, /requestPath === "\/media-assistant\/search"/);
-  assert.match(server, /workerOrigin/);
 });
 
 test("valid attached images do not depend on the media-library list", () => {
