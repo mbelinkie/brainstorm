@@ -14,6 +14,20 @@ export function correctOptionId(question = {}) {
   return question.correctOptionIds?.[0] || question.options?.[question.correctOption]?.id || null;
 }
 
+// A player's saved name/logo (see app.js's persistedPlayerValue) should let a
+// phone rejoin after an accidental tab close, but only within one live
+// session -- not forever. app.js stamps a last-active timestamp alongside the
+// identity and clears it once this says the gap is too long, so the next
+// game on a different day asks the player to join fresh instead of quietly
+// reusing last time's name and logo.
+export const PLAYER_SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+export function isPlayerSessionExpired(lastActiveAt, now = Date.now(), ttlMs = PLAYER_SESSION_TTL_MS) {
+  const lastActive = Number(lastActiveAt);
+  if (!Number.isFinite(lastActive)) return true;
+  return now - lastActive > ttlMs;
+}
+
 // Clamp a host-set presentation volume to a valid gain (0..1), falling back
 // to full volume for anything unset or non-numeric.
 export function normalizedAudioVolume(value) {

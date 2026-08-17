@@ -268,3 +268,47 @@ $ npm test
 - **Visual/manual verification of the new Host panel.** Did not open `?view=host` in a browser to confirm `.answer-results` renders acceptably alongside the existing `.stat`/`.manual-score` blocks at host-panel widths, or that it's absent outside the reveal phase and outside the host view. CSS was written to match the existing `.manual-score`/`.stat` variables and minified style in `styles.css`, but not screenshot-checked.
 - **`closest_number` "correct" definition.** `tallyQuestionResults()` treats "correct" as tied-for-closest, matching the SQL's shared-points winner logic. This is a judgment call, not something the product spec states explicitly as "correct" for that question type — flagging it in case the user wants different framing (e.g. "within X of the target" instead of "closest of those who answered").
 - Did not touch `supabase/migrations/` — no schema change, no `supabase db push`, per the task boundaries.
+
+## 2026-08-17 — Player identity outlived its session (auto-rejoin with a stale name/logo)
+
+- **Branch:** `claude/device-session-memory`, worktree `../quiz-device-session-memory` off `main` at `1754625`.
+- **Bug (user-reported):** A phone that had previously played a quiz auto-filled its old name and logo when scanning the QR code for an unrelated, later room — the join screen never appeared. Desired: reconnect a phone that closes its tab and immediately rescans the same room's QR, but ask for a name again for a genuinely separate, later game.
+- **Files touched:**
+  - `quiz-core.js` — added `isPlayerSessionExpired(lastActiveAt, now, ttlMs)` (pure) and `PLAYER_SESSION_TTL_MS` (6 hours).
+  - `app.js` — added `PLAYER_SESSION_ACTIVITY_KEY`; on load, clears the saved `musicTriviaPlayerId`/`musicTriviaPlayerName`/`quizPlayerLogoKey`/activity keys (both storages) if `isPlayerSessionExpired()` says the gap is too long, before those keys are read into `playerId`/`playerName`/`playerLogoKey`. `savePlayerValue()` now also stamps the activity timestamp, so any player action (join, name/logo pick, door pick) extends the session.
+  - `test/quiz-core.test.js` — new unit tests for `isPlayerSessionExpired()` (within TTL, past TTL, and no/invalid recorded activity all handled).
+  - `test/player-logo.test.js` — new structural test asserting `app.js` imports `isPlayerSessionExpired`, runs the expiry check and clears storage before the identity is read, and that `savePlayerValue` stamps the activity timestamp.
+
+### Root cause (confirmed, not guessed)
+
+`persistedPlayerValue()`/`savePlayerValue()` in `app.js` (pre-fix) read/wrote `musicTriviaPlayerId`, `musicTriviaPlayerName`, and `quizPlayerLogoKey` to `localStorage` with no expiry at all. The player-join screen only renders when `params.has("room") && !playerName` (`app.js`, join-screen branch); since `playerName` never expired, a returning device always skipped straight to the "You're in" / auto-rejoin branch (`if (view === "player" && params.has("room") && playerName) { ...roomApi.joinRoom(...) }`), regardless of how much time had passed since it was last used. This is a direct deviation from `PRODUCT_SPEC.md`'s stated design ("Players receive short-lived anonymous identities scoped to one session") — the identity was neither short-lived nor session-scoped, it was permanent. Read the full call chain (`app.js:493` comment block through the join-screen render and the auto-rejoin branch) and `test/player-logo.test.js`'s pre-existing "survives closing the browser" test, which confirms the *reconnect* behavior is intentional and had to be preserved, just bounded in time.
+
+### Fix
+
+Added a last-activity timestamp (`musicTriviaPlayerSessionAt`) written every time `savePlayerValue()` runs (i.e. on join, name/logo pick, door pick). On script load, `isPlayerSessionExpired()` (in `quiz-core.js`, unit-tested directly, not string-matched) compares that timestamp against `Date.now()` with a 6-hour TTL; if expired (or never set), the four player-identity keys are wiped from both `localStorage` and `sessionStorage` *before* `playerId`/`playerName`/`playerLogoKey` are read from them. A fresh `playerId` is then generated as before. A same-session reload/reconnect (tab closed and QR rescanned minutes later) leaves the timestamp fresh, so identity and the door-pick record survive untouched; a later day's game finds the timestamp stale, clears `playerName`, and the join screen's existing `!playerName` gate naturally asks for a name again.
+
+Did not scope the TTL by room code — the reported symptom is purely about elapsed time ("an entirely different day"), not about which room. `quiz-door-player:<roomCode>` records for other rooms are left alone (out of scope): they're inert once `playerId`/`playerName` have been cleared, since the auto-rejoin branch that would use them is gated on `playerName`.
+
+### Commands run and actual output
+
+```
+$ npm test
+...
+ℹ tests 144
+ℹ suites 0
+ℹ pass 143
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+The one failure, `test/deploy-manifest.test.js` ("every local file referenced by a shipped file is itself shipped" — `author.js references "./video-processor.worker.bundle.js", which does not exist"), is pre-existing and unrelated: `video-processor.worker.bundle.js` is a gitignored, locally built artifact (`npm run build:video`, needs `esbuild` from `node_modules`, which this fresh worktree doesn't have and which I did not install per the no-dependency-changes rule). Confirmed by `git stash`-ing my changes and re-running `npm test` in this same worktree: identical failure, same assertion, before any of my edits existed.
+
+Verified the new tests actually test something, per TDD: temporarily `git stash`-ed `app.js`/`quiz-core.js` (keeping the new tests) and re-ran `node --test test/quiz-core.test.js test/player-logo.test.js` — `quiz-core.test.js` failed outright (`isPlayerSessionExpired` doesn't exist to import) and `player-logo.test.js`'s new assertion failed on the missing `quiz-core.js` import. Restored the fix (`git stash pop`) and reran the full suite (output above).
+
+### Could not verify
+
+- **No live room / real device.** Everything above is a `localStorage`/`sessionStorage` timing model verified with real `Date.now()` math in unit tests, and structural assertions that the wiring exists in the right order in `app.js`. I did not open the app in an actual mobile browser, join a room, force-close the tab, rescan a QR code, or fast-forward a device's clock 6+ hours to watch the join screen reappear.
+- **The 6-hour TTL value itself.** The user's description ("same session" vs. "an entirely different day") doesn't pin an exact number; 6 hours is a judgment call sized to comfortably cover a single quiz night's intermissions/reconnects while reliably expiring by the next day. If actual quiz nights run longer than 6 hours between a player's actions, or the user wants a tighter/looser window, `PLAYER_SESSION_TTL_MS` in `quiz-core.js` is the one place to change it.
+- Did not touch `supabase/migrations/` — no schema or server-side change; this is entirely client-side join-screen gating, per the task boundaries and without being asked to add a migration.
