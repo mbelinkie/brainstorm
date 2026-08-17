@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const author = fs.readFileSync(new URL("../author.js", import.meta.url), "utf8");
+const authorHtml = fs.readFileSync(new URL("../author.html", import.meta.url), "utf8");
 const server = fs.readFileSync(new URL("../server.mjs", import.meta.url), "utf8");
 
 test("player UI waits for server confirmation before recording submission", () => {
@@ -47,18 +48,24 @@ test("audio trimmer lets Space toggle source playback", () => {
   assert.match(author, /audioClipperSession\.toggleSource\(\)/);
 });
 
-test("door background music is rendered at half volume instead of loudness-leveled", () => {
-  const upload = author.slice(author.indexOf("async function uploadPrivateAudio"), author.indexOf("async function tusUploadVideo"));
+test("the old hardcoded door-background 50% gain override no longer exists", () => {
+  assert.doesNotMatch(author, /DOOR_BACKGROUND_AUDIO_GAIN/);
+  assert.doesNotMatch(author, /doorBackgroundMusic/);
+  assert.doesNotMatch(author, /reduceDoorBackgroundAudioVolume/);
+  assert.doesNotMatch(authorHtml, /data-reduce-door-audio-volume/);
+});
+
+test("any audio clip, including door background music, can be uploaded at a manually chosen volume instead of auto-leveled", () => {
+  const chooser = author.slice(author.indexOf("async function chooseAudioClip"), author.indexOf("async function chooseOriginalsFolder"));
   const renderer = author.slice(author.indexOf("async function renderAudioClip"), author.indexOf("async function chooseAudioClip"));
-  const libraryLeveling = author.slice(author.indexOf("async function normalizeExistingLibraryAudio"), author.indexOf("async function reduceDoorBackgroundAudioVolume"));
-  const existingDoorFile = author.slice(author.indexOf("async function reduceDoorBackgroundAudioVolume"), author.indexOf("async function loadMediaPreview"));
-  assert.match(upload, /target\?\.betweenRoundAudioKey === "doorChoice"/);
-  assert.match(upload, /normalize: !doorBackgroundMusic, outputGain: doorBackgroundMusic \? DOOR_BACKGROUND_AUDIO_GAIN : 1/);
+  assert.match(author, /import \{ [^}]*resolveAudioClipProcessing[^}]*\} from ".\/video-utils\.js"/);
+  assert.match(chooser, /#audio-volume-override-enabled/);
+  assert.match(chooser, /#audio-volume-override-percent/);
+  assert.match(chooser, /resolveAudioClipProcessing\(\{\}, clip\.volumeOverride \? clip\.volumePercent : null\)/);
   assert.match(renderer, /const normalization = normalize \? normalizeAudioBuffer\(rendered\) : null/);
   assert.match(renderer, /applyAudioGain\(rendered, outputGain\)/);
-  assert.match(libraryLeveling, /asset\.id !== doorBackgroundAssetId/);
-  assert.match(existingDoorFile, /applyAudioGain\(decoded, DOOR_BACKGROUND_AUDIO_GAIN\)/);
-  assert.match(existingDoorFile, /storage\.from\("quiz-media"\)\.update/);
+  assert.match(authorHtml, /id="audio-volume-override-enabled" type="checkbox"/);
+  assert.match(authorHtml, /id="audio-volume-override-percent" type="range"/);
 });
 
 test("publish state and published JSON backups are tracked locally", () => {
@@ -98,12 +105,20 @@ test("audio commands identify the exact authored question and clip", () => {
   assert.match(app, /commandedQuestion\?\.clips\?\.find/);
 });
 
-test("Host can adjust title music volume without interrupting playback", () => {
+test("Host can adjust audio volume on any screen without interrupting playback, and it carries forward", () => {
   assert.match(app, /data-audio-volume/);
-  assert.match(app, /action: "volume", audioScope: "title"/);
+  // The slider must render on every playable audio panel (title, question,
+  // between-round, finale), not just the title screen's.
+  assert.match(app, /const volumeControl = playable \? `<label class="host-audio-volume"/);
+  // setAudioCommand always stamps the host's persisted volume, regardless of
+  // which scope the command targets.
+  assert.match(app, /state\.audioCommand = \{ id: crypto\.randomUUID\(\), volume: currentAudioVolume\(\), \.\.\.command \};/);
   const command = app.slice(app.indexOf("async function applyPresentationAudioCommand"), app.indexOf("async function clearActiveClip"));
   assert.match(command, /presentationAudioPlayer\.volume = normalizedAudioVolume\(command\.volume\)/);
-  assert.ok(command.indexOf('command.action === "volume"') < command.indexOf('command.action === "pause"'));
+  // A volume-only command must return before preparePresentationAudio runs,
+  // so nudging the slider never reloads or swaps the active clip.
+  assert.ok(command.indexOf('command.action === "volume"') < command.indexOf("await preparePresentationAudio(command)"));
+  assert.ok(command.indexOf("await preparePresentationAudio(command)") < command.indexOf('command.action === "pause"'));
 });
 
 test("host setup and join controls appear only on the title screen", () => {

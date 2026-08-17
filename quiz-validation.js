@@ -6,6 +6,7 @@ export function validateQuiz(candidate) {
   if (!requiredText(candidate.id)) errors.push("Quiz ID is required.");
   if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
   if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
+  if (candidate.titlePage?.presenter !== undefined && (typeof candidate.titlePage.presenter !== "string" || candidate.titlePage.presenter.length > 120)) errors.push("Title page presenter must be a string of 120 characters or fewer.");
   if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
   const titleAudio = candidate.titlePage?.audio;
   const validKaraoke = (cue) => cue.karaoke === undefined || (Array.isArray(cue.karaoke) && cue.karaoke.length <= 500 && cue.karaoke.every((segment) => segment && Object.getPrototypeOf(segment) === Object.prototype && Number.isFinite(segment.startMs) && segment.startMs >= cue.startMs && Number.isFinite(segment.endMs) && segment.endMs >= segment.startMs && segment.endMs <= cue.endMs && Number.isInteger(segment.startIndex) && segment.startIndex >= 0 && Number.isInteger(segment.endIndex) && segment.endIndex > segment.startIndex && segment.endIndex <= cue.text.length));

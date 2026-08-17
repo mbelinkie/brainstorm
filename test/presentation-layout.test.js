@@ -18,6 +18,11 @@ test("music-note title logo remains present beside optional title artwork", () =
   assert.match(styles, /presentation-title-art-with-logo \.presentation-title-music-logo/);
 });
 
+test("opening and closing presentation cards use the quiz-configured presenter line", () => {
+  assert.match(app, /const presenter = titlePage\.presenter \?\? "ADO&S PRESENTS"/);
+  assert.match(app, /const presenterMarkup = presenter \? `<p class="eyebrow">\$\{escapeHtml\(presenter\)\}<\/p>` : ""/);
+});
+
 test("opening presentation shows an icon-forward waiting-room roster without crowding names", () => {
   assert.match(app, /const visiblePlayers = state\.players\.slice\(0, 8\)/);
   assert.match(app, /player-logo--waiting-room/);
@@ -92,6 +97,10 @@ test("title lyrics use a non-interactive animated overlay that preserves lines",
 
 test("round-transition scoreboard spans the full presenter canvas", () => {
   assert.match(styles, /\.is-presentation \.presentation-card--round-transition\{grid-row:1\/-1\}/);
+  assert.match(styles, /\.presentation-card--round_end \.round-transition-splash\{[^}]*animation:none/);
+  assert.match(styles, /\.presentation-card--round_end\{[^}]*background:transparent!important/);
+  assert.match(styles, /\.presentation-card--round_end\{[^}]*grid-template-columns:minmax\(0,1\.4fr\) minmax\(300px,\.8fr\)/);
+  assert.match(app, /state\.presentationScreen === "round_start" \|\| state\.presentationScreen === "round_end"/);
 });
 
 test("every round uses a title-style cue that automatically opens question one", () => {

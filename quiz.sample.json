@@ -2,6 +2,9 @@
   "id": "music-trivia-night-001",
   "version": 1,
   "title": "Music Trivia Night",
+  "titlePage": {
+    "presenter": "ADO&S PRESENTS"
+  },
   "betweenRoundBonus": {
     "enabled": true,
     "doors": [

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { fadeFactor, outputVideoDimensions, validateVideoEdit } from "../video-utils.js";
+import { fadeFactor, outputVideoDimensions, validateVideoEdit, clampManualAudioVolumePercent, manualAudioVolumeGain, resolveAudioClipProcessing } from "../video-utils.js";
 import { toPlayerQuestion } from "../quiz-core.js";
 import { validateQuiz } from "../quiz-validation.js";
 
@@ -15,6 +15,18 @@ test("video edit ranges and fades are bounded deterministically", () => {
   assert.equal(fadeFactor(2, 10, 2, 2), 1);
   assert.equal(fadeFactor(9, 10, 2, 2), .5);
   assert.throws(() => validateVideoEdit({ startSeconds: 0, endSeconds: 46 }, 50), /45 seconds/);
+});
+
+test("manual audio volume override clamps percent and bypasses automatic leveling", () => {
+  assert.equal(clampManualAudioVolumePercent(40), 40);
+  assert.equal(clampManualAudioVolumePercent(0), 1);
+  assert.equal(clampManualAudioVolumePercent(9999), 150);
+  assert.equal(clampManualAudioVolumePercent("nonsense"), 100);
+  assert.equal(manualAudioVolumeGain(50), .5);
+  assert.deepEqual(resolveAudioClipProcessing({ normalize: true, outputGain: 1 }, null), { normalize: true, outputGain: 1 });
+  assert.deepEqual(resolveAudioClipProcessing({ normalize: true, outputGain: 1 }, 40), { normalize: false, outputGain: .4 });
+  // A manual override also wins over a non-default base, e.g. door background music.
+  assert.deepEqual(resolveAudioClipProcessing({ normalize: false, outputGain: .5 }, 30), { normalize: false, outputGain: .3 });
 });
 
 test("video output dimensions preserve aspect ratio and AVC-safe pixels", () => {

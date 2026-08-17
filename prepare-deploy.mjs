@@ -16,6 +16,8 @@ const publicFiles = [
   "author.html",
   "author.css",
   "author.js",
+  "video-utils.js",
+  "image-crop.js",
   "subtitle-core.js",
   "video-processor.worker.bundle.js",
   "config.js",

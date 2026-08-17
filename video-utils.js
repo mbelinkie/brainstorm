@@ -35,3 +35,30 @@ export function videoOutputProfile(width, height, frameRate = 30) {
   const dimensions = outputVideoDimensions(width, height);
   return { ...dimensions, frameRate: Math.min(30, Math.max(1, Number(frameRate) || 30)), videoBitrate: 2_500_000, audioBitrate: 128_000, keyFrameInterval: 2 };
 }
+
+// An author can bypass automatic loudness leveling for a clip and bake in a
+// specific volume instead (e.g. a clip they deliberately want quieter). The
+// percent is of full scale; invalid input falls back to 100% (unchanged).
+export const MIN_MANUAL_AUDIO_VOLUME_PERCENT = 1;
+export const MAX_MANUAL_AUDIO_VOLUME_PERCENT = 150;
+export const DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT = 100;
+
+export function clampManualAudioVolumePercent(value) {
+  const percent = Number(value);
+  if (!Number.isFinite(percent)) return DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT;
+  return clamp(percent, MIN_MANUAL_AUDIO_VOLUME_PERCENT, MAX_MANUAL_AUDIO_VOLUME_PERCENT);
+}
+
+export function manualAudioVolumeGain(percent) {
+  return clampManualAudioVolumePercent(percent) / 100;
+}
+
+// Decide how an uploaded audio clip should be rendered: the caller's default
+// (automatic loudness leveling, or a fixed gain like door background music),
+// or — when the author supplies a manual override percent — a fixed gain at
+// that volume instead, bypassing automatic leveling entirely.
+export function resolveAudioClipProcessing(defaultProcessing = {}, manualVolumePercent) {
+  const { normalize = true, outputGain = 1 } = defaultProcessing;
+  if (manualVolumePercent == null) return { normalize, outputGain };
+  return { normalize: false, outputGain: manualAudioVolumeGain(manualVolumePercent) };
+}

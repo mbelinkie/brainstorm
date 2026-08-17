@@ -1,5 +1,5 @@
-import { randomRoomSecret, roomApi } from "./room-api.js";
-import { correctOptionId, toPlayerQuestion } from "./quiz-core.js";
+import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { correctOptionId, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -63,17 +63,13 @@ const betweenRoundAudio = (key) => doorBonusDefinition()?.audio?.[key] || null;
 const finaleDefinition = () => hostQuizDefinition?.finale || state.finale || null;
 const finaleAudio = (key) => finaleDefinition()?.audio?.[key] || null;
 const hasPlayableAudio = (audio) => Boolean(audio?.mediaAssetId || audio?.url);
-function normalizedAudioVolume(value) {
-  const volume = Number(value);
-  return Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
-}
-function currentTitleAudioVolume() {
-  const lastTitleVolume = state.audioCommand?.audioScope === "title" ? state.audioCommand.volume : undefined;
-  return normalizedAudioVolume(state.titleAudioVolume ?? lastTitleVolume);
+function currentAudioVolume() {
+  // The host's last-set volume carries across every screen (title, question,
+  // between-round, finale) until they move the slider again.
+  return normalizedAudioVolume(state.audioVolume ?? state.audioCommand?.volume);
 }
 function setAudioCommand(command) {
-  const volume = command.audioScope === "title" ? currentTitleAudioVolume() : 1;
-  state.audioCommand = { id: crypto.randomUUID(), volume, ...command };
+  state.audioCommand = { id: crypto.randomUUID(), volume: currentAudioVolume(), ...command };
 }
 function questionPresentationMedia(question) {
   if (question?.video?.mediaAssetId || question?.video?.url) return { kind: "video", ...question.video };
@@ -179,7 +175,7 @@ function publicRoomState() {
     timerDurationSeconds: state.timerDurationSeconds || null,
     activeClipId: state.activeClipId || null,
     audioCommand: state.audioCommand || null,
-    titleAudioVolume: currentTitleAudioVolume(),
+    audioVolume: currentAudioVolume(),
     mediaCommand: state.mediaCommand ? { id: state.mediaCommand.id, kind: state.mediaCommand.kind, action: state.mediaCommand.action, mediaScope: state.mediaCommand.mediaScope, questionId: state.mediaCommand.questionId } : null,
     scoreNotification: state.scoreNotification?.expiresAt && new Date(state.scoreNotification.expiresAt).getTime() > Date.now() ? state.scoreNotification : null,
     doorBonus: publicDoorBonus(),
@@ -648,8 +644,8 @@ function presenterRenderKey(roomState) {
   // Audio controls increment the server revision and replace audioCommand, but
   // neither change is visual. Keep the presentation DOM mounted so a host cue
   // cannot flash the shared screen while still applying the command above.
-  const { activeClipId, audioCommand, revision, submitted, ...withTitleAudioVolume } = roomState || {};
-  const { titleAudioVolume, ...withMediaCommand } = withTitleAudioVolume;
+  const { activeClipId, audioCommand, revision, submitted, ...withAudioVolume } = roomState || {};
+  const { audioVolume, ...withMediaCommand } = withAudioVolume;
   const { mediaCommand, ...visualState } = withMediaCommand;
   return JSON.stringify(visualState);
 }
@@ -683,7 +679,13 @@ async function persistHostState() {
 }
 
 function sendSubmission(answer) {
-  const payload = { playerId, playerName, playerLogoKey, questionId: state.questionId || state.question?.id, answer };
+  // Broadcast the server's session_players.id (captured at join via
+  // rememberDoorPlayerRecord), not the raw local auth token in `playerId`.
+  // get_live_leaderboard() keys state.players by that server id, so
+  // broadcasting the token instead makes every submission add a duplicate
+  // "ghost" roster entry the host never recognizes as an existing player —
+  // see the "answers received" denominator bug in docs/CLAUDE_WORKLOG.md.
+  const payload = { playerId: doorPlayerRecordId || playerId, playerName, playerLogoKey, questionId: state.questionId || state.question?.id, answer };
   localChannel.postMessage({ type: "submission", payload });
   realtimeChannel?.send({ type: "broadcast", event: "submission", payload });
 }
@@ -770,7 +772,10 @@ presentationAudioPlayer?.addEventListener("timeupdate", updateTitleCaption);
 presentationAudioPlayer?.addEventListener("ended", () => { stopTitleCaptionClock(); updateTitleCaption(); });
 
 function announcePlayerPresence() {
-  const payload = { playerId, playerName, playerLogoKey };
+  // Same rationale as sendSubmission(): use the server's roster id so a
+  // presence rebroadcast never duplicates the player already on the host's
+  // leaderboard-derived list.
+  const payload = { playerId: doorPlayerRecordId || playerId, playerName, playerLogoKey };
   localChannel.postMessage({ type: "presence", payload });
   realtimeChannel?.send({ type: "broadcast", event: "presence", payload });
 }
@@ -1383,8 +1388,11 @@ function audioPanel(sourceAudio = null, { opening = false, scope = "question", l
   if (!audio) return "";
   const playable = Boolean(hostQuizDefinition && params.has("room") && (audio.mediaAssetId || audio.url));
   const resolvedScope = opening ? "title" : scope;
-  const volumePercent = Math.round(currentTitleAudioVolume() * 100);
-  const volumeControl = opening ? `<label class="host-audio-volume"><span>Theme volume</span><input data-audio-volume type="range" min="0" max="100" step="1" value="${volumePercent}" aria-label="Theme music volume" aria-valuetext="${volumePercent}%" /><output data-audio-volume-output>${volumePercent}%</output></label>` : "";
+  const volumePercent = Math.round(currentAudioVolume() * 100);
+  // The slider is scope-agnostic: it always reflects and updates the one
+  // persisted host volume, so it belongs on every playable audio panel, not
+  // just the title screen's.
+  const volumeControl = playable ? `<label class="host-audio-volume"><span>Volume</span><input data-audio-volume type="range" min="0" max="100" step="1" value="${volumePercent}" aria-label="Audio volume" aria-valuetext="${volumePercent}%" /><output data-audio-volume-output>${volumePercent}%</output></label>` : "";
   const controls = playable ? `<div class="host-audio-actions"><button class="btn btn-primary" data-audio-command="play" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Play clip</button><button class="btn btn-secondary" data-audio-command="restart" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Restart</button><button class="btn btn-secondary" data-audio-command="pause" data-audio-scope="${resolvedScope}" ${resolvedScope === "finale" ? `data-audio-key="${escapeHtml(label)}"` : ""}>Pause</button>${volumeControl}</div>` : "";
   return `<div class="audio-panel audio-panel--host"><span class="audio-play is-external" aria-hidden="true">♫</span><div class="audio-copy"><strong>${escapeHtml(audio.suggestedWindow || (opening ? "Waiting-room music" : label === "drumroll" ? "Winner drumroll" : label === "outro" ? "Closing music" : hostQuestion.audioLabel) || "Audio clip")}</strong><span>${playable ? "Plays through the presentation tab when you cue it here." : escapeHtml(audio.cue || "Attach an uploaded clip in authoring to enable host controls.")}</span></div>${controls}</div>`;
 }
@@ -1566,8 +1574,11 @@ async function applyPresentationAudioCommand() {
   if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed || !command?.id || command.id === handledPresentationAudioCommand) return;
   handledPresentationAudioCommand = command.id;
   presentationAudioPlayer.volume = normalizedAudioVolume(command.volume);
-  await preparePresentationAudio(command);
+  // A volume-only command carries no clip identity (see the host-side
+  // listener) and must never touch which clip is loaded — otherwise dragging
+  // the slider mid-question could yank playback back to an unrelated scope.
   if (command.action === "volume") return;
+  await preparePresentationAudio(command);
   if (command.action === "pause") { presentationAudioPlayer.pause(); return; }
   if (command.action === "restart") presentationAudioPlayer.currentTime = 0;
   try { await startPresentationPlayback(); } catch (error) { console.warn("Presentation audio needs to be enabled once in the presentation tab.", error); }
@@ -1598,6 +1609,14 @@ async function loadPrivateImage(image) {
 function leaderboard() {
   const players = [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
   return `<section class="leaderboard-card"><h3>Current leaderboard</h3><div class="leaderboard">${players.map((p, i) => `<div class="leader"><span class="place">${i + 1}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${i === 0 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("")}</div></section>`;
+}
+
+function answerResultsPanel() {
+  if (view !== "host" || state.phase !== "reveal") return "";
+  const results = tallyQuestionResults(hostQuestion, state.submitted);
+  if (!results.totalSubmitted) return "";
+  const parts = results.parts ? `<ul class="answer-results-parts">${results.parts.map((part) => `<li><span>${escapeHtml(part.label)}</span><strong>${part.correctCount}<em> / ${results.totalSubmitted}</em></strong></li>`).join("")}</ul>` : "";
+  return `<div class="answer-results"><strong>Who got it right</strong><div class="answer-results-overall"><b>${results.correctCount}</b><span> / ${results.totalSubmitted} fully correct</span></div>${parts}</div>`;
 }
 
 function manualScoreControls() {
@@ -1721,7 +1740,7 @@ function renderHost() {
     ? '<p class="host-auto-advance" role="status">Opening the first question…</p>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${answerResultsPanel()}${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -1770,6 +1789,8 @@ function presentationTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
   const subtitle = titlePage.subtitle || "Get your phone ready — we’ll begin shortly.";
+  const presenter = titlePage.presenter ?? "ADO&S PRESENTS";
+  const presenterMarkup = presenter ? `<p class="eyebrow">${escapeHtml(presenter)}</p>` : "";
   const titleIcon = titlePage.icon || "♫";
   const musicLogo = `<span class="presentation-title-music-logo" aria-hidden="true">${escapeHtml(titleIcon)}</span>`;
   const themeArt = titlePage.imageAssetId
@@ -1783,7 +1804,7 @@ function presentationTitlePage() {
   const morePlayers = playerCount > visiblePlayers.length ? `<p class="presentation-waiting-more">and more!</p>` : "";
   const waitingRoom = `<aside class="presentation-waiting-room" aria-label="Players in the room"><div class="presentation-waiting-heading"><div><p class="eyebrow">In the room</p><h2>Players joining</h2></div><span>${playerCount} player${playerCount === 1 ? "" : "s"}</span></div>${playerList}${morePlayers}</aside>`;
   const captionOverlay = Array.isArray(titlePage.audio?.captions) && titlePage.audio.captions.length ? '<div class="presentation-title-caption" data-title-caption-overlay aria-live="polite"><p data-title-caption-text></p></div>' : "";
-  return `<section class="presentation-title-page"><div class="presentation-title-copy"><p class="eyebrow">ADO&S PRESENTS</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}${captionOverlay}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  return `<section class="presentation-title-page"><div class="presentation-title-copy">${presenterMarkup}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p><div class="presentation-title-join"><canvas data-join-qr aria-label="QR code to join this quiz"></canvas><div><strong>Join the quiz</strong><span>Scan the code with your phone</span><b>${escapeHtml(roomCode)}</b><em>${playerCount} player${playerCount === 1 ? "" : "s"} waiting to play</em></div></div></div><div class="presentation-title-art-wrap">${themeArt}</div>${waitingRoom}${captionOverlay}<span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
 }
 
 function rankedPlayers() {
@@ -1815,6 +1836,8 @@ function finalPodiumCard() {
 function finalScoreTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
+  const presenter = titlePage.presenter ?? "ADO&S PRESENTS";
+  const presenterMarkup = presenter ? `<p class="eyebrow">${escapeHtml(presenter)}</p>` : "";
   // The closing screen is about the players and their final standing, so it
   // intentionally omits the circular music-note title treatment.
   const themeArt = titlePage.imageAssetId
@@ -1835,7 +1858,7 @@ function finalScoreTitlePage() {
       return `<ol class="presentation-final-score-list ${pageIndex === 0 ? "is-active" : ""}" data-final-score-page data-final-score-first-rank="${firstRank}" data-final-score-last-rank="${lastRank}">${rows}</ol>`;
     }).join("")}</div>`
     : "<p class=\"presentation-final-score-empty\">No final scores yet.</p>";
-  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy"><p class="eyebrow">ADO&S PRESENTS</p><h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p>${artMarkup}</div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
+  return `<section class="presentation-title-page presentation-title-page--final"><div class="presentation-title-copy">${presenterMarkup}<h1>${escapeHtml(title)}</h1><p>Thanks for playing — safe travels, and we’ll see you next time.</p>${artMarkup}</div><aside class="presentation-final-scores"><div><p class="eyebrow">Final standings</p><h2>All players</h2></div>${list}</aside><span class="presentation-title-orb presentation-title-orb--one" aria-hidden="true"></span><span class="presentation-title-orb presentation-title-orb--two" aria-hidden="true"></span></section>`;
 }
 
 function syncFinalScorePager() {
@@ -1929,7 +1952,7 @@ function renderPresenter() {
   // The title page already has its own join code. On every other presentation
   // screen, replace the room badge with the corner QR and its room ID.
   const titleTopbar = brandTopbar(false, false, state.presentationScreen === "title");
-  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || state.presentationScreen === "round_start" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
+  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || state.presentationScreen === "round_start" || state.presentationScreen === "round_end" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
   const videoStage = document.querySelector("[data-presentation-video-stage]");
   if (videoStage && presentationVideoPlayer) videoStage.append(presentationVideoPlayer);
   updateTitleCaption();
@@ -2107,14 +2130,23 @@ function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
       // window or while another answer is being saved. Do not turn that
       // expected race into a rejected RPC (and a Sentry error).
       if (view !== "player" || state.phase !== "open" || (state.questionId || state.question?.id || "sample-question") !== questionId || (state.revision || 0) !== serverRevision) return;
-      try {
-        if (params.has("room")) await roomApi.submitAnswer({ roomCode, playerToken: playerId, questionId, answer, serverRevision });
+      const markSubmitted = () => {
         state.submitted[playerId] = answer;
         sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
         sendSubmission(answer);
         setSubmissionStatus(isMultiBlank ? "Answers saved. You can keep editing until the host closes the question." : "Selection saved. You can change it until reveal.", "submitted");
-      } catch (error) {
-        recordDiagnostic("auto-submit-answer", error, { roomCode, questionId });
+      };
+      if (!params.has("room")) { markSubmitted(); return; }
+      const outcome = await submitLiveAnswerWithRecovery({ roomCode, playerToken: playerId, questionId, answer, serverRevision });
+      if (outcome.status === "submitted") {
+        markSubmitted();
+      } else if (outcome.status === "abandoned") {
+        // The host closed or advanced the question before this answer made
+        // it through. That's an expected concurrency outcome, not a bug: no
+        // retry, no diagnostics/Sentry report, just an accurate status.
+        setSubmissionStatus(isMultiBlank ? "The question moved on before these answers were needed." : "The question moved on before this answer was needed.");
+      } else {
+        recordDiagnostic("auto-submit-answer", outcome.error, { roomCode, questionId });
         setSubmissionStatus(isMultiBlank ? "Answers were not saved. Edit a field to retry." : "Selection was not saved. Tap it again to retry.", "submitted locked");
       }
     });
@@ -2326,8 +2358,11 @@ function attachEvents() {
     const updateVolume = () => {
       const volume = normalizedAudioVolume(Number(input.value) / 100);
       const volumePercent = Math.round(volume * 100);
-      state.titleAudioVolume = volume;
-      setAudioCommand({ action: "volume", audioScope: "title" });
+      state.audioVolume = volume;
+      // No audioScope/questionId here: a volume-only command never selects a
+      // clip (see applyPresentationAudioCommand), so it applies uniformly to
+      // whatever is already loaded and carries forward to future cues.
+      setAudioCommand({ action: "volume" });
       input.setAttribute("aria-valuetext", `${volumePercent}%`);
       const output = input.closest(".host-audio-volume")?.querySelector("[data-audio-volume-output]");
       if (output) output.textContent = `${volumePercent}%`;

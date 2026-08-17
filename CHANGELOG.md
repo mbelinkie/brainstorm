@@ -5,6 +5,11 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 ## 2026-08-17
 
 - Fixed player logo choices overlapping into a mashed, fanned stack on the join screen at narrow (Android Chrome) viewports. The mobile logo picker's grid rows were collapsing under an unnecessary `min-height: 0` on the choice item.
+- Stopped reporting expected answer-submission races (a host closing or advancing a question while a player's auto-saved answer was still in flight) as production errors. Auto-submit now recognizes the server's stale-revision rejection, refetches room state, and retries once if the same question is still open; a genuinely closed or changed question is now a quiet, accurate status instead of a Sentry error. Unsaved answers are never marked as submitted, and unrelated auth/network/server failures are still reported.
+- Fixed the Host audio volume slider being available only on the title screen and being ignored everywhere else. It now appears on every screen with playable host audio (title, questions, finale) and the host's last-set level carries forward to every future cue — including automatic between-round and finale audio — until they change it again.
+- Added an optional manual volume override to the audio-clip upload dialog: a checkbox and slider let an author bypass automatic −16 dBFS loudness leveling and bake in a fixed volume (1–150%) for any clip instead, for clips that are deliberately meant to be quieter (or louder) than the automatic target. Removed the old door-background-music-only fixed-50% mechanism (`DOOR_BACKGROUND_AUDIO_GAIN`), which the door slot now achieves through the same general override.
+- Fixed the Host "answers received" count sometimes showing roughly double the real number of connected players (e.g. 6/12 for 6 players). Submission and presence broadcasts were using each player's local join credential instead of the server-assigned roster ID, so the host's player list could gain a duplicate entry per player on questions after the first score lock.
+- Added a "Who got it right" summary to the Host screen after answer reveal, showing how many submitted answers were fully correct. For multi-part questions (matching, categorize, and multi-fill-in-the-blank), it also breaks down how many players got each individual part right.
 
 ## 2026-08-15
 

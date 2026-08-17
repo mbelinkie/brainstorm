@@ -18,7 +18,16 @@ async function client() {
 async function call(name, args) {
   const supabase = await client();
   const { data, error } = await supabase.rpc(name, args);
-  if (error) throw new Error(error.message);
+  if (error) {
+    const wrapped = new Error(error.message);
+    // Preserve Postgres/PostgREST error metadata (never credentials) so
+    // callers can distinguish an expected RPC rejection from an unexpected
+    // auth/network/server failure without re-parsing message text.
+    if (error.code) wrapped.code = error.code;
+    if (error.details) wrapped.details = error.details;
+    if (error.hint) wrapped.hint = error.hint;
+    throw wrapped;
+  }
   return data;
 }
 
@@ -90,3 +99,69 @@ export const roomApi = {
     return call("set_live_room_state", { p_room_code: roomCode, p_host_secret: hostSecret, p_phase: phase, p_round_index: roundIndex, p_question_index: questionIndex, p_public_state: publicState });
   }
 };
+
+// Exact rejection messages raised by submit_live_answer() in
+// supabase/migrations/0002_live_room_rpc.sql. Keep this in sync with that
+// migration. All three mean the host closed, locked, or advanced the
+// question out from under an in-flight submission — an expected concurrency
+// outcome, not a bug. Anything else (auth, network, server, data errors) is
+// unexpected and still worth reporting to diagnostics/Sentry.
+const SUBMIT_ANSWER_CONFLICT_REASONS = {
+  "This question has changed; refresh and try again": "stale-revision",
+  "Answers are not open": "question-closed",
+  "That is not the active question": "question-changed"
+};
+
+// Classifies a submitAnswer() rejection instead of scattering raw message
+// comparisons through app.js.
+export function classifySubmitAnswerError(error) {
+  const message = error instanceof Error ? error.message : undefined;
+  return (message && SUBMIT_ANSWER_CONFLICT_REASONS[message]) || "unexpected";
+}
+
+// submit_live_answer() checks the revision before the question ID, so a
+// merely-stale revision on the *same* still-open question and an answer that
+// arrived after the host already moved to a different question both surface
+// as the identical "This question has changed; refresh and try again"
+// message. Given freshly fetched room state, decide whether the submission
+// can be retried against the current revision or must be abandoned.
+export function planStaleRevisionRecovery({ questionId, freshRoomState }) {
+  const stillOpen = freshRoomState?.phase === "question_open";
+  const sameQuestion = (freshRoomState?.state?.questionId ?? null) === questionId;
+  if (stillOpen && sameQuestion) return { action: "retry", serverRevision: freshRoomState.revision };
+  return { action: "abandon", reason: stillOpen ? "question-changed" : "question-closed" };
+}
+
+// Submits a player's answer and, only for the ambiguous stale-revision
+// rejection, fetches current room state and retries at most once against the
+// same still-open question. A closed or changed question is reported back as
+// "abandoned" so the caller can show a quiet status instead of an error.
+// `client` is injectable for tests; it defaults to the real roomApi.
+export async function submitLiveAnswerWithRecovery({ roomCode, playerToken, questionId, answer, serverRevision, client = roomApi }) {
+  try {
+    const result = await client.submitAnswer({ roomCode, playerToken, questionId, answer, serverRevision });
+    return { status: "submitted", result };
+  } catch (error) {
+    const reason = classifySubmitAnswerError(error);
+    if (reason === "question-closed" || reason === "question-changed") return { status: "abandoned", reason };
+    if (reason !== "stale-revision") return { status: "failed", error };
+
+    let freshRoomState;
+    try {
+      freshRoomState = await client.getRoomState({ roomCode, playerToken });
+    } catch (stateError) {
+      return { status: "failed", error: stateError };
+    }
+    const recovery = planStaleRevisionRecovery({ questionId, freshRoomState });
+    if (recovery.action !== "retry") return { status: "abandoned", reason: recovery.reason };
+
+    try {
+      const result = await client.submitAnswer({ roomCode, playerToken, questionId, answer, serverRevision: recovery.serverRevision });
+      return { status: "submitted", result, retried: true };
+    } catch (retryError) {
+      const retryReason = classifySubmitAnswerError(retryError);
+      if (retryReason !== "unexpected") return { status: "abandoned", reason: retryReason };
+      return { status: "failed", error: retryError };
+    }
+  }
+}

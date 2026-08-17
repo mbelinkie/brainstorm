@@ -14,3 +14,7 @@ dist/
 # Raw source media stays on the authoring machine (published, optimized media
 # is stored in Supabase and referenced by the committed quiz definitions).
 music quiz originals/
+
+# Local reference material: promo art, vendor API notes, scratch documents.
+# Not shipped, not deployed, not part of the product.
+local-reference/

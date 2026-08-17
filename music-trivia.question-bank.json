@@ -3,6 +3,9 @@
   "version": 1,
   "status": "editorial-draft-ready-for-asset-production",
   "title": "Music Trivia Live: Complete Five-Round Question Bank",
+  "titlePage": {
+    "presenter": "ADO&S PRESENTS"
+  },
   "betweenRoundBonus": {
     "enabled": true,
     "doors": [
