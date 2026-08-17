@@ -28,6 +28,22 @@ test("mobile logo selection uses one column with large artwork", () => {
   assert.doesNotMatch(app, /logo\.label\.replace\("Avatar ", ""\)/);
 });
 
+test("mobile logo choices don't force a zero min-height that collapses their grid row", () => {
+  // .player-logo-picker>div is display:grid with implicit auto rows, and each
+  // .player-logo-choice is a grid item whose only visible content is a large
+  // aspect-ratio square (~62vw). An explicit `min-height: 0` on that grid item
+  // defeats the row's automatic minimum size on Chromium (Android Chrome), so
+  // the row collapses to near-zero height while the square artwork still
+  // paints at full size and overlaps the rows below it -- a fanned stack of
+  // mashed-together logos. WebKit/Safari (iPhone) sizes the row correctly
+  // regardless, which is why this only showed up on Android.
+  const mobilePicker = css.match(/@media \(max-width: 520px\) \{[\s\S]*?\.player-logo-picker>div[\s\S]*?\n\}/)?.[0];
+  assert.ok(mobilePicker, "expected a mobile .player-logo-picker media block");
+  const choiceRule = mobilePicker.match(/\.player-logo-choice\s*\{[^}]*\}/)?.[0];
+  assert.ok(choiceRule, "expected a mobile .player-logo-choice rule");
+  assert.doesNotMatch(choiceRule, /min-height:\s*0\b/);
+});
+
 test("player screens give identity and scoreboard logos more room", () => {
   assert.match(css, /\.player-logo--identity\s*\{[^}]*width:\s*104px/);
   assert.match(css, /\.player-mini-leaderboard \.player-logo--mini\s*\{[^}]*width:\s*min\(26vw,112px\)/);

@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-17
+
+- Fixed player logo choices overlapping into a mashed, fanned stack on the join screen at narrow (Android Chrome) viewports. The mobile logo picker's grid rows were collapsing under an unnecessary `min-height: 0` on the choice item.
+
 ## 2026-08-15
 
 - Added ASS karaoke-tag support for title-screen lyrics: timed lyric segments now light up from the Presentation audio clock, while ordinary SRT and ASS captions continue to render as before.

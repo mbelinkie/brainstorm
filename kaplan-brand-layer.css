@@ -708,7 +708,7 @@ body.is-presentation .player-shell::after { content: none; }
 
 @media (max-width: 520px) {
   .player-logo-picker>div { grid-template-columns: minmax(0,1fr); gap: 10px; max-height: 430px; padding-right: 4px; }
-  .player-logo-choice { display: flex; min-height: 0; justify-content: center; padding: 12px; border-radius: 28px; }
+  .player-logo-choice { display: flex; justify-content: center; padding: 12px; border-radius: 28px; }
   .player-logo-choice .player-logo { width: min(62vw,260px); border-radius: 12%; }
 }
 
