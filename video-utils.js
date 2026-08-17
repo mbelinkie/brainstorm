@@ -2,6 +2,19 @@
 export const MAX_VIDEO_DURATION_SECONDS = 45;
 export const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
 
+// Local-only gate on the raw source file an author picks before trimming an
+// audio clip. This is intentionally generous: only the much smaller rendered
+// WAV clip is ever uploaded (that upload has its own 25 MB cap), so the
+// source file itself never needs to fit the final-asset limit.
+export const MAX_AUDIO_SOURCE_BYTES = 500 * 1024 * 1024;
+
+export function audioSourceFileError(file) {
+  if (!file || !file.type.startsWith("audio/") || file.size > MAX_AUDIO_SOURCE_BYTES) {
+    return `Choose an audio file up to ${MAX_AUDIO_SOURCE_BYTES / 1024 / 1024} MB.`;
+  }
+  return null;
+}
+
 export function clamp(value, min, max) {
   return Math.min(max, Math.max(min, Number(value) || 0));
 }

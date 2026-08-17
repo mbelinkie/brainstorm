@@ -1,7 +1,7 @@
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { cropRect, panCrop } from "./image-crop.js";
 import { parseAss, parseSrt } from "./subtitle-core.js";
-import { MAX_VIDEO_BYTES, resolveAudioClipProcessing, clampManualAudioVolumePercent, DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT } from "./video-utils.js";
+import { MAX_VIDEO_BYTES, audioSourceFileError, resolveAudioClipProcessing, clampManualAudioVolumePercent, DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT } from "./video-utils.js";
 
 const BANK_URL = "./music-trivia.question-bank.json";
 const DRAFT_KEY = "quiz-control:author-draft:v1";
@@ -649,7 +649,8 @@ function newQuestion() {
 async function uploadPrivateAudio(file, target = "question") {
   if (!file) return;
   if (!supabase || !currentUser) { alert("Sign in as an authorized quiz author before uploading media."); return; }
-  if (!file.type.startsWith("audio/") || file.size > 26214400) { alert("Choose an audio file up to 25 MB."); return; }
+  const sourceError = audioSourceFileError(file);
+  if (sourceError) { alert(sourceError); return; }
   $("#save-state").textContent = "Preparing audio clip…";
   await saveOriginalMedia(file);
   const clipped = await chooseAudioClip(file);
