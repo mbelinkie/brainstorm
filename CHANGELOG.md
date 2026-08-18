@@ -2,6 +2,13 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-18
+
+- Fixed the author editor discarding an in-progress draft when the bundled question bank failed to load. A single failed fetch of `music-trivia.question-bank.json` — a static file a saved draft does not depend on — used to throw away every unpublished edit and leave the editor broken. The saved draft is now restored first, and a failed bank load keeps that draft open and editable.
+- Fixed importing a quiz JSON file not saving the imported quiz as the browser draft. An author could import a quiz, refresh without touching a field, and get the previous draft back; the Publish button also still reflected the pre-import quiz.
+- Fixed the "Remove audio" button on between-round bonus sounds doing nothing while reporting "Saved in this browser — download or publish when ready". The clip stayed attached and still played in the room. Removing a between-round sound now works, and a remove control the editor does not recognize no longer claims to have saved anything.
+- The author editor and the automated tests now use one shared quiz validator instead of two divergent copies. Publish, Validate, Apply raw JSON, Import, and the Quiz health panel keep every rule they already enforced, and additionally validate between-round bonus audio asset IDs.
+
 ## 2026-08-17
 
 - Raised the local source-file size limit for the "Trim and upload clip" audio buttons (question audio cue, title music, finale, between-round, matching clips) from 25 MB to 500 MB. The old cap was really the final-upload limit for the rendered clip, not the raw source an author picks before trimming — a large local WAV/FLAC source could hit it long before the much smaller trimmed clip ever would.
