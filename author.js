@@ -1,5 +1,6 @@
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { cropRect, panCrop } from "./image-crop.js";
+import { validateQuiz } from "./quiz-validation.js";
 import { parseAss, parseSrt } from "./subtitle-core.js";
 import { MAX_VIDEO_BYTES, audioSourceFileError, resolveAudioClipProcessing, clampManualAudioVolumePercent, DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT } from "./video-utils.js";
 
@@ -50,7 +51,6 @@ const question = () => bank?.rounds?.[selection.roundIndex]?.questions?.[selecti
 const selectedRound = () => bank?.rounds?.[selection.roundIndex];
 const letters = (index) => String.fromCharCode(65 + index);
 const typeLabel = (type) => type.replaceAll("_", " ");
-const validNumericLiteral = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
 const validAssetId = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 const titlePage = () => (bank.titlePage ||= {});
 const finaleConfig = () => (bank.finale ||= { audio: {} });
@@ -131,100 +131,6 @@ function restoredDraft() {
     const questionIndex = Math.min(Math.max(0, Number(draft.selection?.questionIndex) || 0), draft.bank.rounds[roundIndex].questions.length - 1);
     return { bank: draft.bank, selection: { roundIndex, questionIndex } };
   } catch { return null; }
-}
-
-function validateQuiz(candidate) {
-  const errors = [];
-  const supportedTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection", "short_answer", "fill_in_the_blank", "multi_fill_in_the_blank", "arrange_in_order", "categorize", "matching", "closest_number"]);
-  const requiredText = (value) => typeof value === "string" && value.trim();
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return ["Quiz must be a JSON object."];
-  if (!requiredText(candidate.id)) errors.push("Quiz ID is required.");
-  if (!requiredText(candidate.title)) errors.push("Quiz title is required.");
-  if (candidate.titlePage !== undefined && (!candidate.titlePage || typeof candidate.titlePage !== "object" || Array.isArray(candidate.titlePage))) errors.push("Title page must be an object when provided.");
-  if (candidate.titlePage?.presenter !== undefined && (typeof candidate.titlePage.presenter !== "string" || candidate.titlePage.presenter.length > 120)) errors.push("Title page presenter must be a string of 120 characters or fewer.");
-  if (candidate.titlePage?.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.titlePage.audio.mediaAssetId)) errors.push("Title page has an invalid private audio asset ID.");
-  const titleAudio = candidate.titlePage?.audio;
-  const validKaraoke = (cue) => cue.karaoke === undefined || (Array.isArray(cue.karaoke) && cue.karaoke.length <= 500 && cue.karaoke.every((segment) => segment && Object.getPrototypeOf(segment) === Object.prototype && Number.isFinite(segment.startMs) && segment.startMs >= cue.startMs && Number.isFinite(segment.endMs) && segment.endMs >= segment.startMs && segment.endMs <= cue.endMs && Number.isInteger(segment.startIndex) && segment.startIndex >= 0 && Number.isInteger(segment.endIndex) && segment.endIndex > segment.startIndex && segment.endIndex <= cue.text.length));
-  if (titleAudio?.captionSourceName !== undefined && (typeof titleAudio.captionSourceName !== "string" || titleAudio.captionSourceName.length > 255)) errors.push("Title page caption source name must be a string of 255 characters or fewer.");
-  if (titleAudio?.captions !== undefined && (!Array.isArray(titleAudio.captions) || titleAudio.captions.length > 500 || titleAudio.captions.some((cue) => !cue || Object.getPrototypeOf(cue) !== Object.prototype || !Number.isFinite(cue.startMs) || cue.startMs < 0 || !Number.isFinite(cue.endMs) || cue.endMs <= cue.startMs || typeof cue.text !== "string" || !cue.text.trim() || cue.text.length > 500 || !validKaraoke(cue)))) errors.push("Title page captions must contain at most 500 valid timed text cues.");
-  for (const [key, audio] of Object.entries(candidate.finale?.audio || {})) if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Finale ${key} has an invalid private audio asset ID.`);
-  if (candidate.betweenRoundBonus?.enabled) {
-    const doors = candidate.betweenRoundBonus.doors;
-    if (!Array.isArray(doors) || doors.length !== 3) errors.push("Between-round bonus needs exactly three doors.");
-    else {
-      const doorIds = new Set();
-      doors.forEach((door, doorIndex) => {
-        const label = `Bonus door ${doorIndex + 1}`;
-        if (!requiredText(door?.id) || !requiredText(door?.name)) errors.push(`${label} needs an ID and name.`);
-        else if (doorIds.has(door.id)) errors.push(`${label} has a duplicate ID.`);
-        else doorIds.add(door.id);
-        if (!requiredText(door?.icon)) errors.push(`${label} needs an icon.`);
-        if (!Array.isArray(door?.outcomes) || door.outcomes.length === 0) errors.push(`${label} needs at least one outcome.`);
-        else {
-          const chanceTotal = door.outcomes.reduce((sum, outcome) => sum + Number(outcome?.chancePercent || 0), 0);
-          if (Math.abs(chanceTotal - 100) > 0.001) errors.push(`${label} outcome chances must total 100%.`);
-          if (door.outcomes.some((outcome) => !Number.isFinite(Number(outcome?.chancePercent)) || Number(outcome.chancePercent) <= 0 || !Number.isFinite(Number(outcome?.multiplier)) || Number(outcome.multiplier) <= 0 || Number(outcome.multiplier) > 10)) errors.push(`${label} needs positive chances and multipliers no greater than 10×.`);
-        }
-      });
-    }
-  }
-  if (!Array.isArray(candidate.rounds) || candidate.rounds.length === 0) return [...errors, "Add at least one round."];
-
-  const roundIds = new Set();
-  const questionIds = new Set();
-  candidate.rounds.forEach((round, roundIndex) => {
-    const roundLabel = `Round ${roundIndex + 1}`;
-    if (!round || typeof round !== "object") { errors.push(`${roundLabel} must be an object.`); return; }
-    if (!requiredText(round.id)) errors.push(`${roundLabel} needs an ID.`);
-    else if (roundIds.has(round.id)) errors.push(`${roundLabel} has a duplicate round ID: ${round.id}.`);
-    else roundIds.add(round.id);
-    if (!requiredText(round.title)) errors.push(`${roundLabel} needs a title.`);
-    if (!Array.isArray(round.questions) || round.questions.length === 0) { errors.push(`${roundLabel} needs at least one question.`); return; }
-
-    round.questions.forEach((item, questionIndex) => {
-      const label = `${roundLabel}, question ${questionIndex + 1}`;
-      if (!item || typeof item !== "object") { errors.push(`${label} must be an object.`); return; }
-      if (!requiredText(item.id)) errors.push(`${label} needs an ID.`);
-      else if (questionIds.has(item.id)) errors.push(`${label} has a duplicate question ID: ${item.id}.`);
-      else questionIds.add(item.id);
-      if (!supportedTypes.has(item.type)) errors.push(`${label} has an unsupported question type.`);
-      if (!requiredText(item.prompt)) errors.push(`${label} needs a player prompt.`);
-      if (item.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.audio.mediaAssetId)) errors.push(`${label} has an invalid private media asset ID.`);
-      if (item.video !== undefined && (!item.video || typeof item.video !== "object" || Array.isArray(item.video))) errors.push(`${label} video must be an object.`);
-      if (item.video?.mediaAssetId && !validAssetId(item.video.mediaAssetId)) errors.push(`${label} has an invalid private video asset ID.`);
-      if ((item.audio?.mediaAssetId || item.audio?.url) && (item.video?.mediaAssetId || item.video?.url)) errors.push(`${label} may have either presentation audio or presentation video, not both.`);
-      // Image asset IDs may be opaque local placeholders (for planned artwork) or
-      // UUIDs issued by the private-media library. Both are valid authoring states.
-      const questionPoints = item.points ?? item.scoring?.points;
-      if (!["matching", "multi_fill_in_the_blank"].includes(item.type) && (!Number.isFinite(Number(questionPoints)) || Number(questionPoints) <= 0)) errors.push(`${label} needs positive points.`);
-
-      const optionTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection"]);
-      if (optionTypes.has(item.type)) {
-        const optionIds = new Set((item.options || []).map((option) => option?.id));
-        if (!Array.isArray(item.options) || item.options.length < 2 || item.options.some((option) => !requiredText(option?.id) || !requiredText(option?.label))) errors.push(`${label} needs at least two labeled options with IDs.`);
-        if (!Array.isArray(item.correctOptionIds) || item.correctOptionIds.length === 0 || item.correctOptionIds.some((id) => !optionIds.has(id))) errors.push(`${label} has an invalid answer key.`);
-      }
-      if (item.type === "short_answer" && (!Array.isArray(item.acceptedAnswers) || item.acceptedAnswers.every((answer) => !requiredText(answer)))) errors.push(`${label} needs an accepted answer.`);
-      if (item.type === "closest_number" && !validNumericLiteral(item.targetNumber)) errors.push(`${label} needs a valid target number.`);
-      if (item.type === "fill_in_the_blank" && (!Array.isArray(item.blanks) || item.blanks.length === 0 || item.blanks.some((blank) => !Array.isArray(blank.acceptedAnswers) || blank.acceptedAnswers.every((answer) => !requiredText(answer))))) errors.push(`${label} needs accepted answers for every blank.`);
-      if (item.type === "arrange_in_order") {
-        const itemIds = new Set((item.items || []).map((entry) => entry?.id));
-        if (!Array.isArray(item.items) || item.items.length < 2 || item.items.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.correctOrder) || item.correctOrder.length !== item.items.length || new Set(item.correctOrder).size !== item.correctOrder.length || item.correctOrder.some((id) => !itemIds.has(id))) errors.push(`${label} needs a complete, unique order answer key.`);
-      }
-      if (item.type === "categorize") {
-        const categoryIds = new Set((item.categories || []).map((entry) => entry?.id));
-        const itemIds = (item.items || []).map((entry) => entry?.id);
-        if (!Array.isArray(item.categories) || item.categories.length !== 2 || item.categories.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.items) || item.items.length === 0 || item.items.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !item.correctCategories || itemIds.some((id) => !categoryIds.has(item.correctCategories[id]))) errors.push(`${label} needs two categories and a complete valid assignment key.`);
-      }
-      if (item.type === "matching") {
-        const optionIds = new Set((item.options || []).map((entry) => entry?.id));
-        const clipIds = (item.clips || []).map((entry) => entry?.id);
-        if (!Number.isFinite(Number(item.pointsPerPair)) || Number(item.pointsPerPair) <= 0 || !Array.isArray(item.options) || item.options.length < 2 || item.options.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !item.correctPairs || clipIds.some((id) => !optionIds.has(item.correctPairs[id]))) errors.push(`${label} needs complete clips, options, pair key, and positive points per pair.`);
-      }
-      if (item.type === "multi_fill_in_the_blank" && (!Number.isFinite(Number(item.pointsPerBlank)) || Number(item.pointsPerBlank) <= 0 || !Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((clip) => !requiredText(clip?.id) || !requiredText(clip?.label) || !Array.isArray(clip.acceptedAnswers) || clip.acceptedAnswers.every((answer) => !requiredText(answer))))) errors.push(`${label} needs labeled clips, accepted answers for every clip, and positive points per blank.`);
-    });
-  });
-  return errors;
 }
 
 function validationSummary(candidate) {
@@ -520,14 +426,19 @@ function bindEditorEvents() {
   document.querySelectorAll("[data-remove-between-round-audio]").forEach((button) => button.addEventListener("click", () => { if (bonusConfig().audio) delete bonusConfig().audio[button.dataset.removeBetweenRoundAudio]; markChanged(); renderEditor(); renderPreview(); }));
   document.querySelectorAll("[data-remove-audio]").forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.removeAudio;
+    let removed = true;
     if (target === "question") {
       if (question().audio) delete question().audio.mediaAssetId;
     } else if (target.startsWith("finale:")) {
       if (finaleConfig().audio) delete finaleConfig().audio[target.slice(7)];
+    } else if (target.startsWith("between:")) {
+      if (bonusConfig().audio) delete bonusConfig().audio[target.slice(8)];
     } else if (target.startsWith("clip:")) {
       const clip = question().clips?.[Number(target.slice(5))];
       if (clip) delete clip.mediaAssetId;
-    }
+    } else removed = false;
+    // Nothing was removed, so nothing may report itself as saved.
+    if (!removed) return;
     markChanged();
     renderEditor();
     renderPreview();
@@ -1209,7 +1120,8 @@ function renderMediaLibrary() {
   mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   mediaPreviewUrls = [];
   list.innerHTML = mediaAssets.map((asset) => {
-    const inDraft = JSON.stringify(bank).includes(asset.id);
+    // No loaded bank is "unknown", not "unused": hide Delete rather than offer it.
+    const inDraft = !bank || JSON.stringify(bank).includes(asset.id);
     const title = asset.display_name || asset.source_title || `${asset.kind} · ${asset.id.slice(0, 8)}`;
     const preview = asset.kind === "image" ? `<img class="media-thumb" data-media-preview="${asset.id}" alt="${escapeHtml(title)}" />` : asset.kind === "video" ? `<video class="media-thumb" data-media-preview="${asset.id}" muted preload="metadata"></video>` : `<audio class="media-audio" data-media-preview="${asset.id}" controls preload="none"></audio>`;
     const videoInfo = asset.kind === "video" ? `${asset.duration_ms ? ` · ${formatSeconds(asset.duration_ms / 1000)}` : ""}${asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}` : "";
@@ -1365,7 +1277,7 @@ async function promptRenameMediaAsset(assetId) {
 
 async function deleteUnusedMediaAsset(assetId) {
   const asset = mediaAssets.find((entry) => entry.id === assetId);
-  if (!asset || JSON.stringify(bank).includes(assetId)) return;
+  if (!asset || !bank || JSON.stringify(bank).includes(assetId)) return;
   if (!confirm(`Delete this ${asset.kind} asset? It cannot be restored. Published quiz references are protected automatically.`)) return;
   const { error } = await supabase.rpc("delete_unused_media_asset", { p_asset_id: assetId });
   if (error) { alert(`Could not delete media: ${error.message}`); return; }
@@ -1582,7 +1494,7 @@ $("#duplicate-round").addEventListener("click", duplicateRound);
 $("#delete-round").addEventListener("click", deleteRound);
 $("#delete-question").addEventListener("click", () => { const round = selectedRound(); if (round.questions.length <= 1 || !confirm("Delete this question? This cannot be undone in the editor.")) return; round.questions.splice(selection.questionIndex, 1); selection.questionIndex = Math.max(0, selection.questionIndex - 1); markChanged(); render(); });
 $("#apply-raw").addEventListener("click", () => { try { const candidate = JSON.parse($("#raw-json").value); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; $("#raw-status").textContent = "Applied and validated."; markChanged(); render(); } catch (error) { $("#raw-status").textContent = `Not applied: ${error.message}`; } });
-$("#import-file").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const candidate = JSON.parse(await file.text()); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; $("#save-state").textContent = `Imported and validated ${file.name} — download to keep edits`; render(); } catch (error) { alert(`Could not import this JSON: ${error.message}`); } finally { event.target.value = ""; } });
+$("#import-file").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const candidate = JSON.parse(await file.text()); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; markChanged(); $("#save-state").textContent = `Imported and validated ${file.name} — saved in this browser`; render(); } catch (error) { alert(`Could not import this JSON: ${error.message}`); } finally { event.target.value = ""; } });
 
 window.addEventListener("keydown", (event) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
@@ -1592,22 +1504,26 @@ window.addEventListener("keydown", (event) => {
 
 startDiagnostics("author");
 document.querySelector(".image-optimization p").textContent = "Images are optimized for the game; audio is trimmed, loudness-leveled to −16 dBFS with a −1 dBFS peak ceiling, and rendered as WAV — unless you override it with a fixed volume at upload. Originals never upload.";
+// The saved draft is the author's own unpublished work and does not depend on
+// the bundled bank, so it is restored before that fetch gets a chance to throw.
+// The bundled file is only the source of originalBank and of the no-draft
+// fallback; losing it must not lose an hour of edits.
+lastPublishedBank = restorePublishedSnapshot();
+const draft = restoredDraft();
+if (draft) { bank = draft.bank; selection = draft.selection; $("#save-state").textContent = "Recovered saved browser draft"; }
 try {
   const bundledBank = await fetch(BANK_URL, { cache: "no-store" }).then((response) => { if (!response.ok) throw new Error("Question bank not found"); return response.json(); });
   originalBank = clone(bundledBank);
-  lastPublishedBank = restorePublishedSnapshot();
-  const draft = restoredDraft();
-  if (draft) { bank = draft.bank; selection = draft.selection; $("#save-state").textContent = "Recovered saved browser draft"; }
-  else { bank = bundledBank; $("#save-state").textContent = "Loaded — edits save in this browser automatically"; }
-  render();
-  syncPublishControl();
+  if (!draft) { bank = bundledBank; $("#save-state").textContent = "Loaded — edits save in this browser automatically"; }
 } catch (error) {
   recordDiagnostic("load-question-bank", error);
-  $("#nav-title").textContent = "Question bank is not connected";
   const localFile = location.protocol === "file:";
-  $("#save-state").textContent = localFile
+  const detail = localFile
     ? "Open this page through the local app server: run npm run dev, then visit http://127.0.0.1:4173/author.html."
     : `Could not load music-trivia.question-bank.json: ${error.message}`;
+  if (!draft) $("#nav-title").textContent = "Question bank is not connected";
+  $("#save-state").textContent = draft ? `Editing your saved browser draft. The bundled question bank did not load: ${detail}` : detail;
 }
+if (bank) { render(); syncPublishControl(); }
 restoreOriginalsDirectoryHandle();
 initialiseAuth().catch((error) => { recordDiagnostic("author-sign-in", error); console.warn("Author sign-in unavailable.", error); });

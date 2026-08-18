@@ -13,9 +13,51 @@ test("player UI waits for server confirmation before recording submission", () =
 });
 
 test("temporarily invalid author drafts survive refresh", () => {
-  const restore = author.slice(author.indexOf("function restoredDraft"), author.indexOf("function validateQuiz"));
+  const restore = author.slice(author.indexOf("function restoredDraft"), author.indexOf("function validationSummary"));
   assert.doesNotMatch(restore, /validateQuiz/);
   assert.match(restore, /Array\.isArray\(draft\.bank\.rounds\)/);
+});
+
+test("the editor validates with the shared quiz-validation module instead of a private copy", () => {
+  assert.match(author, /import \{ validateQuiz \} from "\.\/quiz-validation\.js";/);
+  assert.doesNotMatch(author, /function validateQuiz/);
+});
+
+test("a saved author draft survives a failed bundled-bank fetch", () => {
+  const boot = author.slice(author.indexOf('startDiagnostics("author")'));
+  // The draft is the author's own unpublished work and does not depend on the
+  // bundled bank, so it must be restored before that fetch can throw.
+  assert.ok(boot.indexOf("restoredDraft()") < boot.indexOf("await fetch(BANK_URL"));
+  // …and the editor must still render on the failure path when a draft exists,
+  // rather than leaving `bank` undefined for renderMediaLibrary to dereference.
+  assert.ok(boot.indexOf("} catch (error) {") < boot.indexOf("if (bank) { render(); syncPublishControl(); }"));
+  // …and the media panel must not dereference an unloaded bank at all.
+  assert.match(author, /const inDraft = !bank \|\| JSON\.stringify\(bank\)\.includes\(asset\.id\);/);
+  assert.match(author, /if \(!asset \|\| !bank \|\| JSON\.stringify\(bank\)\.includes\(assetId\)\) return;/);
+});
+
+test("importing a JSON file persists the draft it just adopted", () => {
+  const importer = author.slice(author.indexOf('$("#import-file").addEventListener'), author.indexOf('window.addEventListener("keydown"'));
+  assert.match(importer, /markChanged\(\)/);
+  assert.doesNotMatch(importer, /download to keep edits/);
+});
+
+test("removing a between-round sound actually removes it, and an unrecognised target never reports a save", () => {
+  const start = author.indexOf('document.querySelectorAll("[data-remove-audio]")');
+  const source = author.slice(start, author.indexOf('document.querySelectorAll("[data-remove-image]")', start));
+  const body = source.slice(source.indexOf("=> {") + 4, source.lastIndexOf("}));"));
+  const handler = new Function("button", "question", "finaleConfig", "bonusConfig", "markChanged", "renderEditor", "renderPreview", body);
+  const bonus = { audio: { roundEnd: { mediaAssetId: "asset-1" }, doorChoice: { mediaAssetId: "asset-2" } } };
+  const noop = () => {};
+  let saved = 0;
+  const run = (target) => handler({ dataset: { removeAudio: target } }, () => ({}), () => ({}), () => bonus, () => { saved += 1; }, noop, noop);
+  run("between:roundEnd");
+  assert.deepEqual(Object.keys(bonus.audio), ["doorChoice"]);
+  assert.equal(saved, 1);
+  saved = 0;
+  run("mystery:thing");
+  assert.deepEqual(Object.keys(bonus.audio), ["doorChoice"]);
+  assert.equal(saved, 0);
 });
 
 test("valid attached images do not depend on the media-library list", () => {

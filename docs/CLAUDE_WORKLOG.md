@@ -3,7 +3,6 @@
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
 ## 2026-08-18 — Investigated: "I don't see brainstorm.matthewbelinkie.com on the title screen"
-
 - **Branch:** `claude/investigate-title-url-deploy`. Investigation only; no product code changed.
 - **Report:** User said the join URL added by `bf7df3f` ("feat: show join URL on the presentation title screen only") isn't visible on the live title screen, even though that commit is merged to `main`.
 - **Verdict: stale production deploy, not a code/CSS/wrong-screen bug.** The live site at `brainstorm.matthewbelinkie.com` is serving an `app.js` build that predates `bf7df3f` and three other same-day merges. Confirmed by diffing the live-served files against this worktree's source:
@@ -28,7 +27,6 @@ Durable record of Claude's contributions to this repo, separate from `CHANGELOG.
   The one failure (`test/deploy-manifest.test.js`, missing gitignored `video-processor.worker.bundle.js`) is the same pre-existing, unrelated gap noted in prior worklog entries for a fresh worktree without `node_modules`/the video build.
 - **Could not verify:** which specific machine/checkout ran the live `npm run deploy` and why it wasn't up to date with `main` at that moment — that's outside this repo's introspection; flagging it to the user as the open question rather than guessing further.
 ## 2026-08-18 — Move the presentation timer to a top-center badge, off the corner QR
-
 - **Branch:** `claude/presentation-timer-top-center` (renamed from the worktree's default `worktree-agent-afd2240cc8386ed25` branch name to follow the `claude/<short-kebab-name>` convention before committing; this branch was not checked out in any other worktree, so the rename was safe).
 - **Bug (user-reported):** "The timer appears in the corner UNDER the QR code. Make the time at the top CENTER to prevent this." — on the Presentation (shared big-screen) view, the countdown could render partly hidden behind the corner join-QR badge.
 - **Root cause:** `timerDisplay()`'s `<span data-timer-readout>` was rendered *inside* the `.presentation-round` heading section (`app.js`, `renderPresenter()`). In fullscreen kiosk mode, `.is-presentation .presentation-round .question-timer` positioned that span `position:absolute; right:clamp(22px,3vw,48px); top:50%` — i.e., pinned to the right edge of the round-heading row. `presentationCornerJoinQr()` is a separate, sibling element styled `.presenter-join-qr--corner{position:fixed; top:14px; right:clamp(18px,3vw,48px)}`, and because the round heading occupies only the top ~22% of the fullscreen grid, that timer's `top:50%` (of the 22% row) landed in almost exactly the same screen region as the QR's fixed top-right position — the two overlapped, with the QR painted on top.
@@ -38,36 +36,80 @@ Durable record of Claude's contributions to this repo, separate from `CHANGELOG.
   - The topbar itself (`brandTopbar(false, false, ...)`, called with `presenter=false`) renders an empty right slot on every non-title presentation screen (its `showRoom` room-badge is only shown on the title screen, and the corner QR floats as a separate fixed element instead) — so the topbar's horizontal center, where the badge is now vertically centered, was already visually empty in both the brand-mark's flex row and the round heading below it.
 - **Test:** extended `test/presentation-layout.test.js`. Updated the existing "presenter timer is a prominent shared-screen control" test to match the new `.is-presentation .presentation-timer-badge .question-timer` selector (it was asserting against the now-removed `.presentation-round .question-timer` selector and would otherwise have false-passed against dead CSS). Added a new test, "presenter timer sits in its own fixed top-center badge, clear of the corner join QR," asserting: the `heading` template no longer calls `timerDisplay()`; `presentationCornerJoinQr()` contains neither `timerDisplay()` nor `data-timer-readout`; `presentationTimerBadge()` exists and renders the `data-timer-readout`-bearing markup as its own `.presentation-timer-badge` div; it is wired in as a sibling (`${cornerJoinQr}${presentationTimerBadge()}`) rather than nested; and the CSS positions the badge as `position:fixed` with horizontal centering (`left:50%;transform:translate(-50%,-50%)`), independent of the corner QR's separate `top:14px;right:...` fixed position.
 - **Commands run and actual output:**
-
-```
 $ node --test test/presentation-layout.test.js
 ...
 ℹ tests 24
 ℹ suites 0
 ℹ pass 24
-ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-```
-
-```
 $ npm test
 ...
 ℹ tests 150
 ℹ suites 0
-ℹ pass 149
 ℹ fail 1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-```
-
   The one failure, `test/deploy-manifest.test.js` ("every local file referenced by a shipped file is itself shipped" — `author.js references "./video-processor.worker.bundle.js", which does not exist"), is pre-existing and unrelated to this change: `video-processor.worker.bundle.js` is a gitignored, locally built artifact this worktree doesn't have. Confirmed by `git stash`-ing all three of my changed files and re-running `npm test` in this same worktree — identical single failure, same assertion, before any of my edits existed; then `git stash pop` to restore the fix.
 - **Could not verify:**
   - **No real projector or actual browser render.** Per `mistakes.md`'s note that diagnostics are device-local, and per this task's own instruction not to deploy: I did not open the Presentation view in an actual browser (fullscreen or windowed), take a screenshot, or view it on a real second-screen/projector setup to visually confirm the badge clears the QR and the round heading at a real aspect ratio. The fix is verified structurally (the timer markup is no longer inside `.presentation-round` or the QR container; the CSS positions are non-overlapping by their fixed coordinates as computed above) and by the full-suite regression tests, but not by a rendered screenshot.
   - **Extreme/unusual aspect ratios.** I reasoned through the geometry at common projector widths (≈1024px, ≈1920px, and the existing 700px mobile-preview breakpoint) and confirmed the badge's centered position stays clear of the QR's fixed right-edge offset with comfortable margin at each, but did not exhaustively test every possible viewport size (e.g., very narrow portrait-oriented displays, which this product's presentation surface isn't designed for regardless).
   - Did not touch `supabase/migrations/` or any server-side code — this is a purely client-side layout/CSS fix with no data-model or scoring implication, so none was needed.
+## 2026-08-18 — Author editor: one validator, and three draft-persistence bugs
+
+- **Branch:** `claude/author-editor` (from `b58adb7`). Parallel-worker slice E of `docs/reviews/2026-08-17-consolidated-plan.md`: findings C19, C20, C21, C22. C23 was explicitly out of scope (collides with the in-flight `image-engine.js` slice) and no new validation rules were added (C18's "reject empty rounds" belongs to the fixture worker).
+- **Files touched:**
+  - `quiz-validation.js` — now the single authoritative validator. Gained the rules that previously lived only in `author.js`'s private copy: the 11-type allowlist, question `audio.mediaAssetId` UUIDs, `fill_in_the_blank` blanks, the `arrange_in_order` and `categorize` answer keys, `matching` pair referential integrity plus labeled clips/options, and `finale.audio` asset IDs.
+  - `author.js` — deleted its own `validateQuiz` (~93 lines) and imported the shared one; removed the now-unused `validNumericLiteral` helper; reordered the boot block so the saved draft is restored before the bundled-bank fetch; guarded two `JSON.stringify(bank)` dereferences; added `markChanged()` to the `#import-file` handler; added the `between:` branch to the `[data-remove-audio]` handler and made `markChanged()` conditional on a branch having matched.
+  - `test/quiz-validation.test.js` — six new behavioral tests for the promoted rules.
+  - `test/reliability-contract.test.js` — retargeted the `restoredDraft` slice anchor (it used `function validateQuiz`, which no longer exists in `author.js`), plus four new author-editor contract tests.
+  - `CHANGELOG.md`, `docs/CLAUDE_WORKLOG.md`.
+- **No migration.** No schema, scoring, or Worker change. `app.js`, `quiz-core.js`, `cloudflare-worker.js`, and `quiz.sample.json` were not touched.
+
+### Reproductions confirmed before patching
+
+- **C19** — `author.js` imported `diagnostics.js`, `image-crop.js`, `subtitle-core.js`, `video-utils.js`, and *not* `quiz-validation.js`; `grep` confirmed `quiz-validation.js` was imported only by three test files and shipped by `prepare-deploy.mjs` to a browser that never loaded it.
+- **C20** — the boot block's first statement was `await fetch(BANK_URL, …)`; `restorePublishedSnapshot()`, `restoredDraft()`, and `render()` were all sequenced behind it inside the same `try`.
+- **C21** — `#apply-raw` called `markChanged()`; `#import-file` did not.
+- **C22** — `privateAudioPreview(...)` emits `data-remove-audio="between:<key>"` for between-round sounds (`author.js`, the between-round sound card), while the `[data-remove-audio]` handler recognized only `"question"`, `"finale:"`, and `"clip:"` and called `markChanged()` unconditionally outside every branch.
+
+### Validator disagreements and how they were resolved
+
+Both copies already rejected empty rounds ("Round N needs at least one question"), contrary to the plan's drift table — so merging added no empty-round rule and did not disturb the `quiz.sample.json` fixture work. Every other divergence was one-sided (a rule present in exactly one copy), so the union was taken with no rule dropped and none invented. Net user-visible change to the editor: it now also validates `betweenRoundBonus.audio` asset IDs, which only the untested module checked before.
+
+### Commands actually run
+
+```
+$ npm run build:video      # failed: esbuild is not installed in this worktree
+```
+Copied the git-ignored `video-processor.worker.bundle.js` from the main checkout instead so `test/deploy-manifest.test.js` could pass. Nothing in the main checkout was modified.
+
+```
+$ npm test                 # on b58adb7, after the bundle copy
+ℹ tests 149
+ℹ pass 149
+ℹ fail 0
+```
+(The slice brief quoted a baseline of 158 tests; the measured baseline on `b58adb7` was 149.)
+
+Each fix was written test-first and each new test was observed failing before its fix and passing after.
+
+```
+$ npm test                 # final
+ℹ tests 159
+ℹ pass 159
+ℹ fail 0
+```
+
+### What remains unproven
+
+- **No browser verification was possible here.** C20, C21, and C22 are all `localStorage` draft-persistence behaviors in a module that cannot be imported under `node:test` (top-level `await fetch`, DOM access at load).
+- C22 *is* proven behaviorally: the test slices the real `[data-remove-audio]` handler body out of `author.js`, compiles it with `new Function`, and runs it against fakes — it asserts the between-round clip is actually deleted and that an unrecognized target never calls `markChanged()`.
+- C19's promoted rules are proven behaviorally against `quiz-validation.js`. That the *editor* now uses that module is proven only structurally (the import exists, no local `function validateQuiz` remains).
+- **C20 and C21 are proven only structurally** — ordering and presence assertions on the source text. Per `RUNBOOK.md`, Matthew should confirm by hand: (a) edit a quiz, break the bundled bank URL (or go offline) and reload — the draft should still open and the status line should say the bundled bank did not load; (b) import a quiz JSON, reload without touching a field — the imported quiz should still be there; (c) attach a between-round bonus sound, press the preview's "Remove audio", and confirm the clip is gone from the JSON and no longer plays.
+- Not addressed, deliberately: C23 (author image preview states), C18's empty-round rule and its `quiz.sample.json` fixture, and the `author.js` `originalBank` variable, which `grep` shows is assigned twice and never read — flagged, not changed.
 
 ## 2026-08-17 — Show the join URL on the presentation title screen only
 

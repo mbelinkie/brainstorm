@@ -1,5 +1,11 @@
+// The one validator. author.js used to carry a second, divergent copy of this
+// function: that copy gated Publish while this one was the only copy under test,
+// so a green test run proved nothing about what the editor accepted. The rules
+// below are the union of what the two copies already checked — nothing new was
+// invented during the merge.
 export function validateQuiz(candidate) {
   const errors = [];
+  const supportedTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection", "short_answer", "fill_in_the_blank", "multi_fill_in_the_blank", "arrange_in_order", "categorize", "matching", "closest_number"]);
   const requiredText = (value) => typeof value === "string" && value.trim();
   const validNumericLiteral = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return ["Quiz must be a JSON object."];
@@ -12,6 +18,7 @@ export function validateQuiz(candidate) {
   const validKaraoke = (cue) => cue.karaoke === undefined || (Array.isArray(cue.karaoke) && cue.karaoke.length <= 500 && cue.karaoke.every((segment) => segment && Object.getPrototypeOf(segment) === Object.prototype && Number.isFinite(segment.startMs) && segment.startMs >= cue.startMs && Number.isFinite(segment.endMs) && segment.endMs >= segment.startMs && segment.endMs <= cue.endMs && Number.isInteger(segment.startIndex) && segment.startIndex >= 0 && Number.isInteger(segment.endIndex) && segment.endIndex > segment.startIndex && segment.endIndex <= cue.text.length));
   if (titleAudio?.captionSourceName !== undefined && (typeof titleAudio.captionSourceName !== "string" || titleAudio.captionSourceName.length > 255)) errors.push("Title page caption source name must be a string of 255 characters or fewer.");
   if (titleAudio?.captions !== undefined && (!Array.isArray(titleAudio.captions) || titleAudio.captions.length > 500 || titleAudio.captions.some((cue) => !cue || Object.getPrototypeOf(cue) !== Object.prototype || !Number.isFinite(cue.startMs) || cue.startMs < 0 || !Number.isFinite(cue.endMs) || cue.endMs <= cue.startMs || typeof cue.text !== "string" || !cue.text.trim() || cue.text.length > 500 || !validKaraoke(cue)))) errors.push("Title page captions must contain at most 500 valid timed text cues.");
+  for (const [key, audio] of Object.entries(candidate.finale?.audio || {})) if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Finale ${key} has an invalid private audio asset ID.`);
   for (const [screen, audio] of Object.entries(candidate.betweenRoundBonus?.audio || {})) {
     if (audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(audio.mediaAssetId)) errors.push(`Between-round ${screen} sound has an invalid private audio asset ID.`);
   }
@@ -47,7 +54,9 @@ export function validateQuiz(candidate) {
       const label = `${roundLabel}, question ${questionIndex + 1}`;
       if (!item || typeof item !== "object") { errors.push(`${label} must be an object.`); continue; }
       if (!requiredText(item.id)) errors.push(`${label} needs an ID.`); else if (questionIds.has(item.id)) errors.push(`${label} has a duplicate question ID: ${item.id}.`); else questionIds.add(item.id);
+      if (!supportedTypes.has(item.type)) errors.push(`${label} has an unsupported question type.`);
       if (!requiredText(item.prompt)) errors.push(`${label} needs a player prompt.`);
+      if (item.audio?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.audio.mediaAssetId)) errors.push(`${label} has an invalid private media asset ID.`);
       if (item.video !== undefined && (!item.video || typeof item.video !== "object" || Array.isArray(item.video))) errors.push(`${label} video must be an object.`);
       if (item.video?.mediaAssetId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(item.video.mediaAssetId)) errors.push(`${label} has an invalid private video asset ID.`);
       if ((item.audio?.mediaAssetId || item.audio?.url) && (item.video?.mediaAssetId || item.video?.url)) errors.push(`${label} may have either presentation audio or presentation video, not both.`);
@@ -59,7 +68,21 @@ export function validateQuiz(candidate) {
         if (!Array.isArray(item.correctOptionIds) || !item.correctOptionIds.length || item.correctOptionIds.some((id) => !optionIds.has(id))) errors.push(`${label} has an invalid answer key.`);
       }
       if (item.type === "short_answer" && (!Array.isArray(item.acceptedAnswers) || item.acceptedAnswers.every((answer) => !requiredText(answer)))) errors.push(`${label} needs an accepted answer.`);
-      if (item.type === "matching" && (!Array.isArray(item.options) || item.options.length < 2 || !Array.isArray(item.clips) || item.clips.length < 2 || !item.correctPairs || !Number.isFinite(Number(item.pointsPerPair)) || Number(item.pointsPerPair) <= 0)) errors.push(`${label} needs complete clips, options, pair key, and positive points per pair.`);
+      if (item.type === "fill_in_the_blank" && (!Array.isArray(item.blanks) || item.blanks.length === 0 || item.blanks.some((blank) => !Array.isArray(blank?.acceptedAnswers) || blank.acceptedAnswers.every((answer) => !requiredText(answer))))) errors.push(`${label} needs accepted answers for every blank.`);
+      if (item.type === "arrange_in_order") {
+        const itemIds = new Set((item.items || []).map((entry) => entry?.id));
+        if (!Array.isArray(item.items) || item.items.length < 2 || item.items.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.correctOrder) || item.correctOrder.length !== item.items.length || new Set(item.correctOrder).size !== item.correctOrder.length || item.correctOrder.some((id) => !itemIds.has(id))) errors.push(`${label} needs a complete, unique order answer key.`);
+      }
+      if (item.type === "categorize") {
+        const categoryIds = new Set((item.categories || []).map((entry) => entry?.id));
+        const itemIds = (item.items || []).map((entry) => entry?.id);
+        if (!Array.isArray(item.categories) || item.categories.length !== 2 || item.categories.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.items) || item.items.length === 0 || item.items.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !item.correctCategories || itemIds.some((id) => !categoryIds.has(item.correctCategories[id]))) errors.push(`${label} needs two categories and a complete valid assignment key.`);
+      }
+      if (item.type === "matching") {
+        const optionIds = new Set((item.options || []).map((entry) => entry?.id));
+        const clipIds = (item.clips || []).map((entry) => entry?.id);
+        if (!Number.isFinite(Number(item.pointsPerPair)) || Number(item.pointsPerPair) <= 0 || !Array.isArray(item.options) || item.options.length < 2 || item.options.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((entry) => !requiredText(entry?.id) || !requiredText(entry?.label)) || !item.correctPairs || clipIds.some((id) => !optionIds.has(item.correctPairs[id]))) errors.push(`${label} needs complete clips, options, pair key, and positive points per pair.`);
+      }
       if (item.type === "multi_fill_in_the_blank" && (!Array.isArray(item.clips) || item.clips.length < 2 || item.clips.some((clip) => !requiredText(clip?.id) || !requiredText(clip?.label) || !Array.isArray(clip.acceptedAnswers) || clip.acceptedAnswers.every((answer) => !requiredText(answer))) || !Number.isFinite(Number(item.pointsPerBlank)) || Number(item.pointsPerBlank) <= 0)) errors.push(`${label} needs labeled clips, accepted answers for every clip, and positive points per blank.`);
     }
   }
