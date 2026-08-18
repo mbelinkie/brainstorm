@@ -18,3 +18,6 @@ music quiz originals/
 # Local reference material: promo art, vendor API notes, scratch documents.
 # Not shipped, not deployed, not part of the product.
 local-reference/
+
+# Agent worktrees and local session state.
+.claude/
