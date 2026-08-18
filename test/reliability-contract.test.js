@@ -36,6 +36,12 @@ test("a saved author draft survives a failed bundled-bank fetch", () => {
   assert.match(author, /if \(!asset \|\| !bank \|\| JSON\.stringify\(bank\)\.includes\(assetId\)\) return;/);
 });
 
+test("importing a JSON file persists the draft it just adopted", () => {
+  const importer = author.slice(author.indexOf('$("#import-file").addEventListener'), author.indexOf('window.addEventListener("keydown"'));
+  assert.match(importer, /markChanged\(\)/);
+  assert.doesNotMatch(importer, /download to keep edits/);
+});
+
 test("valid attached images do not depend on the media-library list", () => {
   const preview = author.slice(author.indexOf("function attachedImagePreview"), author.indexOf("function imageReformatButton"));
   assert.match(preview, /validAssetId\(assetId\)/);
