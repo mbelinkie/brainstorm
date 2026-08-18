@@ -2,6 +2,15 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-18
+
+- Fixed the bundled sample quiz (`quiz.sample.json`), which had not validated for some time: three of its five rounds contained no questions, and the piano-intro finale carried an empty answer key. An empty round is a dead end for the host — "next round" silently does nothing, with no error and no way forward except the testing jump control. The sample now runs end to end and exercises nine of the eleven question types instead of two.
+- Corrected the host keyboard shortcut documented in `PRODUCT_SPEC.md`. It said `R = restart`; `R` reveals and scores the question. A host following the spec during a live show would have revealed the answer while trying to replay a clip. The in-app guide (`?`) was correct all along and is now what the spec matches.
+- Brought `PRODUCT_SPEC.md` back in line with what shipped: eleven question formats instead of nine, the late-join catch-up multiplier (previously undocumented anywhere), how it and the door bonus resolve against each other, the JSONB quiz-definition data model in place of seven relational tables that were never built, and a new section covering a dozen shipped features the document had never described. Features that were specified but never built are now marked as such in place rather than reading as descriptions of the product.
+- Added regression tests that run both bundled quiz fixtures through validation, the player-payload allowlist, and the scoring comparison rules, so a schema change can no longer break either file unnoticed.
+- Added offline checks for migration numbering, for `service_role` grants matching what the Worker actually reads, and for secrets or raw source media reaching any deployed file.
+- Fixed `npm test` failing on a fresh checkout that had not run `npm run build:video`.
+
 ## 2026-08-17
 
 - Raised the local source-file size limit for the "Trim and upload clip" audio buttons (question audio cue, title music, finale, between-round, matching clips) from 25 MB to 500 MB. The old cap was really the final-upload limit for the rendered clip, not the raw source an author picks before trimming — a large local WAV/FLAC source could hit it long before the much smaller trimmed clip ever would.

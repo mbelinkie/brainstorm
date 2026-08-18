@@ -496,3 +496,58 @@ $ npm test
   - Did not open `author.html` in a browser to visually confirm the preview-column layout looks correct with the assistant panel gone, or that the per-image "⌄" menu (now containing only "Upload image") still opens/closes and looks reasonable with one item instead of two.
   - Did not deploy or exercise the live Cloudflare Worker — confirmed by source inspection and the regression test that `/media-assistant/search` is gone from `cloudflare-worker.js`, `server.mjs`, and `wrangler.jsonc`, but did not hit a running Worker to confirm the route now 404s.
   - Left the `source` parameter on `author.js`'s `uploadPrivateImage(file, optionIndex, source = null)` in place even though the only caller that ever passed a non-null `source` (`approveSuggestedImage`) is gone — it's dead but harmless (defaults to `null`, which is also what plain manual uploads already pass), and removing it would touch a function several other tests slice by name; left it rather than risk an unrelated regression for a cosmetic cleanup.
+
+## 2026-08-18 — Cheap independent tests, the sample fixture, and the product spec
+
+- **Branch:** `claude/tests-and-spec`, worktree `quiz-tests-and-spec`, based on `b58adb7`. One of four parallel worktrees; this was batch **G** of `docs/reviews/2026-08-17-consolidated-plan.md` §4 — findings C30, C27, the fixture half of C18, and the fixture entry of C32. Deliberately the lowest-risk batch: no runtime code, no migrations. `app.js`, `author.js`, `quiz-core.js`, `quiz-validation.js`, `cloudflare-worker.js`, and `supabase/migrations/` were read but never modified.
+- **Baseline correction.** The plan records `b58adb7` as 158 tests / 158 pass. In a clean worktree it is **149 tests, 148 pass, 1 fail**. The nine-test difference is `test/image-engine.test.js`, an untracked in-flight slice that exists only in the main checkout; the failure is `deploy-manifest.test.js` looking for the git-ignored `video-processor.worker.bundle.js`. The 2026-08-17 worklog entry above records copying that bundle in from the main checkout to work around it. That workaround should no longer be needed — see below.
+
+### What landed
+
+- `quiz.sample.json` — rounds 2, 3, and 4 had `"questions": []` and the matching finale had `"correctPairs": {}`. Filled all four. Rounds gained three questions each, chosen to widen type coverage from two types to nine (single choice, true/false, categorize, multiple choice, closest number, fill-in-the-blank, short answer, arrange-in-order, matching). Image selection and multi-blank were left out because both need real private media assets. The "Finish the Lyric" round is authored as song-title completion rather than lyric fragments; the real bundled bank already carries the actual lyric round.
+- `test/quiz-fixtures.test.js` — new, 12 tests. Both fixtures through `validateQuiz`, a no-empty-round assertion, an answer-key-leak check over `toPlayerQuestion` at every nesting depth, an asset-ID sentinel check, a per-question scoring round trip against `tallyQuestionResults`, and a guard on artwork attached to `items`/`categories`.
+- `test/migration-hygiene.test.js` — new, 2 tests. Migration prefixes unique, contiguous, starting at 0001. Worker table reads (including PostgREST `select=` embeds) checked against `grant select on table … to service_role` in the migrations.
+- `test/deploy-manifest.test.js` — `generatedArtifacts` now also excuses the *referenced* bundle, not just the manifest entry, so a clean checkout is green without `npm run build:video`. Added `raw source media is never shipped` and `no shipped file carries a secret`.
+- `test/scoring-contract.test.js`, `test/late-join-bonus.test.js`, `test/door-bonus.test.js` — ten test names relabelled `migration presence:` / `source presence:`, plus a header in each explaining they are change detectors, not behavioral proofs. No assertion changed.
+- `PRODUCT_SPEC.md` — §3, §4, §5, §6, §7, §9, §11 corrected; new §7 "Score modifiers" and new §19 for shipped-but-unspecified features.
+- `CLAUDE.md` — the "no asset IDs" player-privacy invariant amended to match the shipped, `0029`-endorsed design.
+
+### Commands actually run
+
+```
+$ npm test
+ℹ tests 165
+ℹ suites 0
+ℹ pass 165
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 388.194411
+```
+
+Both `validateQuiz` implementations were run over both fixtures from a scratch script (`author.js` exports nothing, so its private copy was extracted and evaluated for verification only, not committed):
+
+```
+=== quiz.sample.json ===        before          after
+quiz-validation.js : 3 errors  →  []
+author.js copy     : 4 errors  →  []
+=== music-trivia.question-bank.json ===
+both                : []       →  []
+```
+
+The fourth error in the shipped validator — `Round 5, question 1 needs complete clips, options, pair key, and positive points per pair` — is the empty `correctPairs`, and it is **not in any of the four review reports**. All four ran only `quiz-validation.js`, whose matching rule checks `!item.correctPairs` and so accepts `{}`.
+
+### Verified the new tests discriminate
+
+- Mutated a scratch copy of `quiz.sample.json` (emptied a round, planted artwork on an ordering card, added an option asset ID): four of the six fixture tests failed, and passed again on restore.
+- Planted `sb_secret_…` in `assets/kaplan-k.svg`: `no shipped file carries a secret` failed, proving the walk reaches nested directory entries. Removed.
+- The secret scan also asserts its own patterns still match a known-bad sample, so it cannot pass by matching nothing.
+
+### What remains unproven
+
+- **Nothing here was run in a browser or a live room.** The sample quiz is proven to validate and to score its own answer keys through the shared helpers. It was **not** loaded into a host session and played through, so the C18 host dead-end is proven closed only for the fixture, not for the `startRound` code path that produced it — that half belongs to whoever owns `app.js`.
+- **The trivia answers in the new sample questions are not independently fact-checked by any test.** `quiz-fixtures.test.js` derives the correct answer from the key, so a wrong-but-coherent key passes. The test comment says so.
+- **`test/quiz-fixtures.test.js` imports `quiz-validation.js`**, which is the module `prepare-deploy.mjs` ships and the existing tests use — but *not* the copy the editor runs on Publish. Both accept both fixtures today. When the two validators are merged (C19), re-point that import.
+- **`migration-hygiene.test.js` pins one open defect rather than fixing it.** `session_players` is embedded by the closest-number guess board and granted to `service_role` by no migration. Closing it needs a migration number, which only Matthew assigns. The assertion is an exact match on the missing set, so it will fail when the grant lands and the exception is left behind.
+- **`RUNBOOK.md` is now slightly stale.** It describes `quiz.sample.json` as containing "Placeholders for the five planned rounds." That file is outside this batch's ownership and was not edited.
