@@ -71,13 +71,12 @@ test("every table the Worker reads is granted to service_role", () => {
 
   const missing = [...tables].filter((table) => !granted.has(table)).sort();
 
-  // Known, still-open gap: `0028_answer_wall_service_role_read.sql` granted
-  // `sessions` and `submissions` when the answer wall shipped, but the
-  // closest-number guess board added later embeds `session_players` for the
-  // display name and logo, and no migration grants it. Whoever closes this
-  // deletes the entry below; whoever reads a new table adds a grant rather
-  // than an exception.
-  const knownMissingGrants = ["session_players"];
+  // No known-open gaps. `0028_answer_wall_service_role_read.sql` granted
+  // `sessions` and `submissions` when the answer wall shipped; the
+  // closest-number guess board later embedded `session_players` for the
+  // display name and logo, and `0033_closest_number_player_names.sql` grants
+  // it. Whoever reads a new table adds a grant rather than an exception.
+  const knownMissingGrants = [];
   assert.deepEqual(
     missing,
     knownMissingGrants,
