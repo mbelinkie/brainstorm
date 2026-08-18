@@ -13,6 +13,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 - Fixed the Host "answers received" count sometimes showing roughly double the real number of connected players (e.g. 6/12 for 6 players). Submission and presence broadcasts were using each player's local join credential instead of the server-assigned roster ID, so the host's player list could gain a duplicate entry per player on questions after the first score lock.
 - Added a "Who got it right" summary to the Host screen after answer reveal, showing how many submitted answers were fully correct. For multi-part questions (matching, categorize, and multi-fill-in-the-blank), it also breaks down how many players got each individual part right.
 - Added the public join URL (`brainstorm.matthewbelinkie.com`) to the Presentation title screen, next to the QR code and room code, so a room can join by typing the address when scanning isn't convenient. It only appears on the title screen — join info shown during the rest of the quiz was already URL-free.
+- Fixed a player's saved name and logo persisting on a phone forever, so a returning device skipped the join screen even for an unrelated game weeks later. The saved identity is now cleared if the device has been inactive for more than 6 hours; closing a tab and immediately rescanning the room QR still reconnects the player, but a later, different game now asks for a name again.
 
 ## 2026-08-15
 

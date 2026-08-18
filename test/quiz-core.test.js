@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { correctOptionId, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_SESSION_TTL_MS, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
 
 test("player payload is an explicit allowlist", () => {
   const player = toPlayerQuestion({ id: "q1", type: "image_selection", prompt: "Choose", correctOptionIds: ["a"], hostReveal: "Secret", audio: { url: "https://private.example/clip" }, options: [{ id: "a", label: "Visible", imageAssetId: "asset-1", imageSource: "Private source" }] });
@@ -43,6 +43,28 @@ test("audio volume clamps to a valid gain and defaults to full volume", () => {
   assert.equal(normalizedAudioVolume(2), 1);
   assert.equal(normalizedAudioVolume(undefined), 1);
   assert.equal(normalizedAudioVolume("not a number"), 1);
+});
+
+// A saved player identity (name/logo) should let a phone rejoin after an
+// accidental tab close, but not resurface on a later, unrelated game.
+test("a player identity within the session TTL is not expired", () => {
+  const now = Date.parse("2026-08-17T20:00:00Z");
+  assert.equal(isPlayerSessionExpired(now - 1000, now), false); // rescanned the QR a second later
+  assert.equal(isPlayerSessionExpired(now - PLAYER_SESSION_TTL_MS, now), false); // right at the boundary
+});
+
+test("a player identity older than the session TTL is expired", () => {
+  const now = Date.parse("2026-08-17T20:00:00Z");
+  assert.equal(isPlayerSessionExpired(now - PLAYER_SESSION_TTL_MS - 1, now), true); // just past the boundary
+  assert.equal(isPlayerSessionExpired(Date.parse("2026-08-16T20:00:00Z"), now), true); // an earlier game, a day later
+});
+
+test("a player identity with no recorded activity is treated as expired", () => {
+  // localStorage.getItem() returns null for a key it never wrote (a device
+  // that has never joined, or one whose identity predates this TTL).
+  assert.equal(isPlayerSessionExpired(null), true);
+  assert.equal(isPlayerSessionExpired(undefined), true);
+  assert.equal(isPlayerSessionExpired("not-a-timestamp"), true);
 });
 
 // tallyQuestionResults() is the host's post-reveal "who got it right"

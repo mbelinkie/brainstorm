@@ -22,6 +22,18 @@ test("a player identity survives closing the browser and rejoining from the room
   assert.match(app, /rememberDoorPlayerRecord\(joined\.playerId\)/);
 });
 
+test("a player identity is wiped once the session TTL has passed, so a later game asks for a name again", () => {
+  assert.match(app, /import \{[^}]*isPlayerSessionExpired[^}]*\} from "\.\/quiz-core\.js"/);
+  // The expiry check must run, and clear the saved identity, before that
+  // identity is read into playerId/playerName/playerLogoKey -- otherwise a
+  // stale name would still auto-fill the join screen this one time.
+  const expiryCheckIndex = app.indexOf("isPlayerSessionExpired(localStorage.getItem(PLAYER_SESSION_ACTIVITY_KEY))");
+  const identityReadIndex = app.indexOf('persistedPlayerValue("musicTriviaPlayerId")');
+  assert.ok(expiryCheckIndex > -1, "expected app.js to check isPlayerSessionExpired against the stored activity timestamp");
+  assert.ok(expiryCheckIndex < identityReadIndex, "expected the expiry check to run before the saved identity is read");
+  assert.match(app, /localStorage\.setItem\(PLAYER_SESSION_ACTIVITY_KEY, String\(Date\.now\(\)\)\)/);
+});
+
 test("mobile logo selection uses one column with large artwork", () => {
   assert.match(css, /\.player-logo-picker>div\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)/);
   assert.match(css, /\.player-logo-choice \.player-logo\s*\{[^}]*width:\s*min\(62vw,260px\)/);

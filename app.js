@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -492,7 +492,19 @@ async function showNextScreen() {
 }
 // A player token is the credential that lets a phone resume its existing
 // player record. Unlike a tab session, local storage survives closing the
-// browser and scanning the room QR code again on the same device.
+// browser and scanning the room QR code again on the same device -- but only
+// for the same live session. PLAYER_SESSION_ACTIVITY_KEY tracks when this
+// device last used its saved identity; if that gap exceeds the TTL (a closed
+// tab reopened next week, not a QR rescan a minute later), the identity below
+// is wiped before it's read, so the join screen asks for a name again instead
+// of quietly reusing a previous game's name and logo.
+const PLAYER_SESSION_ACTIVITY_KEY = "musicTriviaPlayerSessionAt";
+if (isPlayerSessionExpired(localStorage.getItem(PLAYER_SESSION_ACTIVITY_KEY))) {
+  for (const key of ["musicTriviaPlayerId", "musicTriviaPlayerName", "quizPlayerLogoKey", PLAYER_SESSION_ACTIVITY_KEY]) {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  }
+}
 function persistedPlayerValue(key) {
   const value = localStorage.getItem(key) || sessionStorage.getItem(key) || "";
   if (value && !localStorage.getItem(key)) localStorage.setItem(key, value);
@@ -501,6 +513,7 @@ function persistedPlayerValue(key) {
 function savePlayerValue(key, value) {
   localStorage.setItem(key, value);
   sessionStorage.setItem(key, value);
+  localStorage.setItem(PLAYER_SESSION_ACTIVITY_KEY, String(Date.now()));
 }
 let playerId = persistedPlayerValue("musicTriviaPlayerId") || crypto.randomUUID();
 savePlayerValue("musicTriviaPlayerId", playerId);
