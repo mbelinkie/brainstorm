@@ -268,3 +268,81 @@ $ npm test
 - **Visual/manual verification of the new Host panel.** Did not open `?view=host` in a browser to confirm `.answer-results` renders acceptably alongside the existing `.stat`/`.manual-score` blocks at host-panel widths, or that it's absent outside the reveal phase and outside the host view. CSS was written to match the existing `.manual-score`/`.stat` variables and minified style in `styles.css`, but not screenshot-checked.
 - **`closest_number` "correct" definition.** `tallyQuestionResults()` treats "correct" as tied-for-closest, matching the SQL's shared-points winner logic. This is a judgment call, not something the product spec states explicitly as "correct" for that question type — flagging it in case the user wants different framing (e.g. "within X of the target" instead of "closest of those who answered").
 - Did not touch `supabase/migrations/` — no schema change, no `supabase db push`, per the task boundaries.
+
+## 2026-08-17 — Prompt Battle round type: design spec only
+
+**Branch:** `claude/prompt-battle-spec`
+**Files touched:** `docs/superpowers/specs/2026-08-17-prompt-battle-design.md` (new), this file.
+**No application code, no migrations, no dependency changes.**
+
+### Slice
+
+Brainstormed and specified a new round type in which paired players generate AI
+images from a shared comic prompt and the room votes blind on each matchup. The
+user supplied `local-reference/gemini_api_integration_guide.md` (authored by
+Gemini) as a starting point. Output is a design document only — nothing is
+implemented, and the spec is not yet approved by the user.
+
+### Decisions recorded in the spec
+
+Quiplash-style pairing (all players generate); budgeted iteration with 2–4
+variants per attempt; host preview-and-veto before any image reaches the room;
+blind voting with creator reveal after; winner points plus voter participation
+points through the existing `score_events` table; 30-day retention with auto
+purge; three-way matchup for odd player counts; full winner points to all tied
+entrants; Vertex AI as the target credential path with OpenRouter as the
+day-one build provider behind a swappable adapter.
+
+### Corrections made to the supplied guide
+
+- The guide's `GEMINI_API_KEY`-in-env approach conflicts with the user's stated
+  premise that players use corporate Gemini accounts. Workspace Gemini seats are
+  not API credentials; the two cannot both be true. Resolved toward a Vertex AI
+  service account in a Kaplan Google Cloud project.
+- The guide's suggestion to deduct points from players whose prompts trip the
+  safety filter is inverted — it penalises false positives, which dominate. The
+  spec refunds the attempt and applies no penalty.
+- The guide's SynthID claim ("guarantees images were not pre-made and uploaded
+  from the web") does no work here: with server-side generation, players have no
+  upload path at all. Not relied on.
+- The guide's model IDs (`gemini-3.1-flash-image`, `gemini-3-pro-image`) were
+  checked against live provider documentation and are correct.
+
+### Research performed (2026-08-17, live docs)
+
+OpenRouter shipped a dedicated Image API (`POST /api/v1/images`) in June 2026:
+`n` of 1–10 returns multiple variants from a single call, `output_format` and
+`resolution` are request parameters, and `usage.cost` reports actual spend per
+call. This removed three open questions from the draft design (parallel calls
+for variants, phone bandwidth / image resizing, and refund-on-failure policy).
+
+Verified pricing changed the cost estimate materially: worst case is roughly
+$11–16 per round on Gemini 3.1 Flash Image, not the ~$5 originally estimated.
+Imagen 4 is deprecated and shut down 2026-08-17, so it is not an available path.
+
+### Commands run
+
+```
+$ git checkout -b claude/prompt-battle-spec
+Switched to a new branch 'claude/prompt-battle-spec'
+$ grep -n "TBD\|TODO\|XXX\|FIXME" docs/superpowers/specs/2026-08-17-prompt-battle-design.md
+no placeholders found
+```
+
+`npm test` was not run — no code changed and no test was added or modified.
+
+### Unproven / open
+
+- **Blocking, external:** whether Kaplan IT permits a downloadable Vertex
+  service-account key, or mandates Workload Identity Federation. WIF from
+  Cloudflare Workers is a substantially larger effort than the spec assumes.
+- Whether `n > 1` is honoured by the specific chosen model through OpenRouter.
+  The spec's host-side test button is designed to answer this empirically.
+- Vertex returns no cost field, so the session spend cap there depends on a
+  hand-maintained price table that will drift.
+- The `media_assets.uploaded_by` nullability change touches an existing RLS
+  policy and existing author flows; it is specified but not yet exercised.
+- Retention purge introduces a Cloudflare Cron Trigger, which is new
+  infrastructure for this repository.
+- No implementation plan exists yet. Nothing here has been executed against
+  Supabase, the Worker, or any provider.
