@@ -30,11 +30,6 @@ test("presentation question and reveal images are denied to joined players", () 
   const mediaRoute = worker.slice(worker.indexOf('url.pathname.startsWith("/media/")'), worker.indexOf('return env.ASSETS.fetch'));
   assert.doesNotMatch(mediaRoute, /roomState\?\.state\?\.question\?\.questionImageAssetId/);
 });
-test("media assistant requires author authentication", () => {
-  assert.match(worker, /Sign in as an authorized quiz author first/);
-  assert.match(worker, /verifyQuizAuthor/);
-  assert.match(worker, /rpc\/is_quiz_author/);
-});
 test("author media previews require an authenticated allowlisted author", () => {
   assert.match(worker, /\/author-media\//);
   assert.match(worker, /author-session/);
@@ -44,7 +39,6 @@ test("author media previews require an authenticated allowlisted author", () => 
 test("media routes bypass the static-asset handler", () => {
   const config = fs.readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   assert.match(config, /run_worker_first/);
-  assert.match(config, /media-assistant/);
   assert.match(config, /author-media/);
   assert.match(config, /media-health/);
 });
@@ -65,7 +59,7 @@ test("anonymous text-answer endpoint supports the cross-origin custom-header req
 });
 
 test("closest-number guesses expose player identities only to the authorized reveal display", () => {
-  const closestRoute = worker.slice(worker.indexOf('if (request.method === "GET" && url.pathname === "/host-closest-number-guesses")'), worker.indexOf('if (request.method === "POST" && url.pathname === "/media-assistant/search")'));
+  const closestRoute = worker.slice(worker.indexOf('if (request.method === "GET" && url.pathname === "/host-closest-number-guesses")'), worker.indexOf('if (request.method === "GET" && url.pathname.startsWith("/author-media/")'));
   assert.match(closestRoute, /roomState\.phase !== "answer_reveal"/);
   assert.match(closestRoute, /player:session_players\(display_name,logo_key\)/);
   assert.match(closestRoute, /private, no-store/);

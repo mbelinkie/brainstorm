@@ -32,20 +32,6 @@ createServer(async (request, response) => {
     response.end(`window.QUIZ_PLATFORM_CONFIG=${JSON.stringify({ supabaseUrl: env.SUPABASE_URL || "", supabasePublishableKey: env.SUPABASE_PUBLISHABLE_KEY || "", defaultQuizVersionId: env.DEFAULT_QUIZ_VERSION_ID || "", workerOrigin: env.WORKER_ORIGIN || "https://wild-haze-73b3.matthew-belinkie-3af.workers.dev" })};`);
     return;
   }
-  if (requestPath === "/media-assistant/search" && request.method === "POST") {
-    try {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      const workerOrigin = env.WORKER_ORIGIN || "https://wild-haze-73b3.matthew-belinkie-3af.workers.dev";
-      const upstream = await fetch(`${workerOrigin}/media-assistant/search`, { method: "POST", headers: { "content-type": request.headers["content-type"] || "application/json", authorization: request.headers.authorization || "" }, body: Buffer.concat(chunks) });
-      response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") || "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(Buffer.from(await upstream.arrayBuffer()));
-    } catch (error) {
-      response.writeHead(502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({ error: `Image assistant proxy failed: ${error.message}` }));
-    }
-    return;
-  }
   const safePath = normalize(requestPath === "/" ? "/index.html" : requestPath).replace(/^[/\\]+/, "");
   const filePath = join(root, safePath);
 

@@ -161,36 +161,6 @@ if (request.method === "GET" && url.pathname === "/__version") {
         : [];
       return hostClosestNumberResponse({ guesses }, { headers: { "cache-control": "private, no-store" } });
     }
-    if (request.method === "POST" && url.pathname === "/media-assistant/search") {
-      const openAiKey = env.OPENAI_QUIZ || env.OPENAI_API_KEY;
-      if (!openAiKey || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ error: "Media assistant is not configured yet." }, { status: 503 });
-      const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-      if (!token) return Response.json({ error: "Sign in as an authorized quiz author first." }, { status: 401 });
-      const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY);
-      const userResponse = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { ...headers, Authorization: `Bearer ${token}` } });
-      if (!userResponse.ok) return Response.json({ error: "Sign in as an authorized quiz author first." }, { status: 401 });
-      const author = await verifyQuizAuthor(env, token);
-      if (!author.ok) return Response.json({ error: "This account is not allowed to use the media assistant." }, { status: 403 });
-      const body = await request.json().catch(() => ({}));
-      const prompt = String(body.prompt || "").slice(0, 500);
-      const options = Array.isArray(body.options) ? body.options.map((option) => String(option?.label || "").slice(0, 140)).filter(Boolean).slice(0, 8) : [];
-      const targetLabel = String(body.targetLabel || "").slice(0, 180);
-      const imageRequest = String(body.imageRequest || "").slice(0, 300);
-      if (!prompt) return Response.json({ error: "Add a question prompt before requesting image suggestions." }, { status: 400 });
-      const query = `You are helping an author find an educational quiz image. Question: ${prompt}\nQuestion options: ${options.join(" | ")}\nImage target: ${targetLabel || "the question"}\nAuthor request: ${imageRequest || "Find the most useful supporting image."}\nResolve pronouns and shorthand from the question and target. For example, if the author asks for an image from a movie, identify the movie target before searching. Return JSON only: {"queries":["three concise Wikimedia Commons image-search queries"],"guidance":"one concise note about the best image choice and rights"}. Prefer identifiable people, public-domain or freely licensed artwork, and official sources. Do not claim a license you cannot verify.`;
-      const aiResponse = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${openAiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-terra", input: query, tools: [{ type: "web_search" }], store: false }) });
-      if (!aiResponse.ok) return Response.json({ error: "The media assistant could not prepare suggestions." }, { status: 502 });
-      const ai = await aiResponse.json();
-      const text = ai.output_text || ai.output?.flatMap((entry) => entry.content || []).map((content) => content.text || "").join("") || "";
-      const match = text.match(/\{[\s\S]*\}/);
-      let suggestion = { queries: [prompt], guidance: "Review the source and license before approval." };
-      try { suggestion = { ...suggestion, ...JSON.parse(match?.[0] || text) }; } catch { /* Use the original prompt if the model returns prose. */ }
-      const commonsQuery = String(suggestion.queries?.[0] || prompt).slice(0, 250);
-      const commons = await fetch(`https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(commonsQuery)}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=360&format=json&origin=*`);
-      const commonsData = commons.ok ? await commons.json() : {};
-      const candidates = Object.values(commonsData.query?.pages || {}).map((page) => ({ title: page.title?.replace(/^File:/, "") || "Untitled image", thumbnailUrl: page.imageinfo?.[0]?.thumburl, originalUrl: page.imageinfo?.[0]?.url, pageUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title || "")}`, license: page.imageinfo?.[0]?.extmetadata?.LicenseShortName?.value || "Check source page" })).filter((item) => item.thumbnailUrl && item.originalUrl).slice(0, 6);
-      return Response.json({ queries: Array.isArray(suggestion.queries) ? suggestion.queries.slice(0, 3) : [commonsQuery], guidance: String(suggestion.guidance || "Review the source and license before approval."), candidates });
-    }
     if (request.method === "GET" && url.pathname.startsWith("/author-media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/author-media/".length));
       const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");

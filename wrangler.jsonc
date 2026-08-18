@@ -13,7 +13,6 @@
       "/__version",
       "/media/*",
       "/author-media/*",
-      "/media-assistant/*",
       "/media-health"
     ]
   }
