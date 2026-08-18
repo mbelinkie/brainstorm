@@ -2,6 +2,48 @@
 
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
+## 2026-08-18 — Move the presentation timer to a top-center badge, off the corner QR
+
+- **Branch:** `claude/presentation-timer-top-center` (renamed from the worktree's default `worktree-agent-afd2240cc8386ed25` branch name to follow the `claude/<short-kebab-name>` convention before committing; this branch was not checked out in any other worktree, so the rename was safe).
+- **Bug (user-reported):** "The timer appears in the corner UNDER the QR code. Make the time at the top CENTER to prevent this." — on the Presentation (shared big-screen) view, the countdown could render partly hidden behind the corner join-QR badge.
+- **Root cause:** `timerDisplay()`'s `<span data-timer-readout>` was rendered *inside* the `.presentation-round` heading section (`app.js`, `renderPresenter()`). In fullscreen kiosk mode, `.is-presentation .presentation-round .question-timer` positioned that span `position:absolute; right:clamp(22px,3vw,48px); top:50%` — i.e., pinned to the right edge of the round-heading row. `presentationCornerJoinQr()` is a separate, sibling element styled `.presenter-join-qr--corner{position:fixed; top:14px; right:clamp(18px,3vw,48px)}`, and because the round heading occupies only the top ~22% of the fullscreen grid, that timer's `top:50%` (of the 22% row) landed in almost exactly the same screen region as the QR's fixed top-right position — the two overlapped, with the QR painted on top.
+- **Fix:**
+  - `app.js` — removed `${state.phase === "open" ? timerDisplay() : ""}` from the `.presentation-round` heading template in `renderPresenter()`. Added a new `presentationTimerBadge()` function (guards on `state.phase === "open"` and a non-empty `timerDisplay()` readout) that renders `<div class="presentation-timer-badge" data-presentation-timer-badge>${timerDisplay()}</div>` as its own element. Wired it in as a sibling of `cornerJoinQr` and `fullscreenControl` in the `shell(...)` call (`${cornerJoinQr}${presentationTimerBadge()}${fullscreenControl}`), so it is not nested inside `.presentation-round` or the corner QR container. The inner `<span data-timer-readout>` from `timerDisplay()` is unchanged, so `updateTimer()`'s `document.querySelectorAll("[data-timer-readout]")` 250ms tick and the `is-expired` class toggle keep working without a full re-render. `timerControls()` (the Host view's control panel) still calls `timerDisplay()` directly and was not touched.
+  - `styles.css` — removed the old `.presentation-round .question-timer` (non-fullscreen) and `.is-presentation .presentation-round .question-timer` (fullscreen) rules. Added `.presentation-timer-badge{position:fixed;z-index:9;top:35px;left:50%;transform:translate(-50%,-50%);pointer-events:none}` plus a nested `.question-timer` rule for sizing/background, an `.is-expired` variant, a `max-width:700px` top-offset tweak, and an `.is-presentation .presentation-timer-badge{top:calc(clamp(66px,9vh,82px)/2)}` override that vertically centers the badge on the topbar's own height in fullscreen kiosk mode, carrying forward the same large `min-width:clamp(112px,13vw,190px)` / `font-size:clamp(30px,5.6vh,68px)` prominence sizing the timer already had, just recentered and no longer right-anchored.
+  - The topbar itself (`brandTopbar(false, false, ...)`, called with `presenter=false`) renders an empty right slot on every non-title presentation screen (its `showRoom` room-badge is only shown on the title screen, and the corner QR floats as a separate fixed element instead) — so the topbar's horizontal center, where the badge is now vertically centered, was already visually empty in both the brand-mark's flex row and the round heading below it.
+- **Test:** extended `test/presentation-layout.test.js`. Updated the existing "presenter timer is a prominent shared-screen control" test to match the new `.is-presentation .presentation-timer-badge .question-timer` selector (it was asserting against the now-removed `.presentation-round .question-timer` selector and would otherwise have false-passed against dead CSS). Added a new test, "presenter timer sits in its own fixed top-center badge, clear of the corner join QR," asserting: the `heading` template no longer calls `timerDisplay()`; `presentationCornerJoinQr()` contains neither `timerDisplay()` nor `data-timer-readout`; `presentationTimerBadge()` exists and renders the `data-timer-readout`-bearing markup as its own `.presentation-timer-badge` div; it is wired in as a sibling (`${cornerJoinQr}${presentationTimerBadge()}`) rather than nested; and the CSS positions the badge as `position:fixed` with horizontal centering (`left:50%;transform:translate(-50%,-50%)`), independent of the corner QR's separate `top:14px;right:...` fixed position.
+- **Commands run and actual output:**
+
+```
+$ node --test test/presentation-layout.test.js
+...
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+```
+$ npm test
+...
+ℹ tests 150
+ℹ suites 0
+ℹ pass 149
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+  The one failure, `test/deploy-manifest.test.js` ("every local file referenced by a shipped file is itself shipped" — `author.js references "./video-processor.worker.bundle.js", which does not exist"), is pre-existing and unrelated to this change: `video-processor.worker.bundle.js` is a gitignored, locally built artifact this worktree doesn't have. Confirmed by `git stash`-ing all three of my changed files and re-running `npm test` in this same worktree — identical single failure, same assertion, before any of my edits existed; then `git stash pop` to restore the fix.
+- **Could not verify:**
+  - **No real projector or actual browser render.** Per `mistakes.md`'s note that diagnostics are device-local, and per this task's own instruction not to deploy: I did not open the Presentation view in an actual browser (fullscreen or windowed), take a screenshot, or view it on a real second-screen/projector setup to visually confirm the badge clears the QR and the round heading at a real aspect ratio. The fix is verified structurally (the timer markup is no longer inside `.presentation-round` or the QR container; the CSS positions are non-overlapping by their fixed coordinates as computed above) and by the full-suite regression tests, but not by a rendered screenshot.
+  - **Extreme/unusual aspect ratios.** I reasoned through the geometry at common projector widths (≈1024px, ≈1920px, and the existing 700px mobile-preview breakpoint) and confirmed the badge's centered position stays clear of the QR's fixed right-edge offset with comfortable margin at each, but did not exhaustively test every possible viewport size (e.g., very narrow portrait-oriented displays, which this product's presentation surface isn't designed for regardless).
+  - Did not touch `supabase/migrations/` or any server-side code — this is a purely client-side layout/CSS fix with no data-model or scoring implication, so none was needed.
+
 ## 2026-08-17 — Show the join URL on the presentation title screen only
 
 - **Branch:** `claude/title-screen-url`

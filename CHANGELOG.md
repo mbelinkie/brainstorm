@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-18
+
+- Fixed the Presentation question timer appearing tucked under the corner join QR badge, where it could be partly hidden. The countdown now renders as its own fixed badge pinned to the top-center of the shared screen, clear of both the corner QR (top-right) and the round title.
+
 ## 2026-08-17
 
 - Raised the local source-file size limit for the "Trim and upload clip" audio buttons (question audio cue, title music, finale, between-round, matching clips) from 25 MB to 500 MB. The old cap was really the final-upload limit for the rendered clip, not the raw source an author picks before trimming — a large local WAV/FLAC source could hit it long before the much smaller trimmed clip ever would.
