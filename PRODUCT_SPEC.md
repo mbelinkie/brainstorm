@@ -161,15 +161,31 @@ Audio clips are stored with the quiz and played from the big-screen host view be
 
 ### Host audio controls
 
-- Large Play/Pause button
-- Replay from beginning
-- Optional replay limit shown to the host
-- Volume control and mute
+- Three discrete buttons: Play, Restart, and Pause
+- Volume slider. There is no mute toggle. The level carries forward to every later cue, including automatic between-round and finale audio
 - Progress indicator; elapsed time visible to host
-- Clip label such as “Clip 3 of 5,” never the filename or song title
-- Preload status before the question opens
-- Keyboard shortcuts: Space = play/pause; R = restart
+- Clip label such as “Clip 3 of 5.” Never put the filename or song title in it — this is an authoring guideline, not a constraint the app enforces
+- Ready/unavailable status on the clip control. There is no pre-open preload pass
 - Clear “Share this tab’s audio” setup reminder before the game starts
+- Not built: an optional replay limit shown to the host
+
+### Host keyboard shortcuts
+
+These match the in-app guide, opened with `?`, which is the authoritative copy.
+
+| Key | Action |
+|---|---|
+| `N` / `→` | Next screen |
+| `P` / `←` | Previous screen |
+| `R` | **Reveal and score the question.** During a door choice, reveal the door rewards |
+| `Space` | Play the current audio clip. It does not pause — Pause is a separate button |
+| `?` | Show the shortcut guide |
+| `F` | Fullscreen. Presentation view only |
+
+`R` reveals and scores. It does not restart a clip, and there is no restart
+shortcut. Until 2026-08-18 this document said `R = restart`: a host following
+that during a live show would have revealed the answer while trying to replay
+audio.
 
 ### Audio file handling
 
