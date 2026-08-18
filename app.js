@@ -1,4 +1,4 @@
-import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { classifyChooseDoorError, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
 import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
@@ -51,7 +51,17 @@ let realtimeClosestNumberGuesses = new Map();
 let realtimeClosestNumberGuessesQuestionId = "";
 let autoSubmitTimer = null;
 let submissionSequence = Promise.resolve();
+// A host state save that fails leaves the server on the previous screen while
+// the host UI moves on, so every player who refreshes or reconnects gets the
+// stale round. These track the save queue and the unresolved-failure banner.
+let hostStateSaveSequence = Promise.resolve();
+let hostStateSaveRequest = 0;
+let hostStateSaveFailure = null;
+let hostStateSaveRetrying = false;
 const quizWorkerOrigin = config.workerOrigin || location.origin;
+// Backoff between host-state save attempts. Kept short: this runs between a
+// host pressing Next and the room actually advancing.
+const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
 const ROUND_START_HOLD_MS = 2600;
 const FINAL_SCORE_PAGE_SIZE = 8;
 const FINAL_SCORE_PAGE_HOLD_MS = 6000;
@@ -671,23 +681,78 @@ function emit() {
   realtimeChannel?.send({ type: "broadcast", event: "state", payload: { state: outboundState } });
 }
 
+// Snapshot of the host screen to persist. Built synchronously at call time so
+// a queued retry re-sends the screen the host was on when the save was asked
+// for, never a half-updated mix of that and a later one.
+function hostStatePayload() {
+  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete" };
+  return {
+    phase: phaseMap[state.phase] || "lobby",
+    roundIndex: ["door_choice", "door_reveal"].includes(state.phase) && Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : Math.max(0, (state.question?.round || 1) - 1),
+    questionIndex: Math.max(0, (state.question?.questionInRound || 1) - 1),
+    publicState: publicRoomState()
+  };
+}
+
+// Connection/resource SQLSTATE classes, plus PostgREST's own connectivity
+// codes. Everything here fails differently on a second try; a logical
+// rejection does not.
+const TRANSIENT_SAVE_CODES = /^(08|53|57|58)|^PGRST(000|001|002|504)$/;
+
+// room-api.js copies Postgres/PostgREST code/details/hint onto the error it
+// throws, so anything the server actually reasoned about carries a code —
+// set_live_room_state()'s only rejection, "Host authorization failed", raises
+// P0001. A request that never reached PostgREST carries no code at all (fetch
+// rejects with a TypeError, and postgrest-js's fetch fallback leaves the code
+// empty), which is the transient case worth retrying.
+function isTransientSaveError(error) {
+  if (error instanceof TypeError) return true;
+  const code = error?.code ? String(error.code) : "";
+  return !code || TRANSIENT_SAVE_CODES.test(code);
+}
+
 async function persistHostState() {
   const hostSecret = getHostSecret();
   if (!hostSecret || !params.has("room")) return;
-  try {
-    const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete" };
-    const result = await roomApi.setRoomState({
-      roomCode,
-      hostSecret,
-      phase: phaseMap[state.phase] || "lobby",
-      roundIndex: ["door_choice", "door_reveal"].includes(state.phase) && Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : Math.max(0, (state.question?.round || 1) - 1),
-      questionIndex: Math.max(0, (state.question?.questionInRound || 1) - 1),
-      publicState: publicRoomState()
-    });
-    state.revision = result.revision;
-  } catch (error) {
-    recordDiagnostic("host-state-save", error, { roomCode });
-    console.warn("Could not save host room state.", error);
+  const request = ++hostStateSaveRequest;
+  const payload = hostStatePayload();
+  // Saves are serialized and last-request-wins. A retry that outlived a newer
+  // save would otherwise write an already-abandoned screen back over it, which
+  // is the same desync this retry exists to prevent.
+  // Guard the chain the way submissionSequence does. saveHostState handles its
+  // own failures, so a rejection here is an unexpected fault: swallow it rather
+  // than poison every later save, and never let it escape into callers like
+  // startRound, which would skip their emit()/render() and desync the room.
+  hostStateSaveSequence = hostStateSaveSequence.catch(() => {}).then(() => saveHostState(request, hostSecret, payload));
+  await hostStateSaveSequence.catch(() => {});
+}
+
+async function saveHostState(request, hostSecret, payload) {
+  for (let attempt = 0; ; attempt++) {
+    // A newer save is already queued with fresher state. Let it own the server
+    // and let its own outcome decide whether the room is in sync.
+    if (request !== hostStateSaveRequest) return;
+    try {
+      const result = await roomApi.setRoomState({ roomCode, hostSecret, ...payload });
+      // Only advance the revision the server actually confirmed. The submit
+      // path treats a stale revision as a real conflict, so guessing here
+      // would reject answers the server would have accepted.
+      state.revision = result.revision;
+      if (hostStateSaveFailure) { hostStateSaveFailure = null; refreshHostSyncNotice(); }
+      return;
+    } catch (error) {
+      if (attempt < HOST_STATE_SAVE_BACKOFF_MS.length && isTransientSaveError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, HOST_STATE_SAVE_BACKOFF_MS[attempt]));
+        continue;
+      }
+      // One report per ultimately-failed save. Intermediate attempts that a
+      // retry recovers from are not incidents worth paging on.
+      recordDiagnostic("host-state-save", error, { roomCode, attempts: attempt + 1, phase: payload.phase });
+      console.warn("Could not save host room state.", error);
+      hostStateSaveFailure = { message: error?.message || "The server did not confirm the save.", at: new Date().toISOString() };
+      refreshHostSyncNotice();
+      return;
+    }
   }
 }
 
@@ -993,7 +1058,43 @@ function shell(content, isPlayer = false) {
   // Render them inside every player shell so the award is visible whether the
   // player is answering, waiting, or looking at the final scoreboard.
   const playerNotification = isPlayer && view === "player" ? scoreCelebration() : "";
-  return `<section class="${isPlayer ? "player-shell" : "shell"}">${content}${playerNotification}</section>`;
+  // The out-of-sync banner belongs to the shell, not to one host screen, so a
+  // re-render or a move to the doors/finale layout cannot drop a failure the
+  // host has not resolved yet.
+  const hostNotification = isPlayer ? "" : hostSyncNotice();
+  return `<section class="${isPlayer ? "player-shell" : "shell"}">${content}${playerNotification}${hostNotification}</section>`;
+}
+
+function hostSyncNotice() {
+  if (view !== "host" || !hostStateSaveFailure) return "";
+  return `<aside class="host-sync-notice" data-host-sync-notice role="status" aria-live="polite"><div><strong>This room is not saved on the server.</strong><p>The quiz keeps running here, but anyone who refreshes or reconnects lands on the previous screen. ${escapeHtml(hostStateSaveFailure.message)}</p></div><button class="btn btn-secondary" data-retry-host-state ${hostStateSaveRetrying ? "disabled" : ""}>${hostStateSaveRetrying ? "Retrying…" : "Retry save"}</button></aside>`;
+}
+
+// Patched in place instead of through render(): the audio, volume and video
+// cues persist deliberately without re-rendering, and rebuilding the host DOM
+// mid-cue would tear down the panel the host is working in.
+function refreshHostSyncNotice() {
+  if (view !== "host") return;
+  const existing = document.querySelector("[data-host-sync-notice]");
+  const markup = hostSyncNotice();
+  if (!markup) { existing?.remove(); return; }
+  if (existing) existing.outerHTML = markup;
+  else document.querySelector(".shell")?.insertAdjacentHTML("beforeend", markup);
+  attachHostSyncRetry();
+}
+
+function attachHostSyncRetry() {
+  document.querySelector("[data-retry-host-state]")?.addEventListener("click", async () => {
+    hostStateSaveRetrying = true;
+    refreshHostSyncNotice();
+    // Retry pushes the screen the host is on now, not the one that failed.
+    await persistHostState();
+    hostStateSaveRetrying = false;
+    // A save that succeeded already cleared the banner; this only restores the
+    // button when the room is still out of sync.
+    refreshHostSyncNotice();
+    emit();
+  });
 }
 
 function brandTopbar(host = false, presenter = false, showRoom = true) {
@@ -2292,6 +2393,15 @@ function attachEvents() {
       realtimeChannel?.send({ type: "broadcast", event: "door-choice", payload });
       updateDoorChoicePlayingState();
     } catch (error) {
+      if (classifyChooseDoorError(error) === "door-choice-closed") {
+        // The host closed door selection before this tap made it through.
+        // That's an expected concurrency outcome, not a bug: no alert, no
+        // diagnostics/Sentry report, just an accurate status. Leave the
+        // button disabled — the phase is closed, so retrying can't help.
+        const status = document.querySelector(".door-phone-status");
+        if (status) status.textContent = "Door selection closed before this pick was saved.";
+        return;
+      }
       recordDiagnostic("door-choice", error, { roomCode, doorId });
       alert(`Your door was not saved. Please try again.\n\n${error.message}`);
       button.disabled = false;
@@ -2302,6 +2412,7 @@ function attachEvents() {
   document.querySelector("[data-export-results]")?.addEventListener("click", exportResults);
   document.querySelector("[data-export-detailed-results]")?.addEventListener("click", exportDetailedResults);
   document.querySelector("[data-download-diagnostics]")?.addEventListener("click", downloadDiagnostics);
+  attachHostSyncRetry();
   document.querySelectorAll("[data-toggle-shortcuts]").forEach((button) => button.addEventListener("click", () => {
     const guide = document.querySelector("[data-shortcut-guide]");
     if (guide) guide.hidden = !guide.hidden;
@@ -2340,19 +2451,41 @@ function attachEvents() {
   });
   document.querySelector("[data-submit]")?.addEventListener("click", async (event) => {
     if (selected === null) return;
+    // Mirror queueAutoSubmission's guard: the host may lock or advance the
+    // question in the moment before this handler runs. Unlike the debounced
+    // auto-submission, this is a deliberate tap, so report the outcome rather
+    // than no-oping silently.
+    if (view !== "player" || state.phase !== "open") {
+      setSubmissionStatus("The question moved on before this answer was needed.");
+      return;
+    }
     const button = event.currentTarget;
+    const answer = selected;
+    const questionId = state.questionId || state.question?.id || "sample-question";
+    const serverRevision = state.revision || 0;
     button.disabled = true;
     button.textContent = "Submitting…";
-    try {
-      if (params.has("room")) await roomApi.submitAnswer({ roomCode, playerToken: playerId, questionId: state.questionId || state.question.id || "sample-question", answer: selected, serverRevision: state.revision || 0 });
-      state.submitted[playerId] = selected;
-      sessionStorage.setItem(`quiz-submitted:${roomCode}:${state.questionId || state.question?.id}`, "true");
-      sendSubmission(selected);
+    const markSubmitted = () => {
+      state.submitted[playerId] = answer;
+      sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
+      sendSubmission(answer);
       render();
-    } catch (error) {
-      recordDiagnostic("submit-answer", error, { roomCode });
-      console.warn("Could not persist answer.", error);
-      alert(`Your answer was not submitted. Please try again.\n\n${error.message}`);
+    };
+    if (!params.has("room")) { markSubmitted(); return; }
+    const outcome = await submitLiveAnswerWithRecovery({ roomCode, playerToken: playerId, questionId, answer, serverRevision });
+    if (outcome.status === "submitted") {
+      markSubmitted();
+    } else if (outcome.status === "abandoned") {
+      // The host closed or advanced the question before this tap made it
+      // through. That's an expected concurrency outcome, not a bug: no
+      // retry, no diagnostics/Sentry report, just an accurate status.
+      setSubmissionStatus("The question moved on before this answer was needed.");
+      button.disabled = false;
+      button.textContent = "Submit";
+    } else {
+      recordDiagnostic("submit-answer", outcome.error, { roomCode, questionId });
+      console.warn("Could not persist answer.", outcome.error);
+      alert(`Your answer was not submitted. Please try again.\n\n${outcome.error.message}`);
       button.disabled = false;
       button.textContent = "Submit";
     }

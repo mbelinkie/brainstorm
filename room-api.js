@@ -119,6 +119,20 @@ export function classifySubmitAnswerError(error) {
   return (message && SUBMIT_ANSWER_CONFLICT_REASONS[message]) || "unexpected";
 }
 
+// Exact rejection message raised by choose_live_door() in
+// supabase/migrations/0025_between_round_door_bonus.sql. The host may close
+// the door-choice phase while a tap is in flight — an expected concurrency
+// outcome, not a bug.
+const CHOOSE_DOOR_CONFLICT_REASONS = {
+  "Door choices are not open": "door-choice-closed"
+};
+
+// Classifies a chooseDoor() rejection, mirroring classifySubmitAnswerError above.
+export function classifyChooseDoorError(error) {
+  const message = error instanceof Error ? error.message : undefined;
+  return (message && CHOOSE_DOOR_CONFLICT_REASONS[message]) || "unexpected";
+}
+
 // submit_live_answer() checks the revision before the question ID, so a
 // merely-stale revision on the *same* still-open question and an answer that
 // arrived after the host already moved to a different question both surface
