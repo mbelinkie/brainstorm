@@ -2,6 +2,32 @@
 
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
+## 2026-08-18 — Investigated: "I don't see brainstorm.matthewbelinkie.com on the title screen"
+
+- **Branch:** `claude/investigate-title-url-deploy`. Investigation only; no product code changed.
+- **Report:** User said the join URL added by `bf7df3f` ("feat: show join URL on the presentation title screen only") isn't visible on the live title screen, even though that commit is merged to `main`.
+- **Verdict: stale production deploy, not a code/CSS/wrong-screen bug.** The live site at `brainstorm.matthewbelinkie.com` is serving an `app.js` build that predates `bf7df3f` and three other same-day merges. Confirmed by diffing the live-served files against this worktree's source:
+  - `https://brainstorm.matthewbelinkie.com/app.js` has no `presentation-title-domain` span in `presentationTitlePage()` at all (diffed byte-for-byte against local `app.js`).
+  - Also missing from the live `app.js`/`author.js`: `isPlayerSessionExpired`/`PLAYER_SESSION_ACTIVITY_KEY` (from `claude/device-session-memory`, merged `5cb380d`), the `audioSourceFileError` source-file-limit fix (from `claude/media-upload-limit`, merged `2be5338`), and the entire image-suggestion-assistant removal (from `claude/remove-image-suggest`, merged `ab60324`) — live `author.js` still has `openImageFinder`, `imageFinderTarget`, and the "Find image" menu item that removal deleted.
+  - So the live deploy is stale relative to **all four** of yesterday's same-day merges (`24f6f63`, `2be5338`, `5cb380d`, `ab60324`), not just the title-URL one.
+  - `GET https://brainstorm.matthewbelinkie.com/__version` reports `deployedAt: 2026-08-18T03:30:21Z`, which is numerically *after* all four merge-commit timestamps (03:14:02–03:21:46 UTC that same morning) — so the deploy timestamp alone doesn't reveal the gap. `prepare-deploy.mjs` copies whatever is currently on disk in the deploying machine's working directory into `.deploy-assets/` (it doesn't build from a specific git ref), so the most likely explanation is that `npm run deploy` was run from a checkout that hadn't yet pulled/merged these four branches at the time, even though the deploy itself ran later in wall-clock time.
+  - Ruled out the "wrong screen" hypothesis: the code is correctly scoped to `presentationTitlePage()` only (`state.presentationScreen === "title"`); `presentationCornerJoinQr()` deliberately has no URL text, per the original commit, and that's still true in source.
+  - Ruled out clipping/legibility: built a real room locally (`node server.mjs`, `?view=presenter&room=<code>`) and visually confirmed the title screen renders `brainstorm.matthewbelinkie.com` in bold white text between "Scan the code with your phone" and the gold room code, fully legible, not clipped or wrapped, at both 800×450 and 1280×900 viewports.
+- **Fix needed:** none in this repo. **Redeploy from current `main`** to ship the four pending merges:
+  ```sh
+  npm run deploy
+  ```
+  (this runs `prepare:deploy` — which rebuilds the video bundle and regenerates `.deploy-assets/` fresh from the working tree — then `wrangler deploy`). Run it from a checkout that has pulled `main` including `24f6f63`/`2be5338`/`5cb380d`/`ab60324`/`b58adb7`. Not run here — deploys are the user's per `CLAUDE.md`.
+- **Commands run and actual output:**
+  ```
+  $ npm test
+  ℹ tests 149
+  ℹ pass 148
+  ℹ fail 1
+  ```
+  The one failure (`test/deploy-manifest.test.js`, missing gitignored `video-processor.worker.bundle.js`) is the same pre-existing, unrelated gap noted in prior worklog entries for a fresh worktree without `node_modules`/the video build.
+- **Could not verify:** which specific machine/checkout ran the live `npm run deploy` and why it wasn't up to date with `main` at that moment — that's outside this repo's introspection; flagging it to the user as the open question rather than guessing further.
+
 ## 2026-08-17 — Show the join URL on the presentation title screen only
 
 - **Branch:** `claude/title-screen-url`
