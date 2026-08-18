@@ -154,3 +154,51 @@ export function tallyQuestionResults(question = {}, submissions = {}) {
 
   return { totalSubmitted, correctCount: answers.filter((answer) => isSingleAnswerCorrect(question, answer, closestNumberWinningDistance)).length, parts: null };
 }
+
+// The Host screen is an operator console, not a projection of room state. It
+// carries keyboard focus, half-typed manual-score and question-jump entries, a
+// running timer interval, and privately proxied media whose object URLs are
+// revoked and refetched on every render. Rebuilding it through app.innerHTML
+// whenever a phone taps an answer destroys all of that, which is what the host
+// experiences as the screen "refreshing a lot".
+//
+// So the Host gets the same remount boundary the player and presentation views
+// already have. Everything stripped below is either transport-only or a live
+// counter that app.js's patchHostLiveRegions() updates in place; classifying
+// each broadcast field as structural, visual, or transport-only before putting
+// it in a remount boundary is lesson 14 in mistakes.md.
+//
+// This is a denylist, not an allowlist, so a newly added state field defaults
+// to remounting the Host. A stale host screen is worse than a flickery one
+// during a live show; add a field here only once something patches it.
+export const HOST_LIVE_STATE_FIELDS = [
+  "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
+  "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker
+  "doorPicks",         // between-round door choices -- the host doors board
+  "revision",          // server state version; nothing on the Host renders it
+  "audioCommand",      // cross-tab audio cue transport
+  "mediaCommand",      // cross-tab video cue transport
+  "activeClipId",      // which intro is cued -- highlighted on the matching-clip buttons
+  "audioVolume",       // the volume slider owns its own value while dragging
+  "scoreNotification", // shell() renders this for players only
+  "mediaPlayback"      // recorded for diagnostics; nothing on the Host reads it
+];
+
+export function hostRenderKey(roomState) {
+  const structural = { ...(roomState || {}) };
+  for (const field of HOST_LIVE_STATE_FIELDS) delete structural[field];
+  // Sort the top level so a locally built state and an inbound JSON payload
+  // that hold the same values cannot disagree purely on key order.
+  const ordered = {};
+  for (const key of Object.keys(structural).sort()) ordered[key] = structural[key];
+  return JSON.stringify(ordered);
+}
+
+// The two numbers the host watches constantly ("3 / 12 answers received").
+// Shared so the full render and the in-place patch cannot drift apart.
+export function hostLiveCounts(roomState) {
+  return {
+    submitted: Object.keys(roomState?.submitted || {}).length,
+    players: Array.isArray(roomState?.players) ? roomState.players.length : 0
+  };
+}

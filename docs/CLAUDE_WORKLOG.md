@@ -44,11 +44,9 @@ $ node --test test/presentation-layout.test.js
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-$ npm test
 ...
 ℹ tests 150
 ℹ suites 0
-ℹ fail 1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
@@ -58,58 +56,112 @@ $ npm test
   - **Extreme/unusual aspect ratios.** I reasoned through the geometry at common projector widths (≈1024px, ≈1920px, and the existing 700px mobile-preview breakpoint) and confirmed the badge's centered position stays clear of the QR's fixed right-edge offset with comfortable margin at each, but did not exhaustively test every possible viewport size (e.g., very narrow portrait-oriented displays, which this product's presentation surface isn't designed for regardless).
   - Did not touch `supabase/migrations/` or any server-side code — this is a purely client-side layout/CSS fix with no data-model or scoring implication, so none was needed.
 ## 2026-08-18 — Author editor: one validator, and three draft-persistence bugs
-
 - **Branch:** `claude/author-editor` (from `b58adb7`). Parallel-worker slice E of `docs/reviews/2026-08-17-consolidated-plan.md`: findings C19, C20, C21, C22. C23 was explicitly out of scope (collides with the in-flight `image-engine.js` slice) and no new validation rules were added (C18's "reject empty rounds" belongs to the fixture worker).
-- **Files touched:**
   - `quiz-validation.js` — now the single authoritative validator. Gained the rules that previously lived only in `author.js`'s private copy: the 11-type allowlist, question `audio.mediaAssetId` UUIDs, `fill_in_the_blank` blanks, the `arrange_in_order` and `categorize` answer keys, `matching` pair referential integrity plus labeled clips/options, and `finale.audio` asset IDs.
   - `author.js` — deleted its own `validateQuiz` (~93 lines) and imported the shared one; removed the now-unused `validNumericLiteral` helper; reordered the boot block so the saved draft is restored before the bundled-bank fetch; guarded two `JSON.stringify(bank)` dereferences; added `markChanged()` to the `#import-file` handler; added the `between:` branch to the `[data-remove-audio]` handler and made `markChanged()` conditional on a branch having matched.
   - `test/quiz-validation.test.js` — six new behavioral tests for the promoted rules.
   - `test/reliability-contract.test.js` — retargeted the `restoredDraft` slice anchor (it used `function validateQuiz`, which no longer exists in `author.js`), plus four new author-editor contract tests.
   - `CHANGELOG.md`, `docs/CLAUDE_WORKLOG.md`.
 - **No migration.** No schema, scoring, or Worker change. `app.js`, `quiz-core.js`, `cloudflare-worker.js`, and `quiz.sample.json` were not touched.
-
 ### Reproductions confirmed before patching
-
 - **C19** — `author.js` imported `diagnostics.js`, `image-crop.js`, `subtitle-core.js`, `video-utils.js`, and *not* `quiz-validation.js`; `grep` confirmed `quiz-validation.js` was imported only by three test files and shipped by `prepare-deploy.mjs` to a browser that never loaded it.
 - **C20** — the boot block's first statement was `await fetch(BANK_URL, …)`; `restorePublishedSnapshot()`, `restoredDraft()`, and `render()` were all sequenced behind it inside the same `try`.
 - **C21** — `#apply-raw` called `markChanged()`; `#import-file` did not.
 - **C22** — `privateAudioPreview(...)` emits `data-remove-audio="between:<key>"` for between-round sounds (`author.js`, the between-round sound card), while the `[data-remove-audio]` handler recognized only `"question"`, `"finale:"`, and `"clip:"` and called `markChanged()` unconditionally outside every branch.
-
 ### Validator disagreements and how they were resolved
-
 Both copies already rejected empty rounds ("Round N needs at least one question"), contrary to the plan's drift table — so merging added no empty-round rule and did not disturb the `quiz.sample.json` fixture work. Every other divergence was one-sided (a rule present in exactly one copy), so the union was taken with no rule dropped and none invented. Net user-visible change to the editor: it now also validates `betweenRoundBonus.audio` asset IDs, which only the untested module checked before.
-
 ### Commands actually run
-
-```
 $ npm run build:video      # failed: esbuild is not installed in this worktree
-```
 Copied the git-ignored `video-processor.worker.bundle.js` from the main checkout instead so `test/deploy-manifest.test.js` could pass. Nothing in the main checkout was modified.
-
-```
 $ npm test                 # on b58adb7, after the bundle copy
 ℹ tests 149
 ℹ pass 149
-ℹ fail 0
-```
 (The slice brief quoted a baseline of 158 tests; the measured baseline on `b58adb7` was 149.)
-
 Each fix was written test-first and each new test was observed failing before its fix and passing after.
-
-```
 $ npm test                 # final
 ℹ tests 159
 ℹ pass 159
-ℹ fail 0
-```
-
 ### What remains unproven
-
 - **No browser verification was possible here.** C20, C21, and C22 are all `localStorage` draft-persistence behaviors in a module that cannot be imported under `node:test` (top-level `await fetch`, DOM access at load).
 - C22 *is* proven behaviorally: the test slices the real `[data-remove-audio]` handler body out of `author.js`, compiles it with `new Function`, and runs it against fakes — it asserts the between-round clip is actually deleted and that an unrecognized target never calls `markChanged()`.
 - C19's promoted rules are proven behaviorally against `quiz-validation.js`. That the *editor* now uses that module is proven only structurally (the import exists, no local `function validateQuiz` remains).
 - **C20 and C21 are proven only structurally** — ordering and presence assertions on the source text. Per `RUNBOOK.md`, Matthew should confirm by hand: (a) edit a quiz, break the bundled bank URL (or go offline) and reload — the draft should still open and the status line should say the bundled bank did not load; (b) import a quiz JSON, reload without touching a field — the imported quiz should still be there; (c) attach a between-round bonus sound, press the preview's "Remove audio", and confirm the clip is gone from the JSON and no longer plays.
 - Not addressed, deliberately: C23 (author image preview states), C18's empty-round rule and its `quiz.sample.json` fixture, and the `author.js` `originalBank` variable, which `grep` shows is assigned twice and never read — flagged, not changed.
+## 2026-08-18 — Stop the Host screen rebuilding itself on every player action
+
+- **Branch:** `claude/host-render-gate`
+- **Bug (user-reported):** "The host screen appears to be refreshing a lot, perhaps every time the players do anything."
+- **Files touched:**
+  - `quiz-core.js` — new `HOST_LIVE_STATE_FIELDS`, `hostRenderKey()`, `hostLiveCounts()`. Put here rather than in `app.js` so the remount boundary is directly testable, per CLAUDE.md.
+  - `app.js` — new `patchHostLiveRegions()`; `receive()` now gates the Host remount on `hostRenderKey`; `acceptSubmission()`, `acceptPlayerPresence()` and `acceptDoorChoice()` patch instead of calling `render()`; `leaderboard()` split into `leaderboardRows()` + `data-leaderboard`; `manualScoreControls()` split into `manualScoreNote()` / `manualScorePlayerOptions()`; patch hooks added to the Host and Host-doors markup.
+  - `test/host-render-gate.test.js` — new.
+
+### Root cause actually confirmed (not the one first suspected)
+
+The initial hypothesis was `receive()`'s ungated Host branch at the `!["player","presenter"].includes(view)` clause. That clause is a real gap and is now closed, **but it was not the driver of the reported symptom.** The Host does not receive its own `state` broadcasts: `BroadcastChannel` does not deliver to the posting context, the Supabase channel is created with `broadcast: { self: false }`, and `emit()` returns early for every view except `host`. So that clause only fires for a second Host tab or the landing view.
+
+The actual cause was three *unconditional* `render()` calls on player-originated messages:
+
+- `acceptSubmission()` — every `submission` broadcast.
+- `acceptPlayerPresence()` — every player join.
+- `acceptDoorChoice()` — every door pick.
+
+Players broadcast a submission on every answer tap, every categorize tap, every matching-dropdown change, every drag-drop, and — through `queueAutoSubmission({ allowEmpty: true, delay: 40 })` on `[data-multi-blank]` — roughly **once per keystroke** on multi-fill-in-the-blank questions. Each one ran `render()` → `renderHost()` → `app.innerHTML = shell(...)`, discarding and rebuilding the entire Host layout.
+
+What that rebuild was costing on every phone tap, all of which the host perceives as "refreshing":
+
+1. Keyboard focus and half-typed text in `[data-score-points]`, `[data-score-reason]`, and the `[data-jump-question]` selection — destroyed mid-keystroke. An unapplied question-jump choice silently snapped back to the current question.
+2. Every `[data-private-image]` was re-fetched through the Worker media proxy: `render()` revokes `imageMediaObjectUrls` and `attachEvents()` re-runs `loadPrivateImage()`, which has no cache. A room of players answering produced a continuous stream of proxy requests and visible image flicker.
+3. `startTimerTicker()` cleared and restarted the 250 ms `setInterval` every time.
+4. All ~40 per-node listeners in `attachEvents()` were torn down and re-bound (they are per-node `addEventListener`, not delegated — confirmed before changing render frequency).
+
+### Approach, and the alternative rejected
+
+Chose **(a) a `hostRenderKey()` remount gate plus in-place patching of the live regions**, over (b) leaving the full render in place and special-casing the three message types.
+
+- (a) is this codebase's own established pattern — `playerRenderKey()` / `presenterRenderKey()` plus targeted updaters like `updatePresenterActiveClipState()` — so it reads as consistent rather than novel.
+- `mistakes.md` #14 already prescribes exactly this and warns against putting transport-only fields in a remount boundary. The Host was simply never given the boundary that Presentation got.
+- (b) is not actually narrower in risk: it needs the same enumeration of patch targets, but leaves `receive()` able to remount the Host and gives no protection to any future inbound path.
+- (a) alone is not sufficient either — a submission genuinely does change host-visible content — which is why the gate is paired with `patchHostLiveRegions()`.
+
+`hostRenderKey()` is a **denylist**, not an allowlist (unlike `playerRenderKey()`): a newly added state field defaults to remounting the Host. For a live-audience tool a stale host screen is worse than a flickery one, so the gate fails toward re-rendering.
+
+### Kept working (each checked against the code, not assumed)
+
+- **Host typing/focus:** `patchHostLiveRegions()` never touches `.host-utilities`, the question-jump control, or any focused node — it skips the manual-score picker when `document.activeElement` is that picker, preserves its chosen value, and will not toggle `disabled` on a focused control.
+- **Timer:** the patch never calls `attachEvents()`, so `startTimerTicker()` is not re-entered and the interval survives. `[data-timer-readout]` is patched by `updateTimer()` on its own 250 ms tick, independent of render.
+- **Listeners:** per-node, bound in `attachEvents()` after each full render. Everything the patch replaces (`data-host-submitted-count`, `data-host-answer-results`, `[data-leaderboard]` rows, the Host's compact doors board) is listener-free markup; `[data-play-intro]` buttons are updated by `classList.toggle` only, never rebuilt. The doors patch hook is applied only to the host's read-only `compact` board, never the player's interactive door buttons.
+- **Media:** `videoPanel()`, `audioPanel()` and `matchingClipControls()` are no longer re-emitted on player activity at all, so the volume slider and the `<audio>`/`<video>` elements stop being recreated under the host. This is strictly better than before.
+
+### Coordination note
+
+Another agent is adding a "presented by" override text input to `hostUtilityControls()`. It needs no change here: the patch never writes into `.host-utilities`, and inbound player messages no longer remount the Host, so that input is safe mid-typing. If its state field must remount the Host when it changes *remotely*, that happens automatically — `hostRenderKey()`'s denylist means new fields are structural by default. Add it to `HOST_LIVE_STATE_FIELDS` only if something patches it in place.
+
+### Tests
+
+```
+$ node --test test/host-render-gate.test.js
+ℹ tests 14
+ℹ pass 14
+ℹ fail 0
+```
+
+Confirmed red before the fix: the first run failed on the missing `hostLiveCounts` export, and after adding the pure helpers the wiring tests still failed (`expected app.js to define function patchHostLiveRegions(`) until `app.js` was rewired.
+
+```
+$ npm test
+ℹ tests 163
+ℹ pass 162
+ℹ fail 1
+```
+
+The one failure is `test/deploy-manifest.test.js` — "author.js references ./video-processor.worker.bundle.js, which does not exist in the repository". Pre-existing and environmental: that bundle is gitignored build output absent from any fresh worktree. Verified by checking out untouched `b58adb7` into a scratch worktree and reproducing the identical failure there. Did not run the video build or touch that file.
+
+### Not verified
+
+- No live browser run. This repo's app-layer tests are all source-text assertions and there is no jsdom or headless browser available (adding a dependency needs approval), so the DOM patch itself is covered by pure-function tests plus wiring/contract assertions, **not** by executing `patchHostLiveRegions()` against a real DOM. The behaviour worth eyeballing live is listed in the handoff.
+- No Supabase or Worker round-trip exercised.
+
 
 ## 2026-08-17 — Show the join URL on the presentation title screen only
 
