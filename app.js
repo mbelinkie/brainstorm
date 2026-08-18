@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -164,13 +164,10 @@ function publicRoomState() {
     revision: state.revision || 0,
     questionId: hostQuestion.id,
     question: playerQuestion,
-    revealedCorrectOptionId: state.phase === "reveal" ? correctOptionId(hostQuestion) : null,
-    revealedCorrectOptionIds: state.phase === "reveal" ? hostQuestion.correctOptionIds || (correctOptionId(hostQuestion) ? [correctOptionId(hostQuestion)] : []) : [],
-    revealedCorrectCategories: state.phase === "reveal" && hostQuestion.type === "categorize" ? hostQuestion.correctCategories || {} : {},
-    revealedCorrectPairs: state.phase === "reveal" && hostQuestion.type === "matching" ? hostQuestion.correctPairs || {} : {},
-    revealedMultiBlankAnswers: state.phase === "reveal" && hostQuestion.type === "multi_fill_in_the_blank" ? Object.fromEntries((hostQuestion.clips || []).map((clip) => [clip.id, clip.acceptedAnswers || []])) : {},
-    revealedTextAnswers: state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(hostQuestion.type) ? hostQuestion.acceptedAnswers || hostQuestion.blanks?.[0]?.acceptedAnswers || [] : [],
-    revealedNumber: state.phase === "reveal" && hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null,
+    // One published answer-key block per question type, built in quiz-core.js
+    // so a type cannot reach the reveal with no key for the clients to render.
+    // Every field is empty in every phase but "reveal".
+    ...revealedAnswerKeys(hostQuestion, state.phase),
     timerEndsAt: state.timerEndsAt || null,
     timerDurationSeconds: state.timerDurationSeconds || null,
     activeClipId: state.activeClipId || null,
@@ -638,6 +635,7 @@ function playerRenderKey(roomState) {
     revealedCorrectCategories: roomState?.revealedCorrectCategories,
     revealedCorrectPairs: roomState?.revealedCorrectPairs,
     revealedMultiBlankAnswers: roomState?.revealedMultiBlankAnswers,
+    revealedCorrectOrder: roomState?.revealedCorrectOrder,
     revealedTextAnswers: roomState?.revealedTextAnswers,
     revealedNumber: roomState?.revealedNumber,
     doorBonus: roomState?.doorBonus,
@@ -1072,9 +1070,22 @@ function orderedItems(question, positions = selectedObject()) {
 
 function orderBoard(question, player, presenter = false) {
   const enabled = player && state.phase === "open";
-  const showingCorrectOrder = !presenter || state.phase === "reveal";
-  const items = orderedItems(question, player ? selectedObject() : showingCorrectOrder ? Object.fromEntries((question.correctOrder || []).map((id, index) => [id, index + 1])) : Object.fromEntries((question.items || []).map((item, index) => [item.id, index + 1])));
-  return `<div class="drag-board" data-drag-board="order"><p class="drag-help">${enabled ? "Drag cards into the order you think is right." : showingCorrectOrder ? "Correct order" : "Put these in order on your phone."}</p><div class="drag-sort-list" data-drop-zone="order">${items.map((item, index) => `<div class="drag-order-row"><span class="drag-position">${showingCorrectOrder ? index + 1 : "•"}</span>${dragCard(item, "order", enabled)}</div>`).join("")}</div></div>`;
+  // The correct order is authoritative state. The host reads it from the quiz
+  // definition; a player phone and Presentation get only what the room state
+  // published at the reveal, and never reconstruct one from the question they
+  // were handed -- which is how the shared screen came to announce the
+  // authored item order, and a phone the player's own answer, as "Correct
+  // order" while Supabase had scored against the real key.
+  const correctOrder = revealKeyFor(question, state.phase, player || presenter ? "client" : "host", state) || [];
+  const showingCorrectOrder = correctOrder.length > 0;
+  const positions = showingCorrectOrder ? Object.fromEntries(correctOrder.map((id, index) => [id, index + 1])) : player ? selectedObject() : Object.fromEntries((question.items || []).map((item, index) => [item.id, index + 1]));
+  const items = orderedItems(question, positions);
+  // A player always sees their own cards numbered, because that ordering is
+  // their answer; the shared screen numbers cards only once the order shown is
+  // the correct one.
+  const numbered = showingCorrectOrder || Boolean(player);
+  const help = enabled ? "Drag cards into the order you think is right." : showingCorrectOrder ? "Correct order" : player ? "Locked in — waiting for the reveal." : "Put these in order on your phone.";
+  return `<div class="drag-board" data-drag-board="order"><p class="drag-help">${help}</p><div class="drag-sort-list" data-drop-zone="order">${items.map((item, index) => `<div class="drag-order-row"><span class="drag-position">${numbered ? index + 1 : "•"}</span>${dragCard(item, "order", enabled)}</div>`).join("")}</div></div>`;
 }
 
 function matchingBoard(question, player, presenter = false) {

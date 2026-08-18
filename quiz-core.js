@@ -135,3 +135,70 @@ export function tallyQuestionResults(question = {}, submissions = {}) {
 
   return { totalSubmitted, correctCount: answers.filter((answer) => isSingleAnswerCorrect(question, answer, closestNumberWinningDistance)).length, parts: null };
 }
+
+// --- Reveal keys -------------------------------------------------------------
+//
+// Two halves of one contract, kept together on purpose. publicRoomState() in
+// app.js publishes the authoritative answer key for the current question once
+// the host reveals it; the answer boards read it back. When those halves are
+// written independently a question type can ship with the key published but no
+// surface reading it -- or, as arrange_in_order did, with no published field at
+// all, while the boards quietly invented a "correct" answer out of whatever
+// question data was in reach (review 2026-08-17, C6 / APP F1: Presentation
+// announced the authored item order and the player's phone announced the
+// player's own submission, both labelled "Correct order", while Supabase had
+// already scored against the real key).
+//
+// This does not move scoring into the browser. These are the same values the
+// scoring RPC used, projected to clients only after the host reveals.
+
+// Every authored question type, mapped to the field of the public room state
+// that carries its answer key. A type missing from this table has no key to
+// reveal, and revealKeyFor() returns null for it rather than guessing.
+export const REVEAL_KEY_FIELDS = {
+  single_choice: "revealedCorrectOptionIds",
+  multiple_choice: "revealedCorrectOptionIds",
+  true_false: "revealedCorrectOptionIds",
+  image_selection: "revealedCorrectOptionIds",
+  short_answer: "revealedTextAnswers",
+  fill_in_the_blank: "revealedTextAnswers",
+  multi_fill_in_the_blank: "revealedMultiBlankAnswers",
+  arrange_in_order: "revealedCorrectOrder",
+  categorize: "revealedCorrectCategories",
+  matching: "revealedCorrectPairs",
+  closest_number: "revealedNumber"
+};
+
+// The revealed* block of publicRoomState(). Every field is always present, so
+// a client can tell "nothing revealed yet" from "revealed and empty" without
+// checking the phase, and every field is empty in every phase but `reveal`.
+export function revealedAnswerKeys(question = {}, phase) {
+  const revealed = phase === "reveal";
+  const firstCorrectOptionId = revealed ? correctOptionId(question) : null;
+  return {
+    revealedCorrectOptionId: firstCorrectOptionId,
+    revealedCorrectOptionIds: revealed ? question.correctOptionIds || (firstCorrectOptionId ? [firstCorrectOptionId] : []) : [],
+    revealedCorrectCategories: revealed && question.type === "categorize" ? question.correctCategories || {} : {},
+    revealedCorrectPairs: revealed && question.type === "matching" ? question.correctPairs || {} : {},
+    revealedMultiBlankAnswers: revealed && question.type === "multi_fill_in_the_blank" ? Object.fromEntries((question.clips || []).map((clip) => [clip.id, clip.acceptedAnswers || []])) : {},
+    revealedCorrectOrder: revealed && question.type === "arrange_in_order" ? question.correctOrder || [] : [],
+    revealedTextAnswers: revealed && ["short_answer", "fill_in_the_blank"].includes(question.type) ? question.acceptedAnswers || question.blanks?.[0]?.acceptedAnswers || [] : [],
+    revealedNumber: revealed && question.type === "closest_number" ? Number(question.targetNumber) : null
+  };
+}
+
+const EMPTY_REVEAL_KEYS = revealedAnswerKeys({}, null);
+
+// The answer key a surface is allowed to render right now.
+//
+// `surface` is "host" for the host's own laptop, which holds the quiz
+// definition and may read the key in any phase, or "client" for a player phone
+// or Presentation, which are projections: they get exactly what the room state
+// published and never recompute a key from the question object they were
+// handed. `revealed` is that published room state.
+export function revealKeyFor(question = {}, phase, surface, revealed = {}) {
+  const field = REVEAL_KEY_FIELDS[question.type];
+  if (!field) return null;
+  if (surface === "host") return revealedAnswerKeys(question, "reveal")[field];
+  return revealed?.[field] ?? EMPTY_REVEAL_KEYS[field];
+}

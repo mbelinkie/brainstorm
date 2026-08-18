@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_SESSION_TTL_MS, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_SESSION_TTL_MS, REVEAL_KEY_FIELDS, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
 
 test("player payload is an explicit allowlist", () => {
   const player = toPlayerQuestion({ id: "q1", type: "image_selection", prompt: "Choose", correctOptionIds: ["a"], hostReveal: "Secret", audio: { url: "https://private.example/clip" }, options: [{ id: "a", label: "Visible", imageAssetId: "asset-1", imageSource: "Private source" }] });
@@ -144,4 +144,93 @@ test("closest_number credits everyone tied for the smallest distance to the targ
 test("tallyQuestionResults never throws on an empty submissions map", () => {
   const results = tallyQuestionResults({ type: "single_choice", correctOptionIds: ["a"] }, {});
   assert.deepEqual(results, { totalSubmitted: 0, correctCount: 0, parts: null });
+});
+
+// --- Reveal keys -------------------------------------------------------------
+
+const AUTHORED_TYPES = [
+  "single_choice",
+  "multiple_choice",
+  "true_false",
+  "image_selection",
+  "short_answer",
+  "fill_in_the_blank",
+  "multi_fill_in_the_blank",
+  "arrange_in_order",
+  "categorize",
+  "matching",
+  "closest_number"
+];
+
+test("every authored question type has a reveal-key field", () => {
+  // author.js's supportedTypes allowlist. A type added there without a row
+  // here would reach the reveal with no key for any surface to render -- the
+  // arrange_in_order bug (C6).
+  for (const type of AUTHORED_TYPES) {
+    assert.ok(REVEAL_KEY_FIELDS[type], `${type} has no reveal-key field`);
+  }
+});
+
+test("no answer key is published before the reveal", () => {
+  for (const type of AUTHORED_TYPES) {
+    for (const phase of ["lobby", "open", "locked"]) {
+      const keys = revealedAnswerKeys({ type, correctOptionIds: ["a"], correctOrder: ["x", "y"], correctPairs: { c: "o" }, correctCategories: { i: "c" }, acceptedAnswers: ["yes"], targetNumber: 7, clips: [{ id: "c", acceptedAnswers: ["yes"] }] }, phase);
+      assert.deepEqual(keys, {
+        revealedCorrectOptionId: null,
+        revealedCorrectOptionIds: [],
+        revealedCorrectCategories: {},
+        revealedCorrectPairs: {},
+        revealedMultiBlankAnswers: {},
+        revealedCorrectOrder: [],
+        revealedTextAnswers: [],
+        revealedNumber: null
+      }, `${type} leaked a key in phase ${phase}`);
+    }
+  }
+});
+
+test("each question type reveals its own key and nothing else", () => {
+  const order = revealedAnswerKeys({ type: "arrange_in_order", correctOrder: ["c", "a", "b"] }, "reveal");
+  assert.deepEqual(order.revealedCorrectOrder, ["c", "a", "b"]);
+  assert.deepEqual(order.revealedCorrectPairs, {});
+
+  const matching = revealedAnswerKeys({ type: "matching", correctPairs: { "clip-a": "opt-a" } }, "reveal");
+  assert.deepEqual(matching.revealedCorrectPairs, { "clip-a": "opt-a" });
+  assert.deepEqual(matching.revealedCorrectOrder, []);
+
+  const categorize = revealedAnswerKeys({ type: "categorize", correctCategories: { i1: "c1" } }, "reveal");
+  assert.deepEqual(categorize.revealedCorrectCategories, { i1: "c1" });
+
+  const multiBlank = revealedAnswerKeys({ type: "multi_fill_in_the_blank", clips: [{ id: "b1", acceptedAnswers: ["Clocks"] }, { id: "b2" }] }, "reveal");
+  assert.deepEqual(multiBlank.revealedMultiBlankAnswers, { b1: ["Clocks"], b2: [] });
+
+  const text = revealedAnswerKeys({ type: "fill_in_the_blank", blanks: [{ acceptedAnswers: ["Yellow"] }] }, "reveal");
+  assert.deepEqual(text.revealedTextAnswers, ["Yellow"]);
+
+  const number = revealedAnswerKeys({ type: "closest_number", targetNumber: "1969" }, "reveal");
+  assert.equal(number.revealedNumber, 1969);
+
+  const choice = revealedAnswerKeys({ type: "single_choice", options: [{ id: "a" }, { id: "b" }], correctOption: 1 }, "reveal");
+  assert.equal(choice.revealedCorrectOptionId, "b");
+  assert.deepEqual(choice.revealedCorrectOptionIds, ["b"]);
+});
+
+test("a player or Presentation surface only ever sees a published key", () => {
+  const question = { type: "arrange_in_order", items: [{ id: "a" }, { id: "b" }, { id: "c" }], correctOrder: ["c", "a", "b"] };
+  // The player-safe projection carries no correctOrder at all, but even when a
+  // client is handed the full definition it must not read the key out of it.
+  assert.deepEqual(revealKeyFor(question, "locked", "client", {}), []);
+  assert.deepEqual(revealKeyFor(question, "open", "client", { revealedCorrectOrder: [] }), []);
+  assert.deepEqual(revealKeyFor(question, "reveal", "client", revealedAnswerKeys(question, "reveal")), ["c", "a", "b"]);
+});
+
+test("the host reads the key from the quiz definition in any phase", () => {
+  const question = { type: "arrange_in_order", correctOrder: ["c", "a", "b"] };
+  assert.deepEqual(revealKeyFor(question, "open", "host", {}), ["c", "a", "b"]);
+  assert.deepEqual(revealKeyFor(question, "reveal", "host", {}), ["c", "a", "b"]);
+});
+
+test("a question type with no answer key resolves to null rather than a guess", () => {
+  assert.equal(revealKeyFor({ type: "numeric_estimate" }, "reveal", "client", {}), null);
+  assert.equal(revealKeyFor({}, "reveal", "host", {}), null);
 });
