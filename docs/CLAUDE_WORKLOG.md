@@ -659,7 +659,6 @@ $ npm test
   - Left the `source` parameter on `author.js`'s `uploadPrivateImage(file, optionIndex, source = null)` in place even though the only caller that ever passed a non-null `source` (`approveSuggestedImage`) is gone — it's dead but harmless (defaults to `null`, which is also what plain manual uploads already pass), and removing it would touch a function several other tests slice by name; left it rather than risk an unrelated regression for a cosmetic cleanup.
 
 ## 2026-08-18 — Host-side "presented by" override for the presentation title cards
-
 - **Branch:** `claude/presented-by-override`
 - **Feature (user-requested):** "Expose the PRESENTED BY text in the hosting screen… there should be an override in the hosting screen, so I can do a quiz for multiple audiences without creating a new version of the json." One quiz file, many audiences; the credit line changes per show, at host time, without editing or re-saving the quiz.
 - **Files touched:**
@@ -670,9 +669,7 @@ $ npm test
   - `test/presentation-layout.test.js` — updated the existing "opening and closing presentation cards use the quiz-configured presenter line" test, which pinned the exact literal `const presenter = titlePage.presenter ?? "ADO&S PRESENTS"`. It now asserts both title cards call the resolver (`.match(...).length === 2`); the test's original intent, that the authored value drives the credit line, is preserved.
   - `PRODUCT_SPEC.md` — documented the override under "Host" and in the big-screen view's list. The **quiz JSON data model did not change** — `titlePage.presenter` already existed and is untouched — but the room-state payload gained a public field, so the spec now says where the override lives and that it is never written back.
   - `CHANGELOG.md` — one user-facing line under a new `## 2026-08-18` section.
-
 ### Design calls and why
-
 - **Authoring was already done.** `author.js:406` already renders a "Presented by" input (`data-title-field="presenter"`, `maxlength="120"`), `quiz-validation.js:9` already bounds it, and `quiz.sample.json` / `music-trivia.question-bank.json` already carry `titlePage.presenter: "ADO&S PRESENTS"`. Per the task's instruction, I confirmed this and left it alone. The new host input reuses the same 120-character limit so the two fields cannot disagree.
 - **Room state, not host-local state.** This was forced by the code, not a preference: `presentationTitlePage()` and `finalScoreTitlePage()` run in the **presenter** view, which fetches its *own* copy of `hostQuizDefinition` (`app.js` ~line 830, gated on the host secret). A host-local variable would never reach the big screen. `publicRoomState()` is the only payload the presenter receives, so the override rides there. It is a public credit line — the same class of data as the `quizTitle`/`quizSubtitle` already in that payload — so it leaks nothing to players.
 - **Broadcast the raw override, not the resolved string.** The presenter resolves the override against its own authored copy. This keeps the fallback local, so clearing the override restores the authored line with no extra round trip, and it leaves existing no-override behavior byte-identical.
@@ -680,43 +677,82 @@ $ npm test
 - **Placed in `hostUtilityControls()`, which renders on all three host screens** (main, doors, finale). The closing card shows the same credit line as the opening one, so the host must be able to set or fix it at either end of a show.
 - **No `render()` in the input handler.** It mirrors the existing audio-volume control exactly: `input` → update state + `emit()` (live big-screen update, no server write); `change` (blur/Enter) → also `persistHostState()`. A `render()` on keystroke would replace the host panel's `innerHTML` and destroy the input mid-typing. There is a regression test asserting the handler contains no `render()` call.
 - **Presenter repaint needs no render-path change.** `presenterRenderKey()` destructures away only the non-visual fields (`activeClipId`, `audioCommand`, `revision`, `submitted`, `audioVolume`, `mediaCommand`) and stringifies the rest, so `presenterOverride` is in the key automatically and a change repaints the shared screen. I touched neither `render()` nor the gating in `receive()`, per the concurrent-agent coordination constraint. A test asserts `presenterRenderKey` does not strip the field.
+## 2026-08-18 — Saved player identity was time-bounded but not room-scoped
+
+- **Branch:** `claude/room-scoped-player-identity`, worktree `.claude/worktrees/claude-room-scoped-player-identity` off `main` at `b58adb7`.
+- **Bug (user-reported):** "When a person tries to enter a NEW room with the same phone, they should get a new opportunity to pick a name and icon. Authentication shouldn't last forever. I just tested it and scanning the QR code with my phone immediately brings up my old name/icon."
+- **Files touched:** `quiz-core.js`, `app.js`, `test/quiz-core.test.js`, `test/player-logo.test.js`, `CHANGELOG.md`, this file.
+
+### Diagnosis (confirmed, not assumed)
+
+The branch the user was unsure about *did* merge: `git merge-base --is-ancestor 22f24c3 main` exits 0, and `22f24c3` ("fix: expire saved player identity after a 6-hour session gap") is in `git log main`. It implemented the wrong axis for this symptom. It added `musicTriviaPlayerSessionAt` plus `isPlayerSessionExpired()` with a 6-hour TTL, clearing the identity only when the device had been idle that long. Nothing in it referenced the room. That commit's own worklog entry says so outright: "Did not scope the TTL by room code — the reported symptom is purely about elapsed time."
+
+So a phone that played room `ABC123` an hour ago and then scanned the QR for the unrelated room `XYZ789` was well inside the TTL, `playerName` was still populated, and `renderPlayer()`'s `params.has("room") && !playerName` gate never fired — the join screen was skipped and the auto-rejoin branch (`app.js`, `view === "player" && params.has("room") && playerName`) joined the new room under the old name and logo. "How long ago did this phone play" and "which room did it play in" are orthogonal, and only the first had been built. Reproduced as a model rather than on hardware; see "Could not verify".
+
+### Design decisions
+
+**Room code as the key.** `public.room_code()` draws 6 characters from a 32-character alphabet, `sessions.room_code` carries a `unique` constraint, and `create_live_room` loops retrying on `unique_violation` (`supabase/migrations/0002_live_room_rpc.sql`). No migration deletes session rows, so a code is never recycled onto a later, unrelated game. The room code is therefore a durable identifier, not a reusable slot, and is safe to key persisted identity on.
+
+**#3 — other rooms are RETAINED, not clobbered.** Identity is stored as a small map (`quizPlayerIdentities`) keyed by room code, each entry carrying its own `lastActiveAt`. Clobbering on each new join would be a few bytes cheaper and materially worse: a player who opens the wrong QR code (a stale poster, a neighbour's screen), picks a name, and then rescans the right one would have had their real room's token destroyed, and would rejoin as a brand-new player with a zeroed score — the exact catastrophic failure this task warned against, just triggered a different way. Same for a host running two rooms back to back who sends a phone back to the first. Retention costs a few hundred bytes; the map is pruned of expired entries and capped at `PLAYER_IDENTITY_ROOM_LIMIT` (8) most-recently-active rooms on every write, so it cannot grow without bound. Activity in one room never refreshes another room's clock — each entry expires on its own TTL.
+
+**#4 — the legacy unkeyed identity is migrated onto the current room, but only with proof.** Phones in the wild hold the old flat `musicTriviaPlayerId` / `musicTriviaPlayerName` / `quizPlayerLogoKey` / `musicTriviaPlayerSessionAt` keys. Dropping them outright is the simplest option and was rejected: a deploy can land mid-game, and every phone in a live room would be shown the join screen, re-join under a fresh token, and be orphaned from its score — worse for a live-audience tool than the bug being fixed. Migrating blindly onto the current room is also wrong: the legacy blob carries no room information, so a phone that played a *different* room an hour ago would get the reported bug one last time.
+
+The resolution uses evidence already on the device. `quiz-door-player:<roomCode>` is *already* room-keyed and is written by `rememberDoorPlayerRecord()` on every successful join and auto-rejoin (`join_live_room` always returns `playerId`, migration `0002`), so its presence proves this device genuinely joined *this* room. `migrateLegacyPlayerIdentity()` adopts the legacy identity onto the current room only when all of: the legacy name and token exist, `isPlayerSessionExpired()` says it is still inside the 6-hour TTL, the URL has a `room` param, and that room's door record exists. Otherwise it is discarded. Either way the legacy keys are removed from both storages, so the migration runs at most once per device. The original activity stamp is carried through rather than refreshed, so an adopted identity does not get a free TTL extension. Every failure mode of this gate falls toward *asking* for a name, never toward reusing the wrong one.
+
+**#2 — the TTL was layered under, not replaced.** `PLAYER_SESSION_TTL_MS` and `isPlayerSessionExpired()` are unchanged and now do the per-entry expiry inside the store, plus gate the legacy migration. `savePlayerIdentity()` restamps on join, name/logo pick, and door pick — the same events `savePlayerValue()` stamped before — so the TTL remains a *session gap*, not a hard clock.
+
+### Fix
+
+`quiz-core.js` gained pure, directly unit-tested helpers: `readPlayerIdentityStore()`, `playerIdentityForRoom()`, `writePlayerIdentityForRoom()`, and `PLAYER_IDENTITY_ROOM_LIMIT`. All are string-in/string-out over the serialized store, so the room-and-TTL logic is testable without a DOM. `app.js` reads its identity through `playerIdentityForRoom(localStorage.getItem(PLAYER_IDENTITY_KEY), roomCode)` and writes it through `savePlayerIdentity()`; an unknown room yields no identity, so the existing `!playerName` join-screen gate fires naturally without being touched.
 
 ### Commands run and actual output
 
 ```
 $ npm test
 ℹ tests 160
-ℹ suites 0
 ℹ pass 160
+$ npm test        # baseline, before any edit
+ℹ tests 149
+ℹ pass 148
+ℹ fail 1          # pre-existing: test/deploy-manifest.test.js, see below
+
+$ npm test        # after the fix
+ℹ tests 161
+ℹ suites 0
+ℹ pass 161
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ℹ duration_ms 2122.408605
-```
-
 Baseline before any edit was 149 pass / 0 fail, so the 11 new tests are the whole delta.
-
 Verified the new tests actually discriminate rather than passing vacuously: backed `app.js` up to a scratch directory, reverted the `publicRoomState()` field and both resolver call sites to their pre-change form, and re-ran the new file — the two wiring tests failed as intended:
-
-```
 ✖ the override travels to the presentation screen in the broadcast room state
 ✖ both the opening and closing title cards resolve the override against the quiz file
 ℹ tests 11
 ℹ pass 9
 ℹ fail 2
-```
-
 Then restored from the backup and confirmed `md5` byte-identical to the pre-mutation file, `node --check app.js` clean, and the full suite green again.
-
-### Could not verify
-
 - **No browser verification of any kind.** I did not run the dev server, open the host screen, or watch a real presentation screen update. Everything visual here — that the new control sits sensibly in the host panel, that `.host-presenter-override` looks right next to `.question-jump`, and above all that the credit line actually repaints live on the big screen when the host types — is argued from source reading and tests, not observed. This is the main thing to check live.
 - **The two-tab live path is unproven.** The chain (host `input` → `emit()` → Supabase broadcast → `receive()` → `presenterRenderKey` differs → `render()`) is verified only structurally.
 - **Host-reload persistence is unproven end to end.** It follows from `persistHostState()` writing `publicRoomState()` and the reload merging `savedRoom.state`, but I did not actually refresh a live host.
-
 ### Handoffs / notes for whoever is next
-
 - **For the concurrent host-render-gate agent:** I added exactly one new host control and one state field; I did not touch `render()` or the gating in `receive()`. But be aware this is now a **text input on the host screen**, which is the known mid-typing-destruction hazard. My handler avoids self-inflicted re-renders, and because state is updated on every keystroke the input's `value` is repopulated correctly if some *other* code path re-renders — but the **caret position will jump to the end**, and an IME composition would be interrupted. If the render gate ends up re-rendering the host panel on unrelated events (a player submission, a presence ping), that will be user-visible as caret jitter while typing a credit line. The clean fix, if it becomes a problem, is to skip re-rendering while `document.activeElement` is inside the host panel — that belongs in the render-gating slice, not here, so I left it alone.
 - **Pre-existing, unrelated:** a fresh worktree has no `video-processor.worker.bundle.js` (git-ignored generated output), so `test/deploy-manifest.test.js` fails until `npm run build:video` is run. Same gap the 2026-08-17 image-assistant entry hit. I ran `npm run build:video` rather than copying the bundle; installed nothing and did not touch `package-lock.json`.
 - **Known limitation, left as-is:** a presentation screen opened without the host secret has `hostQuizDefinition === null`, so it already showed the default `"ADO&S PRESENTS"` rather than the authored credit, both before and after this change. The override still works there (it wins regardless of the authored value). Broadcasting the *resolved* credit instead of the raw override would incidentally fix that too, but it changes existing no-override behavior, so I judged it out of scope.
+```
+
+The 1 baseline failure was `test/deploy-manifest.test.js` — `author.js references "./video-processor.worker.bundle.js", which does not exist` — a git-ignored generated artifact absent from any fresh worktree, failing identically before I touched anything. As a previous session did, I copied the already-built bundle from the main checkout into this worktree to get a clean full-suite run; I did not rebuild it, run `npm install`, or touch `package-lock.json` (`node_modules` and its `esbuild` devDependency are absent here). The file is git-ignored and is not in my commit.
+
+Verified the new tests actually fail without the fix, per TDD: restored `app.js` and `quiz-core.js` from `HEAD` into the worktree (backing my versions up to the scratchpad first, then copying them back) and re-ran the two test files — 4 structural tests in `player-logo.test.js` failed and `quiz-core.test.js` failed to load at all on the missing imports. Also confirmed the behavioural delta directly: with a store holding room `ABC123` last active one hour ago, a TTL-only lookup returns `"Belinkie"` for room `XYZ789` (the bug) while `playerIdentityForRoom()` returns `null`, and the same-room lookup still returns `"Belinkie"`.
+
+### Not regressed
+
+`test/player-logo.test.js`'s Android join-screen logo-layout test (commit `6532ffc`, the `min-height: 0` grid-row collapse) is untouched and passes; my change touches no CSS. The auto-submit test ("auto-submit skips a selection after its question has closed or changed") passes. Two pre-existing string-matching assertions in `player-logo.test.js` referenced storage mechanisms this change removes (`savePlayerValue("musicTriviaPlayerId", playerId)`, `savePlayerValue("quizPlayerLogoKey", playerLogoKey)`, and the `PLAYER_SESSION_ACTIVITY_KEY` wiring); I rewrote those assertions onto the new mechanism while keeping each test's original intent, and the behavioural guarantees they were proxying for are now covered by real unit tests in `quiz-core.test.js` instead of string matching.
+
+### Could not verify
+
+- **No real device, no live room.** Everything is a `localStorage` model verified in unit tests plus structural assertions that `app.js` is wired in the right order. I did not open the app on a phone, scan a QR code, or watch a join screen appear. The manual steps to confirm are in the handoff.
+- **The legacy migration path on a device that actually holds legacy keys.** The gate is asserted structurally and its TTL-carryover behaviour is unit-tested through `writePlayerIdentityForRoom()`, but I could not exercise a real phone whose storage predates this change. This is the highest-value thing for the user to spot-check on a handset that played before the deploy.
+- **The `PLAYER_IDENTITY_ROOM_LIMIT` cap of 8.** A judgment call. Visiting a room writes an entry even before a name is chosen, so casually opening several room URLs inside one TTL window consumes slots; 8 is far above any realistic quiz night, and eviction is least-recently-active first, but the number is not derived from data.
+- Did not touch `supabase/migrations/` — this is entirely client-side join-screen gating, no schema or server change.
