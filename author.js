@@ -1115,7 +1115,8 @@ function renderMediaLibrary() {
   mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   mediaPreviewUrls = [];
   list.innerHTML = mediaAssets.map((asset) => {
-    const inDraft = JSON.stringify(bank).includes(asset.id);
+    // No loaded bank is "unknown", not "unused": hide Delete rather than offer it.
+    const inDraft = !bank || JSON.stringify(bank).includes(asset.id);
     const title = asset.display_name || asset.source_title || `${asset.kind} · ${asset.id.slice(0, 8)}`;
     const preview = asset.kind === "image" ? `<img class="media-thumb" data-media-preview="${asset.id}" alt="${escapeHtml(title)}" />` : asset.kind === "video" ? `<video class="media-thumb" data-media-preview="${asset.id}" muted preload="metadata"></video>` : `<audio class="media-audio" data-media-preview="${asset.id}" controls preload="none"></audio>`;
     const videoInfo = asset.kind === "video" ? `${asset.duration_ms ? ` · ${formatSeconds(asset.duration_ms / 1000)}` : ""}${asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}` : "";
@@ -1271,7 +1272,7 @@ async function promptRenameMediaAsset(assetId) {
 
 async function deleteUnusedMediaAsset(assetId) {
   const asset = mediaAssets.find((entry) => entry.id === assetId);
-  if (!asset || JSON.stringify(bank).includes(assetId)) return;
+  if (!asset || !bank || JSON.stringify(bank).includes(assetId)) return;
   if (!confirm(`Delete this ${asset.kind} asset? It cannot be restored. Published quiz references are protected automatically.`)) return;
   const { error } = await supabase.rpc("delete_unused_media_asset", { p_asset_id: assetId });
   if (error) { alert(`Could not delete media: ${error.message}`); return; }
@@ -1498,22 +1499,26 @@ window.addEventListener("keydown", (event) => {
 
 startDiagnostics("author");
 document.querySelector(".image-optimization p").textContent = "Images are optimized for the game; audio is trimmed, loudness-leveled to −16 dBFS with a −1 dBFS peak ceiling, and rendered as WAV — unless you override it with a fixed volume at upload. Originals never upload.";
+// The saved draft is the author's own unpublished work and does not depend on
+// the bundled bank, so it is restored before that fetch gets a chance to throw.
+// The bundled file is only the source of originalBank and of the no-draft
+// fallback; losing it must not lose an hour of edits.
+lastPublishedBank = restorePublishedSnapshot();
+const draft = restoredDraft();
+if (draft) { bank = draft.bank; selection = draft.selection; $("#save-state").textContent = "Recovered saved browser draft"; }
 try {
   const bundledBank = await fetch(BANK_URL, { cache: "no-store" }).then((response) => { if (!response.ok) throw new Error("Question bank not found"); return response.json(); });
   originalBank = clone(bundledBank);
-  lastPublishedBank = restorePublishedSnapshot();
-  const draft = restoredDraft();
-  if (draft) { bank = draft.bank; selection = draft.selection; $("#save-state").textContent = "Recovered saved browser draft"; }
-  else { bank = bundledBank; $("#save-state").textContent = "Loaded — edits save in this browser automatically"; }
-  render();
-  syncPublishControl();
+  if (!draft) { bank = bundledBank; $("#save-state").textContent = "Loaded — edits save in this browser automatically"; }
 } catch (error) {
   recordDiagnostic("load-question-bank", error);
-  $("#nav-title").textContent = "Question bank is not connected";
   const localFile = location.protocol === "file:";
-  $("#save-state").textContent = localFile
+  const detail = localFile
     ? "Open this page through the local app server: run npm run dev, then visit http://127.0.0.1:4173/author.html."
     : `Could not load music-trivia.question-bank.json: ${error.message}`;
+  if (!draft) $("#nav-title").textContent = "Question bank is not connected";
+  $("#save-state").textContent = draft ? `Editing your saved browser draft. The bundled question bank did not load: ${detail}` : detail;
 }
+if (bank) { render(); syncPublishControl(); }
 restoreOriginalsDirectoryHandle();
 initialiseAuth().catch((error) => { recordDiagnostic("author-sign-in", error); console.warn("Author sign-in unavailable.", error); });

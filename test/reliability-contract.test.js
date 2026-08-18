@@ -23,6 +23,19 @@ test("the editor validates with the shared quiz-validation module instead of a p
   assert.doesNotMatch(author, /function validateQuiz/);
 });
 
+test("a saved author draft survives a failed bundled-bank fetch", () => {
+  const boot = author.slice(author.indexOf('startDiagnostics("author")'));
+  // The draft is the author's own unpublished work and does not depend on the
+  // bundled bank, so it must be restored before that fetch can throw.
+  assert.ok(boot.indexOf("restoredDraft()") < boot.indexOf("await fetch(BANK_URL"));
+  // …and the editor must still render on the failure path when a draft exists,
+  // rather than leaving `bank` undefined for renderMediaLibrary to dereference.
+  assert.ok(boot.indexOf("} catch (error) {") < boot.indexOf("if (bank) { render(); syncPublishControl(); }"));
+  // …and the media panel must not dereference an unloaded bank at all.
+  assert.match(author, /const inDraft = !bank \|\| JSON\.stringify\(bank\)\.includes\(asset\.id\);/);
+  assert.match(author, /if \(!asset \|\| !bank \|\| JSON\.stringify\(bank\)\.includes\(assetId\)\) return;/);
+});
+
 test("valid attached images do not depend on the media-library list", () => {
   const preview = author.slice(author.indexOf("function attachedImagePreview"), author.indexOf("function imageReformatButton"));
   assert.match(preview, /validAssetId\(assetId\)/);
