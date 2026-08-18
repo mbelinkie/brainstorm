@@ -282,3 +282,149 @@ export function hostLiveCounts(roomState) {
     players: Array.isArray(roomState?.players) ? roomState.players.length : 0
   };
 }
+// --- Reveal keys -------------------------------------------------------------
+//
+// Two halves of one contract, kept together on purpose. publicRoomState() in
+// app.js publishes the authoritative answer key for the current question once
+// the host reveals it; the answer boards read it back. When those halves are
+// written independently a question type can ship with the key published but no
+// surface reading it -- or, as arrange_in_order did, with no published field at
+// all, while the boards quietly invented a "correct" answer out of whatever
+// question data was in reach (review 2026-08-17, C6 / APP F1: Presentation
+// announced the authored item order and the player's phone announced the
+// player's own submission, both labelled "Correct order", while Supabase had
+// already scored against the real key).
+//
+// This does not move scoring into the browser. These are the same values the
+// scoring RPC used, projected to clients only after the host reveals.
+
+// Every authored question type, mapped to the field of the public room state
+// that carries its answer key. A type missing from this table has no key to
+// reveal, and revealKeyFor() returns null for it rather than guessing.
+export const REVEAL_KEY_FIELDS = {
+  single_choice: "revealedCorrectOptionIds",
+  multiple_choice: "revealedCorrectOptionIds",
+  true_false: "revealedCorrectOptionIds",
+  image_selection: "revealedCorrectOptionIds",
+  short_answer: "revealedTextAnswers",
+  fill_in_the_blank: "revealedTextAnswers",
+  multi_fill_in_the_blank: "revealedMultiBlankAnswers",
+  arrange_in_order: "revealedCorrectOrder",
+  categorize: "revealedCorrectCategories",
+  matching: "revealedCorrectPairs",
+  closest_number: "revealedNumber"
+};
+
+// The revealed* block of publicRoomState(). Every field is always present, so
+// a client can tell "nothing revealed yet" from "revealed and empty" without
+// checking the phase, and every field is empty in every phase but `reveal`.
+export function revealedAnswerKeys(question = {}, phase) {
+  const revealed = phase === "reveal";
+  const firstCorrectOptionId = revealed ? correctOptionId(question) : null;
+  return {
+    revealedCorrectOptionId: firstCorrectOptionId,
+    revealedCorrectOptionIds: revealed ? question.correctOptionIds || (firstCorrectOptionId ? [firstCorrectOptionId] : []) : [],
+    revealedCorrectCategories: revealed && question.type === "categorize" ? question.correctCategories || {} : {},
+    revealedCorrectPairs: revealed && question.type === "matching" ? question.correctPairs || {} : {},
+    revealedMultiBlankAnswers: revealed && question.type === "multi_fill_in_the_blank" ? Object.fromEntries((question.clips || []).map((clip) => [clip.id, clip.acceptedAnswers || []])) : {},
+    revealedCorrectOrder: revealed && question.type === "arrange_in_order" ? question.correctOrder || [] : [],
+    revealedTextAnswers: revealed && ["short_answer", "fill_in_the_blank"].includes(question.type) ? question.acceptedAnswers || question.blanks?.[0]?.acceptedAnswers || [] : [],
+    revealedNumber: revealed && question.type === "closest_number" ? Number(question.targetNumber) : null
+  };
+}
+
+const EMPTY_REVEAL_KEYS = revealedAnswerKeys({}, null);
+
+// The answer key a surface is allowed to render right now.
+//
+// `surface` is "host" for the host's own laptop, which holds the quiz
+// definition and may read the key in any phase, or "client" for a player phone
+// or Presentation, which are projections: they get exactly what the room state
+// published and never recompute a key from the question object they were
+// handed. `revealed` is that published room state.
+export function revealKeyFor(question = {}, phase, surface, revealed = {}) {
+  const field = REVEAL_KEY_FIELDS[question.type];
+  if (!field) return null;
+  if (surface === "host") return revealedAnswerKeys(question, "reveal")[field];
+  return revealed?.[field] ?? EMPTY_REVEAL_KEYS[field];
+}
+
+// --- Presentation remount boundary -------------------------------------------
+//
+// Presentation re-renders only when this key changes, because a re-render is
+// expensive there: it revokes every private-image object URL and re-issues a
+// Worker fetch for each one, and every entrance animation restarts. A field
+// that is not part of what the shared screen currently shows must therefore
+// stay out of the key and, where it is visible at all, be applied in place.
+//
+// mistakes.md #14 asks that every broadcast field be classified structural,
+// visual, or transport-only before it enters this boundary. Six were; four
+// were not, and each of those four remounted the shared screen mid-question
+// (review 2026-08-17, C15 / APP F3).
+
+// Scenes that put the roster or a scoreboard on the shared screen, and so must
+// redraw when `players` changes. Everywhere else -- a question, the locked
+// board, a reveal -- `players` is transport-only, and a late join or a score
+// adjustment must not blank and re-download the question image.
+const PRESENTATION_ROSTER_SCREENS = new Set([
+  "title", // the waiting-room roster
+  "round_end", // roundTransitionCard's end-of-round scoreboard
+  "final_podium", // the top three
+  "final_scores" // the paged final standings
+]);
+
+// The door cards read doorPicks (and doorResults, which is structural and
+// always in the key) only while the doors are the scene.
+const PRESENTATION_DOOR_PHASES = new Set(["door_choice", "door_reveal"]);
+
+export function presenterRenderKey(roomState) {
+  const {
+    // Transport-only. Audio and video cues bump the revision and replace the
+    // command, but a cue is applied to the mounted DOM, never by remounting it.
+    activeClipId,
+    audioCommand,
+    revision,
+    submitted,
+    audioVolume,
+    mediaCommand,
+    // Host navigation history. Presentation never renders it at all.
+    screenHistory,
+    // A fixed overlay appended after the card, not part of the scene. It is
+    // swapped in place, so neither its arrival nor its expiry may remount --
+    // which used to mean a manual score adjustment remounted the reveal twice.
+    scoreNotification,
+    // Visual on some scenes only; re-added below when they are the scene.
+    players,
+    doorPicks,
+    ...visualState
+  } = roomState || {};
+  // `complete` renders the final leaderboard without going through one of the
+  // finale screens, so it needs the roster too.
+  if (PRESENTATION_ROSTER_SCREENS.has(visualState.presentationScreen) || visualState.phase === "complete") visualState.players = players;
+  if (PRESENTATION_DOOR_PHASES.has(visualState.phase)) visualState.doorPicks = doorPicks;
+  return JSON.stringify(visualState);
+}
+
+// --- Standings ---------------------------------------------------------------
+//
+// One ranking rule for every surface that shows a position. Six sites ranked
+// players independently and only three shared rank between tied players, so the
+// exported standings CSV could hand a player a different finishing position
+// from the one the shared screen had just announced (review 2026-08-17, C9;
+// PRODUCT_SPEC.md's standings rule).
+//
+// Ties share the lower rank number and the next rank skips accordingly:
+// 10, 10, 8 points ranks 1, 1, 3.
+export function rankPlayers(players = []) {
+  const sorted = [...players].sort((left, right) => (Number(right.points) || 0) - (Number(left.points) || 0) || String(left.name).localeCompare(String(right.name)));
+  let previousPoints = null;
+  let rank = 0;
+  return sorted.map((player, index) => {
+    const points = Number(player.points) || 0;
+    if (previousPoints === null || points !== previousPoints) rank = index + 1;
+    previousPoints = points;
+    // The player object is passed through untouched; callers that print raw
+    // point values (the CSV export) must keep seeing what they saw before.
+    return { ...player, rank };
+  });
+}

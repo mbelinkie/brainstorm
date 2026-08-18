@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fadeFactor, outputVideoDimensions, validateVideoEdit, clampManualAudioVolumePercent, manualAudioVolumeGain, resolveAudioClipProcessing, audioSourceFileError, MAX_AUDIO_SOURCE_BYTES } from "../video-utils.js";
-import { toPlayerQuestion } from "../quiz-core.js";
+import { presenterRenderKey, toPlayerQuestion } from "../quiz-core.js";
 import { validateQuiz } from "../quiz-validation.js";
 
 const migration = fs.readFileSync(new URL("../supabase/migrations/0032_video_media_assets.sql", import.meta.url), "utf8");
@@ -72,7 +72,9 @@ test("presentation video commands omit assets and do not remount the stage", () 
   assert.doesNotMatch(app.slice(app.indexOf("function publicRoomState"), app.indexOf("function setHostQuestion")), /mediaAssetId/);
   assert.match(app, /presentationVideoPlayer/);
   assert.match(app, /presentationVideoObjectUrl\) URL\.revokeObjectURL/);
-  assert.match(app, /const \{ mediaCommand, \.\.\.visualState \}/);
+  // The render key moved to quiz-core.js; assert the behavior it existed for.
+  const stage = { phase: "open", presentationScreen: "question", questionId: "q1" };
+  assert.equal(presenterRenderKey(stage), presenterRenderKey({ ...stage, mediaCommand: { id: "m-2", kind: "video", action: "play" } }));
 });
 
 test("worker uses only the primary tracks, capability checks, MP4 AVC and fast start", () => {

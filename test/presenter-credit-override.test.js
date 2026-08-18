@@ -7,6 +7,7 @@ const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const author = fs.readFileSync(new URL("../author.js", import.meta.url), "utf8");
 const validation = fs.readFileSync(new URL("../quiz-validation.js", import.meta.url), "utf8");
 const styles = fs.readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const core = fs.readFileSync(new URL("../quiz-core.js", import.meta.url), "utf8");
 
 // --- Resolution rules (the actual behavior, not a source match) -------------
 
@@ -58,7 +59,7 @@ test("both the opening and closing title cards resolve the override against the 
 test("a changed override redraws the presentation screen instead of being filtered out", () => {
   // presenterRenderKey strips only the non-visual fields; anything it does not
   // destructure away stays in the key, so the shared screen repaints on change.
-  const renderKey = app.match(/function presenterRenderKey\(roomState\)[\s\S]*?\n}\n/)?.[0] || "";
+  const renderKey = core.match(/function presenterRenderKey\(roomState\)[\s\S]*?\n}\n/)?.[0] || "";
   assert.notEqual(renderKey, "");
   assert.doesNotMatch(renderKey, /presenterOverride/);
 });

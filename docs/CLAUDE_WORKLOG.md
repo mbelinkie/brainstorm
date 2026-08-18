@@ -703,12 +703,9 @@ $ npm test        # after the fix
 ℹ tests 161
 ℹ pass 161
 ## 2026-08-18 — Cheap independent tests, the sample fixture, and the product spec
-
 - **Branch:** `claude/tests-and-spec`, worktree `quiz-tests-and-spec`, based on `b58adb7`. One of four parallel worktrees; this was batch **G** of `docs/reviews/2026-08-17-consolidated-plan.md` §4 — findings C30, C27, the fixture half of C18, and the fixture entry of C32. Deliberately the lowest-risk batch: no runtime code, no migrations. `app.js`, `author.js`, `quiz-core.js`, `quiz-validation.js`, `cloudflare-worker.js`, and `supabase/migrations/` were read but never modified.
 - **Baseline correction.** The plan records `b58adb7` as 158 tests / 158 pass. In a clean worktree it is **149 tests, 148 pass, 1 fail**. The nine-test difference is `test/image-engine.test.js`, an untracked in-flight slice that exists only in the main checkout; the failure is `deploy-manifest.test.js` looking for the git-ignored `video-processor.worker.bundle.js`. The 2026-08-17 worklog entry above records copying that bundle in from the main checkout to work around it. That workaround should no longer be needed — see below.
-
 ### What landed
-
 - `quiz.sample.json` — rounds 2, 3, and 4 had `"questions": []` and the matching finale had `"correctPairs": {}`. Filled all four. Rounds gained three questions each, chosen to widen type coverage from two types to nine (single choice, true/false, categorize, multiple choice, closest number, fill-in-the-blank, short answer, arrange-in-order, matching). Image selection and multi-blank were left out because both need real private media assets. The "Finish the Lyric" round is authored as song-title completion rather than lyric fragments; the real bundled bank already carries the actual lyric round.
 - `test/quiz-fixtures.test.js` — new, 12 tests. Both fixtures through `validateQuiz`, a no-empty-round assertion, an answer-key-leak check over `toPlayerQuestion` at every nesting depth, an asset-ID sentinel check, a per-question scoring round trip against `tallyQuestionResults`, and a guard on artwork attached to `items`/`categories`.
 - `test/migration-hygiene.test.js` — new, 2 tests. Migration prefixes unique, contiguous, starting at 0001. Worker table reads (including PostgREST `select=` embeds) checked against `grant select on table … to service_role` in the migrations.
@@ -716,14 +713,89 @@ $ npm test        # after the fix
 - `test/scoring-contract.test.js`, `test/late-join-bonus.test.js`, `test/door-bonus.test.js` — ten test names relabelled `migration presence:` / `source presence:`, plus a header in each explaining they are change detectors, not behavioral proofs. No assertion changed.
 - `PRODUCT_SPEC.md` — §3, §4, §5, §6, §7, §9, §11 corrected; new §7 "Score modifiers" and new §19 for shipped-but-unspecified features.
 - `CLAUDE.md` — the "no asset IDs" player-privacy invariant amended to match the shipped, `0029`-endorsed design.
-
 ### Commands actually run
+ℹ tests 165
+ℹ pass 165
+## 2026-08-18 — Presentation correctness (consolidated-plan batch D, plus C7)
+
+- **Branch:** `claude/presentation-correctness`, from `b58adb7`. Worker session in the
+  `quiz-presentation-correctness` worktree; held `app.js` exclusively for this round.
+- **Slice:** findings C17, C6, C15, C9 from `docs/reviews/2026-08-17-consolidated-plan.md`
+  (batch D), plus the **minimum-acceptable half of C7** added mid-session, because the quiz
+  being played live today contains a `closest_number` question and C8 (no `select` grant on
+  `session_players`) may already be breaking that route in production.
+- **Commit order was deliberate.** C17 and C7 are each standalone commits touching regions
+  no other commit in this branch touches, so either can be cherry-picked onto `main` alone
+  before a show. Verified this rather than assuming it: cloned the worktree to a scratch
+  directory, checked out `b58adb7`, and cherry-picked `cc18475` and `5256d44` each on their
+  own — both applied cleanly, and C7's tests passed there. The scratch clone was thrown
+  away; nothing was pushed, merged, or rebased, and the main checkout was never touched.
+
+### What changed, per finding
+
+- **C17 (`cc18475`) — `app.js`, one line.** `matchingBoard`'s empty-pool branch was a
+  single-quoted string, so `${showingMatches ? …}` was never interpolated, and the
+  `unassigned.length && !presenter` guard is always falsy on Presentation — the audience saw
+  the raw source text for the whole question. Backticked it.
+- **C6 (`58cbb47`) — `app.js`, `quiz-core.js`.** `publicRoomState()` published a revealed
+  answer key for every type except `arrange_in_order`, and `toPlayerQuestion()` does not copy
+  `correctOrder`, but `orderBoard` read `question.correctOrder` regardless. Presentation
+  therefore fell through `orderedItems`' `999` fallback to the authored `items` order, and a
+  player's phone showed that player's own submitted order — both under "Correct order", while
+  Supabase had scored the real key. Added `revealedCorrectOrder`, and moved the whole
+  `revealed*` block to `quiz-core.js` as `revealedAnswerKeys()`, paired with
+  `revealKeyFor(question, phase, surface, revealed)`: host reads the definition, player and
+  Presentation render only what was published. `REVEAL_KEY_FIELDS` covers `author.js`'s
+  11-type allowlist and a test asserts that, so the next type cannot ship with one surface
+  missing. A locked player now reads "Locked in — waiting for the reveal."
+- **C7, minimum fix only (`5256d44`) — `app.js`.** `closestNumberResultEntries()` fell back to
+  `realtimeClosestNumberGuesses` — only the submission broadcasts this tab happened to
+  receive — whenever the authoritative Worker fetch had not succeeded, and
+  `closestNumberResultsBoard()` re-derived the ranking, the tie set and the ★ from that
+  subset. It now returns `null` when the authoritative list is not loaded, and the board
+  renders an explicit state instead of a ranking. "Not loaded", "failed to load" and "nobody
+  guessed" are three separate messages now rather than two.
+- **C15 (`08db2cc`) — `app.js`, `quiz-core.js`.** `presenterRenderKey` moved to `quiz-core.js`
+  and now excludes `screenHistory` and `scoreNotification` outright, and scopes `players` and
+  `doorPicks` to the scenes that actually render them. `players` is kept for `title`,
+  `round_end`, `final_podium`, `final_scores` **and phase `complete`** — the review's field
+  list omits `complete`, but `renderPresenter` renders `presentationLeaderboard` there without
+  going through a finale screen. `doorPicks` is kept for `door_choice`/`door_reveal`, where
+  `doorChoiceCards()` reads it. Added `updatePresenterScoreCelebration()` so the toast is
+  swapped in place rather than lost along with its remount.
+- **C9 (`9721e12`) — `app.js`, `quiz-core.js`.** `rankPlayers()` in `quiz-core.js` is now the
+  single ranking rule; the CSV export, host panel, Presentation scoreboard, player
+  mini-leaderboard, final-scores pages and `playerFinale`'s own-finish position all use it.
+  The host panel's "Holding the lead" caption followed position too and now follows rank.
+
+### Tests
+
+New: `test/presentation-boards.test.js`, `test/closest-number-board.test.js`,
+`test/presentation-render-key.test.js`, `test/standings-consistency.test.js`; extended
+`test/quiz-core.test.js`.
+
+Several existing tests in this area assert against `app.js` **source text** with regexes and
+would have passed regardless of these fixes — `presentation-layout.test.js`'s regexes matched
+C17's uninterpolated literal happily. `app.js` cannot be imported under node (top-level DOM
+side effects), so the new tests lift the functions under test out of `app.js` by name and
+evaluate them against stubs for the module-level bindings. That renders real markup, which is
+what these findings are about.
+
+Three existing tests sliced `app.js` using `function presenterRenderKey` as a boundary and
+broke when it moved. `test/reliability-contract.test.js` and `test/video-clips.test.js` had
+their render-key assertions rewritten as behavioral ones against the imported function;
+`test/door-bonus.test.js:66` and two `reliability-contract` slices were repointed at the next
+marker. **`door-bonus.test.js:66` would have silently passed vacuously** once its boundary
+vanished (`app.match(...)?.[0] || ""`), so I re-ran it and confirmed the regex still matches
+1,291 characters rather than leaving it green and empty.
+
+- **Commands actually run:**
 
 ```
 $ npm test
-ℹ tests 165
+ℹ tests 189
 ℹ suites 0
-ℹ pass 165
+ℹ pass 189
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
@@ -748,36 +820,86 @@ The 1 baseline failure was `test/deploy-manifest.test.js` — `author.js referen
 Verified the new tests actually fail without the fix, per TDD: restored `app.js` and `quiz-core.js` from `HEAD` into the worktree (backing my versions up to the scratchpad first, then copying them back) and re-ran the two test files — 4 structural tests in `player-logo.test.js` failed and `quiz-core.test.js` failed to load at all on the missing imports. Also confirmed the behavioural delta directly: with a store holding room `ABC123` last active one hour ago, a TTL-only lookup returns `"Belinkie"` for room `XYZ789` (the bug) while `playerIdentityForRoom()` returns `null`, and the same-room lookup still returns `"Belinkie"`.
 ### Not regressed
 `test/player-logo.test.js`'s Android join-screen logo-layout test (commit `6532ffc`, the `min-height: 0` grid-row collapse) is untouched and passes; my change touches no CSS. The auto-submit test ("auto-submit skips a selection after its question has closed or changed") passes. Two pre-existing string-matching assertions in `player-logo.test.js` referenced storage mechanisms this change removes (`savePlayerValue("musicTriviaPlayerId", playerId)`, `savePlayerValue("quizPlayerLogoKey", playerLogoKey)`, and the `PLAYER_SESSION_ACTIVITY_KEY` wiring); I rewrote those assertions onto the new mechanism while keeping each test's original intent, and the behavioural guarantees they were proxying for are now covered by real unit tests in `quiz-core.test.js` instead of string matching.
-### Could not verify
 - **No real device, no live room.** Everything is a `localStorage` model verified in unit tests plus structural assertions that `app.js` is wired in the right order. I did not open the app on a phone, scan a QR code, or watch a join screen appear. The manual steps to confirm are in the handoff.
 - **The legacy migration path on a device that actually holds legacy keys.** The gate is asserted structurally and its TTL-carryover behaviour is unit-tested through `writePlayerIdentityForRoom()`, but I could not exercise a real phone whose storage predates this change. This is the highest-value thing for the user to spot-check on a handset that played before the deploy.
 - **The `PLAYER_IDENTITY_ROOM_LIMIT` cap of 8.** A judgment call. Visiting a room writes an entry even before a name is chosen, so casually opening several room URLs inside one TTL window consumes slots; 8 is far above any realistic quiz night, and eviction is least-recently-active first, but the number is not derived from data.
 - Did not touch `supabase/migrations/` — this is entirely client-side join-screen gating, no schema or server change.
 ℹ duration_ms 388.194411
-```
-
 Both `validateQuiz` implementations were run over both fixtures from a scratch script (`author.js` exports nothing, so its private copy was extracted and evaluated for verification only, not committed):
-
-```
 === quiz.sample.json ===        before          after
 quiz-validation.js : 3 errors  →  []
 author.js copy     : 4 errors  →  []
 === music-trivia.question-bank.json ===
 both                : []       →  []
-```
-
 The fourth error in the shipped validator — `Round 5, question 1 needs complete clips, options, pair key, and positive points per pair` — is the empty `correctPairs`, and it is **not in any of the four review reports**. All four ran only `quiz-validation.js`, whose matching rule checks `!item.correctPairs` and so accepts `{}`.
-
 ### Verified the new tests discriminate
-
 - Mutated a scratch copy of `quiz.sample.json` (emptied a round, planted artwork on an ordering card, added an option asset ID): four of the six fixture tests failed, and passed again on restore.
 - Planted `sb_secret_…` in `assets/kaplan-k.svg`: `no shipped file carries a secret` failed, proving the walk reaches nested directory entries. Removed.
 - The secret scan also asserts its own patterns still match a known-bad sample, so it cannot pass by matching nothing.
-
 ### What remains unproven
-
 - **Nothing here was run in a browser or a live room.** The sample quiz is proven to validate and to score its own answer keys through the shared helpers. It was **not** loaded into a host session and played through, so the C18 host dead-end is proven closed only for the fixture, not for the `startRound` code path that produced it — that half belongs to whoever owns `app.js`.
 - **The trivia answers in the new sample questions are not independently fact-checked by any test.** `quiz-fixtures.test.js` derives the correct answer from the key, so a wrong-but-coherent key passes. The test comment says so.
 - **`test/quiz-fixtures.test.js` imports `quiz-validation.js`**, which is the module `prepare-deploy.mjs` ships and the existing tests use — but *not* the copy the editor runs on Publish. Both accept both fixtures today. When the two validators are merged (C19), re-point that import.
 - **`migration-hygiene.test.js` pins one open defect rather than fixing it.** `session_players` is embedded by the closest-number guess board and granted to `service_role` by no migration. Closing it needs a migration number, which only Matthew assigns. The assertion is an exact match on the missing set, so it will fail when the grant lands and the exception is left behind.
 - **`RUNBOOK.md` is now slightly stale.** It describes `quiz.sample.json` as containing "Placeholders for the five planned rounds." That file is outside this batch's ownership and was not edited.
+ℹ duration_ms 419.449388
+```
+
+  Baseline in this worktree was 149/149, not the plan's 158 — the extra 9 are
+  `test/image-engine.test.js`, another agent's untracked slice, which is not in this
+  worktree. Same pre-existing `deploy-manifest.test.js` failure as the 2026-08-17 session
+  (no `node_modules`, no git-ignored `video-processor.worker.bundle.js` in a fresh
+  worktree); copied the already-built bundle from the main checkout to unblock a clean run,
+  exactly as that session did. Nothing installed, `package-lock.json` untouched.
+
+  Every fix was proven to fail first. For C6, C7 and C17 the new tests were written and run
+  red before the patch. For C15 and C9, where the tests are new files, I re-ran them against
+  the **pre-change** code in the scratch clone at `b58adb7`: C9's suite failed 5 of 6 there
+  (only the CSV, already tie-aware, passed), and the four C15 remount paths were confirmed
+  against a verbatim copy of the old `presenterRenderKey`.
+
+  For C6 I also had to be sure moving `publicRoomState()`'s `revealed*` block did not change
+  what it publishes: compared `revealedAnswerKeys()` against a verbatim copy of the seven old
+  expressions across 780 question-shape × phase combinations — 0 differences.
+
+### Deliberately not done
+
+- **C7's real fix.** `/host-closest-number-guesses` should return the server's
+  `winningDistance`/`isWinner`/`points` per row so Presentation only renders them. That needs
+  `cloudflare-worker.js` (not mine this round) and a deploy. The minimum fix turns a
+  confident wrong answer into an honest failure; it does not make the board work when the
+  route is down. **C8's missing `grant select on public.session_players to service_role` is
+  still unfixed and is the thing most likely to trigger this path today.**
+- `realtimeClosestNumberGuesses` is still populated but no longer read. Left in place as the
+  raw material for that later fix rather than removed as drive-by cleanup.
+- **C9, final-scores pager.** Row ranks are tie-aware; the pager's
+  `data-final-score-first-rank`/`-last-rank` attributes stay positional, because the status
+  line means "Ranks 1–10 of 23" as a count of entries shown. Making those tie-aware would
+  also require reworking the pager's total (the last page's last rank is no longer the player
+  count when the tail is tied), in a `setTimeout`-driven DOM path I cannot exercise here.
+- **The podium.** `finalPodiumCard`'s three places are a layout (2nd, 1st, 3rd blocks), not a
+  ranking, so tied leaders still occupy separate plinths. Changing that is a design decision.
+- Did not touch `author.js`, `quiz-validation.js`, `supabase/migrations/`,
+  `cloudflare-worker.js`, `quiz.sample.json`, `PRODUCT_SPEC.md`, `CLAUDE.md`, or
+  `styles.css`. No migration was added. `docs/reviews/2026-08-17-consolidated-plan.md` is
+  untracked reference material and was left unstaged.
+
+### Could not verify
+
+- **Nothing here was checked in a browser.** No live room, no shared screen, no phone. All
+  five fixes are proven by rendering functions in node and asserting on markup, not by
+  looking at them. Per `RUNBOOK.md`, the things most worth a human glance are:
+  - the matching clip pool actually reading "Listen for each clip" / "All items placed" (C17);
+  - an `arrange_in_order` reveal on both Presentation and a phone (C6) — note that neither
+    bundled fixture contains one, so this needs an authored question;
+  - **the celebration toast still appearing and disappearing on Presentation after a manual
+    score adjustment (C15).** This is the riskiest unverified change: the toast left the
+    render key, so it now depends entirely on `updatePresenterScoreCelebration()` inserting
+    and removing `.score-celebration` inside `.presentation-main`. If that is wrong, the
+    toast silently stops showing on the shared screen. It builds the same DOM
+    `renderPresenter` would and adds no wrapper element, so no CSS change was needed — but it
+    has never been seen running;
+  - the question image *not* blanking when a late player joins mid-question (C15);
+  - a tied final scoreboard on the shared screen next to the exported CSV (C9).
+- The closest-number "could not be loaded" state is unproven against a real failing Worker;
+  it is proven only against a simulated failed fetch in the unit test.

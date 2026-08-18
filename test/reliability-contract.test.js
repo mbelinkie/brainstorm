@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
+import { presenterRenderKey } from "../quiz-core.js";
+
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const author = fs.readFileSync(new URL("../author.js", import.meta.url), "utf8");
 const authorHtml = fs.readFileSync(new URL("../author.html", import.meta.url), "utf8");
@@ -196,7 +198,7 @@ test("player title and fallback intermission screens hide the active question un
 });
 
 test("manual score changes redraw player scoreboards and notify player screens", () => {
-  const playerKey = app.slice(app.indexOf("function playerRenderKey"), app.indexOf("function presenterRenderKey"));
+  const playerKey = app.slice(app.indexOf("function playerRenderKey"), app.indexOf("localChannel.onmessage"));
   const shell = app.slice(app.indexOf("function shell"), app.indexOf("function brandTopbar"));
   assert.match(playerKey, /players: roomState\?\.players/);
   assert.match(playerKey, /scoreNotification: roomState\?\.scoreNotification/);
@@ -250,7 +252,8 @@ test("all correct choices are highlighted on multi-select reveal", () => {
 });
 
 test("player ignores presentation-only audio state changes", () => {
-  const key = app.slice(app.indexOf("function playerRenderKey"), app.indexOf("function presenterRenderKey"));
+  const start = app.indexOf("function playerRenderKey");
+  const key = app.slice(start, app.indexOf("\n}\n", start) + 3);
   assert.doesNotMatch(key, /audioCommand/);
   assert.doesNotMatch(key, /activeClipId/);
 });
@@ -275,12 +278,18 @@ test("finale reveal titles and door odds remain legible on the presentation scre
 
 test("presenter applies audio-only updates without remounting the shared screen", () => {
   const receive = app.slice(app.indexOf("function receive"), app.indexOf("function playerRenderKey"));
-  const key = app.slice(app.indexOf("function presenterRenderKey"), app.indexOf("localChannel.onmessage"));
   assert.match(receive, /priorPresenterRenderKey/);
   assert.match(receive, /updatePresenterActiveClipState\(\)/);
   assert.match(receive, /applyPresentationAudioCommand\(\)/);
-  assert.match(key, /activeClipId, audioCommand, revision, submitted/);
-  assert.match(key, /JSON\.stringify\(visualState\)/);
+  // presenterRenderKey now lives in quiz-core.js, so assert what the regex on
+  // its source was standing in for: none of the audio transport fields may
+  // change the key. Scene-by-scene coverage is in
+  // test/presentation-render-key.test.js.
+  const scene = { phase: "open", presentationScreen: "question", questionId: "q1" };
+  assert.equal(
+    presenterRenderKey(scene),
+    presenterRenderKey({ ...scene, activeClipId: "clip-2", audioCommand: { id: "cmd-2", action: "play" }, audioVolume: 0.4, revision: 12, submitted: { p1: "a" } })
+  );
 });
 
 test("host navigation uses one next and previous control for keys, arrows, and visible buttons", () => {

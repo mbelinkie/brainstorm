@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, resolvePresenterCredit, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -181,13 +181,10 @@ function publicRoomState() {
     revision: state.revision || 0,
     questionId: hostQuestion.id,
     question: playerQuestion,
-    revealedCorrectOptionId: state.phase === "reveal" ? correctOptionId(hostQuestion) : null,
-    revealedCorrectOptionIds: state.phase === "reveal" ? hostQuestion.correctOptionIds || (correctOptionId(hostQuestion) ? [correctOptionId(hostQuestion)] : []) : [],
-    revealedCorrectCategories: state.phase === "reveal" && hostQuestion.type === "categorize" ? hostQuestion.correctCategories || {} : {},
-    revealedCorrectPairs: state.phase === "reveal" && hostQuestion.type === "matching" ? hostQuestion.correctPairs || {} : {},
-    revealedMultiBlankAnswers: state.phase === "reveal" && hostQuestion.type === "multi_fill_in_the_blank" ? Object.fromEntries((hostQuestion.clips || []).map((clip) => [clip.id, clip.acceptedAnswers || []])) : {},
-    revealedTextAnswers: state.phase === "reveal" && ["short_answer", "fill_in_the_blank"].includes(hostQuestion.type) ? hostQuestion.acceptedAnswers || hostQuestion.blanks?.[0]?.acceptedAnswers || [] : [],
-    revealedNumber: state.phase === "reveal" && hostQuestion.type === "closest_number" ? Number(hostQuestion.targetNumber) : null,
+    // One published answer-key block per question type, built in quiz-core.js
+    // so a type cannot reach the reveal with no key for the clients to render.
+    // Every field is empty in every phase but "reveal".
+    ...revealedAnswerKeys(hostQuestion, state.phase),
     timerEndsAt: state.timerEndsAt || null,
     timerDurationSeconds: state.timerDurationSeconds || null,
     activeClipId: state.activeClipId || null,
@@ -679,6 +676,7 @@ function receive(message) {
     }
     else if (view === "presenter") {
       updatePresenterActiveClipState();
+      updatePresenterScoreCelebration();
       if (presentationAudioArmed) applyPresentationAudioCommand().catch((error) => console.warn("Presentation clip unavailable.", error));
       if (presentationMediaArmed) applyPresentationMediaCommand().catch((error) => console.warn("Presentation video unavailable.", error));
     }
@@ -702,6 +700,7 @@ function playerRenderKey(roomState) {
     revealedCorrectCategories: roomState?.revealedCorrectCategories,
     revealedCorrectPairs: roomState?.revealedCorrectPairs,
     revealedMultiBlankAnswers: roomState?.revealedMultiBlankAnswers,
+    revealedCorrectOrder: roomState?.revealedCorrectOrder,
     revealedTextAnswers: roomState?.revealedTextAnswers,
     revealedNumber: roomState?.revealedNumber,
     doorBonus: roomState?.doorBonus,
@@ -715,16 +714,6 @@ function playerRenderKey(roomState) {
     players: roomState?.players,
     scoreNotification: roomState?.scoreNotification
   });
-}
-
-function presenterRenderKey(roomState) {
-  // Audio controls increment the server revision and replace audioCommand, but
-  // neither change is visual. Keep the presentation DOM mounted so a host cue
-  // cannot flash the shared screen while still applying the command above.
-  const { activeClipId, audioCommand, revision, submitted, ...withAudioVolume } = roomState || {};
-  const { audioVolume, ...withMediaCommand } = withAudioVolume;
-  const { mediaCommand, ...visualState } = withMediaCommand;
-  return JSON.stringify(visualState);
 }
 
 // A phone tap, a keystroke in a multi-blank answer, a late join or a door pick
@@ -1296,9 +1285,22 @@ function orderedItems(question, positions = selectedObject()) {
 
 function orderBoard(question, player, presenter = false) {
   const enabled = player && state.phase === "open";
-  const showingCorrectOrder = !presenter || state.phase === "reveal";
-  const items = orderedItems(question, player ? selectedObject() : showingCorrectOrder ? Object.fromEntries((question.correctOrder || []).map((id, index) => [id, index + 1])) : Object.fromEntries((question.items || []).map((item, index) => [item.id, index + 1])));
-  return `<div class="drag-board" data-drag-board="order"><p class="drag-help">${enabled ? "Drag cards into the order you think is right." : showingCorrectOrder ? "Correct order" : "Put these in order on your phone."}</p><div class="drag-sort-list" data-drop-zone="order">${items.map((item, index) => `<div class="drag-order-row"><span class="drag-position">${showingCorrectOrder ? index + 1 : "•"}</span>${dragCard(item, "order", enabled)}</div>`).join("")}</div></div>`;
+  // The correct order is authoritative state. The host reads it from the quiz
+  // definition; a player phone and Presentation get only what the room state
+  // published at the reveal, and never reconstruct one from the question they
+  // were handed -- which is how the shared screen came to announce the
+  // authored item order, and a phone the player's own answer, as "Correct
+  // order" while Supabase had scored against the real key.
+  const correctOrder = revealKeyFor(question, state.phase, player || presenter ? "client" : "host", state) || [];
+  const showingCorrectOrder = correctOrder.length > 0;
+  const positions = showingCorrectOrder ? Object.fromEntries(correctOrder.map((id, index) => [id, index + 1])) : player ? selectedObject() : Object.fromEntries((question.items || []).map((item, index) => [item.id, index + 1]));
+  const items = orderedItems(question, positions);
+  // A player always sees their own cards numbered, because that ordering is
+  // their answer; the shared screen numbers cards only once the order shown is
+  // the correct one.
+  const numbered = showingCorrectOrder || Boolean(player);
+  const help = enabled ? "Drag cards into the order you think is right." : showingCorrectOrder ? "Correct order" : player ? "Locked in — waiting for the reveal." : "Put these in order on your phone.";
+  return `<div class="drag-board" data-drag-board="order"><p class="drag-help">${help}</p><div class="drag-sort-list" data-drop-zone="order">${items.map((item, index) => `<div class="drag-order-row"><span class="drag-position">${numbered ? index + 1 : "•"}</span>${dragCard(item, "order", enabled)}</div>`).join("")}</div></div>`;
 }
 
 function matchingBoard(question, player, presenter = false) {
@@ -1310,7 +1312,7 @@ function matchingBoard(question, player, presenter = false) {
   const unassigned = (question.clips || []).filter((clip) => !assignedClipIds.has(clip.id));
   const helper = enabled ? (hasTargetImages ? "Drag each song title onto its matching movie poster." : "Match each item to a choice.") : showingMatches ? "Correct matches" : "";
   const helperMarkup = helper ? `<p class="drag-help">${helper}</p>` : "";
-  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching">${helperMarkup}<div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : '<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>'}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const playbackClip = (question.clips || [])[index]; const isActiveIntro = presenter && !showingMatches && playbackClip?.id === state.activeClipId; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder" data-matching-playback-status="${escapeHtml(playbackClip?.id || "")}">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "?"}</span>`}</div>`; }).join("")}</div></div>`;
+  return `<div class="drag-board ${hasTargetImages ? "" : "matching-board--text-only"} ${showingMatches ? "" : "matching-board--concealed"}" data-drag-board="matching">${helperMarkup}<div class="drag-pool" data-drop-zone="matching-pool">${unassigned.length && !presenter ? unassigned.map((clip) => dragCard(clip, "matching", enabled)).join("") : `<span class="drag-empty">${showingMatches ? "All items placed" : "Listen for each clip"}</span>`}</div><div class="drag-slots">${(question.options || []).map((option, index) => { const clip = (question.clips || []).find((entry) => assignments[entry.id] === option.id); const playbackClip = (question.clips || [])[index]; const isActiveIntro = presenter && !showingMatches && playbackClip?.id === state.activeClipId; const targetImage = hasTargetImages ? (option.imageAssetId ? `<img class="matching-target-image" data-private-image="${escapeHtml(option.imageAssetId)}" alt="${escapeHtml(option.label)} poster" />` : '<span class="matching-target-fallback">Image unavailable</span>') : ""; const label = showingMatches || hasTargetImages ? escapeHtml(option.label) : String(index + 1); return `<div class="drag-slot matching-target-slot ${isActiveIntro ? "is-playing-intro" : ""}" data-drop-zone="matching-slot" data-option-id="${escapeHtml(option.id)}"><div class="matching-target">${targetImage}<span class="drag-slot-label">${label}</span></div>${clip ? dragCard(clip, "matching", enabled, { assigned: true }) : `<span class="drag-placeholder" data-matching-playback-status="${escapeHtml(playbackClip?.id || "")}">${isActiveIntro ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : showingMatches ? String(index + 1) : "?"}</span>`}</div>`; }).join("")}</div></div>`;
 }
 
 function matchingSelectBoard(question) {
@@ -1350,6 +1352,27 @@ function updateMultiBlankPlayingState() {
     const status = row.querySelector("[data-multi-blank-playback-status]");
     if (status) status.innerHTML = isPlaying ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : "Listen closely";
   });
+}
+
+// The celebration toast is a fixed overlay appended after the scene card, so it
+// is no longer part of the presentation render key -- a manual score adjustment
+// used to remount the reveal twice, once on the adjustment and again when the
+// notification expired 6,600 ms later. Swap it in place instead, producing the
+// same DOM renderPresenter() would have.
+function updatePresenterScoreCelebration() {
+  const main = document.querySelector(".presentation-main");
+  if (!main) return;
+  const existing = main.querySelector(".score-celebration");
+  const markup = scoreCelebration();
+  if (!markup) {
+    existing?.remove();
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const next = template.content.firstElementChild;
+  if (existing) existing.replaceWith(next);
+  else main.append(next);
 }
 
 function updatePresenterActiveClipState() {
@@ -1430,14 +1453,26 @@ function closestNumberTarget() {
   return presenterQuestionDefinition()?.targetNumber ?? hostQuestion.targetNumber ?? state.revealedNumber;
 }
 
+// The server's full set of guesses for this question, or null when the
+// authoritative fetch has not succeeded for it.
+//
+// This used to fall back to realtimeClosestNumberGuesses, which holds only the
+// submission broadcasts this tab happened to receive while it was open on this
+// question -- a Presentation tab opened mid-question, or one that reconnected,
+// holds a subset. The board built on top of this ranks players, prints the ★
+// and decides the tie set, all of which 0017_closest_number_scoring.sql already
+// computed from every submission. Ranking a subset put a confident wrong winner
+// on the shared screen while the points went to a player who was not even on
+// the board. Returning null lets the board say it could not load rather than
+// answer from a partial list.
 function closestNumberResultEntries(questionId = state.questionId || state.question?.id) {
-  if (closestNumberGuessesQuestionId === questionId) return closestNumberGuesses;
-  return realtimeClosestNumberGuessesQuestionId === questionId ? [...realtimeClosestNumberGuesses.values()] : [];
+  return closestNumberGuessesQuestionId === questionId ? closestNumberGuesses : null;
 }
 
 function closestNumberResultsBoard() {
   const target = closestNumberDecimal(closestNumberTarget());
-  const rawEntries = closestNumberResultEntries()
+  const loadedEntries = closestNumberResultEntries();
+  const rawEntries = (loadedEntries || [])
     .map((entry) => ({ ...entry, decimal: closestNumberDecimal(entry.guess) }))
     .filter((entry) => entry.decimal && target);
   const scale = Math.max(target?.scale || 0, ...rawEntries.map((entry) => entry.decimal.scale));
@@ -1456,10 +1491,14 @@ function closestNumberResultsBoard() {
     const direction = entry.distance === 0n ? "Exact match" : `${formatClosestDecimal(entry.distance, scale)} ${entry.units < targetUnits ? "below" : "above"}`;
     return `<li class="closest-match-row ${winner ? "is-winner" : ""}" style="--guess-index:${index}"><span class="closest-match-place">${winner ? "★" : rank}</span>${playerLogoMarkup({ logoKey: entry.logoKey }, "player-logo--closest-match")}<strong>${escapeHtml(entry.playerName)}</strong><b>${escapeHtml(formatClosestDecimal(entry.units, scale))}</b><small>${escapeHtml(direction)}</small>${winner ? '<em>Closest!</em>' : ""}</li>`;
   }).join("");
+  // "Not loaded", "failed to load" and "nobody guessed" are three different
+  // things and only the last one may be stated as a result.
   const content = rows
     ? `<ol class="closest-match-list">${rows}</ol>`
-    : closestNumberGuessesError
-      ? '<p class="closest-match-empty">Guesses could not be loaded. Please try again.</p>'
+    : loadedEntries === null
+      ? closestNumberGuessesError
+        ? '<p class="closest-match-empty">Guesses could not be loaded. Please try again.</p>'
+        : '<p class="closest-match-empty">Loading guesses…</p>'
       : '<p class="closest-match-empty">No valid guesses were submitted.</p>';
   const targetLabel = target ? formatClosestDecimal(targetUnits, scale) : "—";
   return `<section class="closest-match-results" data-closest-match-results aria-live="polite"><header><div><p class="eyebrow">Closest match</p><h3>Actual number <strong>${escapeHtml(targetLabel)}</strong></h3></div>${entries.length ? `<span>${entries.filter((entry) => entry.distance === winnerDistance).length > 1 ? "Tied winners" : "Winning guess"}</span>` : ""}</header>${content}</section>`;
@@ -1844,10 +1883,11 @@ async function loadPrivateImage(image) {
 }
 
 // Split from leaderboard() so patchHostLiveRegions() can refresh the standings
-// in place. The rows carry no listeners, so replacing them is safe.
+// in place. The rows carry no listeners, so replacing them is safe. Ranks come
+// from rankPlayers() so tied players share a place on every standings surface.
 function leaderboardRows() {
-  const players = [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
-  return players.map((p, i) => `<div class="leader"><span class="place">${i + 1}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${i === 0 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("");
+  const players = rankPlayers(state.players);
+  return players.map((p) => `<div class="leader"><span class="place">${p.rank}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${p.rank === 1 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("");
 }
 
 function leaderboard() {
@@ -1885,14 +1925,7 @@ function csvCell(value) {
 }
 
 function resultsCsv(players) {
-  const sorted = [...players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
-  let priorPoints = null;
-  let rank = 0;
-  const rows = sorted.map((player, index) => {
-    if (priorPoints === null || Number(player.points) !== priorPoints) rank = index + 1;
-    priorPoints = Number(player.points);
-    return [rank, player.name, player.points].map(csvCell).join(",");
-  });
+  const rows = rankPlayers(players).map((player) => [player.rank, player.name, player.points].map(csvCell).join(","));
   return [["Rank", "Display name", "Points"].map(csvCell).join(","), ...rows].join("\n") + "\n";
 }
 
@@ -2006,15 +2039,11 @@ function scoreCelebration() {
 }
 
 function presentationLeaderboard({ final = false } = {}) {
-  const players = [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
+  const players = rankPlayers(state.players);
   if (!players.length) return `<section class="presentation-leaderboard-card is-empty"><p class="eyebrow">${final ? "Final standings" : "Scoreboard"}</p><h2>${final ? "The final scores are on their way." : "The scoreboard will appear as players join."}</h2></section>`;
-  let previousPoints = null;
-  let rank = 0;
   const visiblePlayers = players.slice(0, final ? 10 : 4);
   const rows = visiblePlayers.map((player, index) => {
-    const points = Number(player.points) || 0;
-    if (previousPoints === null || points !== previousPoints) rank = index + 1;
-    previousPoints = points;
+    const rank = player.rank;
     const medal = rank === 1 ? "★" : rank === 2 ? "◆" : rank === 3 ? "●" : String(rank);
     return `<li class="presentation-leader presentation-leader--${rank <= 3 ? rank : "other"}" style="--leader-delay:${0.12 + index * 0.07}s"><span class="presentation-place">${medal}</span>${playerLogoMarkup(player, "player-logo--presentation")}<strong>${escapeHtml(player.name)}</strong><span class="presentation-points">${points} <small>pts</small></span></li>`;
   }).join("");
@@ -2063,7 +2092,7 @@ function presentationTitlePage() {
 }
 
 function rankedPlayers() {
-  return [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
+  return rankPlayers(state.players);
 }
 
 function confettiMarkup(count = 52) {
@@ -2106,8 +2135,10 @@ function finalScoreTitlePage() {
     ? `<div class="presentation-final-score-pager" data-final-score-pager data-final-score-pager-key="${escapeHtml(pagerKey)}"><p class="presentation-final-score-page-status" data-final-score-page-status>Ranks 1–${Math.min(FINAL_SCORE_PAGE_SIZE, players.length)} of ${players.length}</p>${pages.map((page, pageIndex) => {
       const firstRank = pageIndex * FINAL_SCORE_PAGE_SIZE + 1;
       const lastRank = firstRank + page.length - 1;
-      const rows = page.map((player, index) => {
-        const rank = firstRank + index;
+      const rows = page.map((player) => {
+        // Tied players share a rank; firstRank/lastRank below stay positional
+        // because the pager's status line counts entries shown, not ranks.
+        const rank = player.rank;
         return `<li class="presentation-final-score presentation-final-score--${rank}"><span>${rank}</span>${playerLogoMarkup(player, "player-logo--final-score")}<strong>${escapeHtml(player.name)}</strong><b>${Number(player.points) || 0}<small> pts</small></b></li>`;
       }).join("");
       return `<ol class="presentation-final-score-list ${pageIndex === 0 ? "is-active" : ""}" data-final-score-page data-final-score-first-rank="${firstRank}" data-final-score-last-rank="${lastRank}">${rows}</ol>`;
@@ -2228,15 +2259,15 @@ function renderPresenter() {
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
-  const ranked = [...players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name))).slice(0, limit);
+  const ranked = rankPlayers(players).slice(0, limit);
   if (!ranked.length) return "";
-  return `<ol class="player-mini-leaderboard">${ranked.map((leader, index) => `<li class="${leader.id === playerId ? "is-current-player" : ""}"><span class="player-mini-place">${index + 1}</span>${playerLogoMarkup(leader, "player-logo--mini")}<strong>${escapeHtml(leader.name)}</strong><b>${Number(leader.points) || 0}<small>pts</small></b></li>`).join("")}</ol>`;
+  return `<ol class="player-mini-leaderboard">${ranked.map((leader) => `<li class="${leader.id === playerId ? "is-current-player" : ""}"><span class="player-mini-place">${leader.rank}</span>${playerLogoMarkup(leader, "player-logo--mini")}<strong>${escapeHtml(leader.name)}</strong><b>${Number(leader.points) || 0}<small>pts</small></b></li>`).join("")}</ol>`;
 }
 
 function playerFinale() {
   const players = rankedPlayers();
-  const place = players.findIndex((player) => player.id === playerId || player.name === playerName) + 1;
-  const player = place ? players[place - 1] : null;
+  const player = players.find((entry) => entry.id === playerId || entry.name === playerName) || null;
+  const place = player?.rank || 0;
   const isWinner = place === 1;
   if (state.presentationScreen === "final_suspense") {
     app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--suspense"><p class="eyebrow">Final reveal</p><h1>And the winner is…</h1><div class="finale-drumbeat" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><p>The host is about to reveal the podium.</p></section></main>`, true);

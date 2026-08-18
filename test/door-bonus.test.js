@@ -72,7 +72,7 @@ test("source presence: the between-round flow wires scoreboard, door choice, and
   assert.match(styles, /@keyframes round-title-arrival/);
   assert.doesNotMatch(styles, /player-round-transition:has\(.player-transition-splash h1\)\{background:#fff\}/);
   assert.match(app, /function updateDoorChoicePlayingState/);
-  assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nfunction presenterRenderKey/)?.[0] || "", /doorPicks:/);
+  assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nlocalChannel\.onmessage/)?.[0] || "", /doorPicks:/);
 });
 
 test("source presence: advanceQuestion opens the next question without a leaderboard", () => {
