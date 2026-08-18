@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_SESSION_TTL_MS, REVEAL_KEY_FIELDS, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_SESSION_TTL_MS, REVEAL_KEY_FIELDS, revealedAnswerKeys, revealKeyFor, rankPlayers, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
 
 test("player payload is an explicit allowlist", () => {
   const player = toPlayerQuestion({ id: "q1", type: "image_selection", prompt: "Choose", correctOptionIds: ["a"], hostReveal: "Secret", audio: { url: "https://private.example/clip" }, options: [{ id: "a", label: "Visible", imageAssetId: "asset-1", imageSource: "Private source" }] });
@@ -233,4 +233,60 @@ test("the host reads the key from the quiz definition in any phase", () => {
 test("a question type with no answer key resolves to null rather than a guess", () => {
   assert.equal(revealKeyFor({ type: "numeric_estimate" }, "reveal", "client", {}), null);
   assert.equal(revealKeyFor({}, "reveal", "host", {}), null);
+});
+
+// --- Standings ---------------------------------------------------------------
+
+test("tied players share a rank and the next rank skips", () => {
+  const ranked = rankPlayers([
+    { id: "c", name: "Cleo", points: 8 },
+    { id: "a", name: "Ada", points: 10 },
+    { id: "b", name: "Bela", points: 10 },
+    { id: "d", name: "Dev", points: 8 },
+    { id: "e", name: "Eze", points: 1 }
+  ]);
+  assert.deepEqual(ranked.map((player) => [player.name, player.rank]), [
+    ["Ada", 1],
+    ["Bela", 1],
+    ["Cleo", 3],
+    ["Dev", 3],
+    ["Eze", 5]
+  ]);
+});
+
+test("everyone tied shares first place", () => {
+  const ranked = rankPlayers([
+    { id: "a", name: "Ada", points: 5 },
+    { id: "b", name: "Bela", points: 5 },
+    { id: "c", name: "Cleo", points: 5 }
+  ]);
+  assert.deepEqual(ranked.map((player) => player.rank), [1, 1, 1]);
+});
+
+test("ranking sorts by points then name, and never mutates the input", () => {
+  const players = [
+    { id: "b", name: "Bela", points: 3 },
+    { id: "a", name: "Ada", points: 3 },
+    { id: "c", name: "Cleo", points: 9 }
+  ];
+  const snapshot = JSON.stringify(players);
+  const ranked = rankPlayers(players);
+  assert.deepEqual(ranked.map((player) => player.name), ["Cleo", "Ada", "Bela"]);
+  assert.equal(JSON.stringify(players), snapshot);
+  assert.equal(players[0].rank, undefined);
+});
+
+test("ranking passes the player through and treats missing points as zero", () => {
+  const ranked = rankPlayers([
+    { id: "a", name: "Ada", points: 4, logoKey: "star" },
+    { id: "b", name: "Bela" }
+  ]);
+  assert.equal(ranked[0].logoKey, "star");
+  assert.equal(ranked[0].points, 4);
+  assert.deepEqual(ranked.map((player) => player.rank), [1, 2]);
+});
+
+test("ranking an empty roster yields an empty list", () => {
+  assert.deepEqual(rankPlayers([]), []);
+  assert.deepEqual(rankPlayers(), []);
 });

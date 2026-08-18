@@ -258,3 +258,27 @@ export function presenterRenderKey(roomState) {
   if (PRESENTATION_DOOR_PHASES.has(visualState.phase)) visualState.doorPicks = doorPicks;
   return JSON.stringify(visualState);
 }
+
+// --- Standings ---------------------------------------------------------------
+//
+// One ranking rule for every surface that shows a position. Six sites ranked
+// players independently and only three shared rank between tied players, so the
+// exported standings CSV could hand a player a different finishing position
+// from the one the shared screen had just announced (review 2026-08-17, C9;
+// PRODUCT_SPEC.md's standings rule).
+//
+// Ties share the lower rank number and the next rank skips accordingly:
+// 10, 10, 8 points ranks 1, 1, 3.
+export function rankPlayers(players = []) {
+  const sorted = [...players].sort((left, right) => (Number(right.points) || 0) - (Number(left.points) || 0) || String(left.name).localeCompare(String(right.name)));
+  let previousPoints = null;
+  let rank = 0;
+  return sorted.map((player, index) => {
+    const points = Number(player.points) || 0;
+    if (previousPoints === null || points !== previousPoints) rank = index + 1;
+    previousPoints = points;
+    // The player object is passed through untouched; callers that print raw
+    // point values (the CSV export) must keep seeing what they saw before.
+    return { ...player, rank };
+  });
+}

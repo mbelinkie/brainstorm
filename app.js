@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, presenterRenderKey, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, presenterRenderKey, rankPlayers, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -1660,8 +1660,8 @@ async function loadPrivateImage(image) {
 }
 
 function leaderboard() {
-  const players = [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
-  return `<section class="leaderboard-card"><h3>Current leaderboard</h3><div class="leaderboard">${players.map((p, i) => `<div class="leader"><span class="place">${i + 1}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${i === 0 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("")}</div></section>`;
+  const players = rankPlayers(state.players);
+  return `<section class="leaderboard-card"><h3>Current leaderboard</h3><div class="leaderboard">${players.map((p) => `<div class="leader"><span class="place">${p.rank}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${p.rank === 1 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("")}</div></section>`;
 }
 
 function answerResultsPanel() {
@@ -1685,14 +1685,7 @@ function csvCell(value) {
 }
 
 function resultsCsv(players) {
-  const sorted = [...players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
-  let priorPoints = null;
-  let rank = 0;
-  const rows = sorted.map((player, index) => {
-    if (priorPoints === null || Number(player.points) !== priorPoints) rank = index + 1;
-    priorPoints = Number(player.points);
-    return [rank, player.name, player.points].map(csvCell).join(",");
-  });
+  const rows = rankPlayers(players).map((player) => [player.rank, player.name, player.points].map(csvCell).join(","));
   return [["Rank", "Display name", "Points"].map(csvCell).join(","), ...rows].join("\n") + "\n";
 }
 
@@ -1804,15 +1797,11 @@ function scoreCelebration() {
 }
 
 function presentationLeaderboard({ final = false } = {}) {
-  const players = [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
+  const players = rankPlayers(state.players);
   if (!players.length) return `<section class="presentation-leaderboard-card is-empty"><p class="eyebrow">${final ? "Final standings" : "Scoreboard"}</p><h2>${final ? "The final scores are on their way." : "The scoreboard will appear as players join."}</h2></section>`;
-  let previousPoints = null;
-  let rank = 0;
   const visiblePlayers = players.slice(0, final ? 10 : 4);
   const rows = visiblePlayers.map((player, index) => {
-    const points = Number(player.points) || 0;
-    if (previousPoints === null || points !== previousPoints) rank = index + 1;
-    previousPoints = points;
+    const rank = player.rank;
     const medal = rank === 1 ? "★" : rank === 2 ? "◆" : rank === 3 ? "●" : String(rank);
     return `<li class="presentation-leader presentation-leader--${rank <= 3 ? rank : "other"}" style="--leader-delay:${0.12 + index * 0.07}s"><span class="presentation-place">${medal}</span>${playerLogoMarkup(player, "player-logo--presentation")}<strong>${escapeHtml(player.name)}</strong><span class="presentation-points">${points} <small>pts</small></span></li>`;
   }).join("");
@@ -1861,7 +1850,7 @@ function presentationTitlePage() {
 }
 
 function rankedPlayers() {
-  return [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
+  return rankPlayers(state.players);
 }
 
 function confettiMarkup(count = 52) {
@@ -1904,8 +1893,10 @@ function finalScoreTitlePage() {
     ? `<div class="presentation-final-score-pager" data-final-score-pager data-final-score-pager-key="${escapeHtml(pagerKey)}"><p class="presentation-final-score-page-status" data-final-score-page-status>Ranks 1–${Math.min(FINAL_SCORE_PAGE_SIZE, players.length)} of ${players.length}</p>${pages.map((page, pageIndex) => {
       const firstRank = pageIndex * FINAL_SCORE_PAGE_SIZE + 1;
       const lastRank = firstRank + page.length - 1;
-      const rows = page.map((player, index) => {
-        const rank = firstRank + index;
+      const rows = page.map((player) => {
+        // Tied players share a rank; firstRank/lastRank below stay positional
+        // because the pager's status line counts entries shown, not ranks.
+        const rank = player.rank;
         return `<li class="presentation-final-score presentation-final-score--${rank}"><span>${rank}</span>${playerLogoMarkup(player, "player-logo--final-score")}<strong>${escapeHtml(player.name)}</strong><b>${Number(player.points) || 0}<small> pts</small></b></li>`;
       }).join("");
       return `<ol class="presentation-final-score-list ${pageIndex === 0 ? "is-active" : ""}" data-final-score-page data-final-score-first-rank="${firstRank}" data-final-score-last-rank="${lastRank}">${rows}</ol>`;
@@ -2015,15 +2006,15 @@ function renderPresenter() {
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
-  const ranked = [...players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name))).slice(0, limit);
+  const ranked = rankPlayers(players).slice(0, limit);
   if (!ranked.length) return "";
-  return `<ol class="player-mini-leaderboard">${ranked.map((leader, index) => `<li class="${leader.id === playerId ? "is-current-player" : ""}"><span class="player-mini-place">${index + 1}</span>${playerLogoMarkup(leader, "player-logo--mini")}<strong>${escapeHtml(leader.name)}</strong><b>${Number(leader.points) || 0}<small>pts</small></b></li>`).join("")}</ol>`;
+  return `<ol class="player-mini-leaderboard">${ranked.map((leader) => `<li class="${leader.id === playerId ? "is-current-player" : ""}"><span class="player-mini-place">${leader.rank}</span>${playerLogoMarkup(leader, "player-logo--mini")}<strong>${escapeHtml(leader.name)}</strong><b>${Number(leader.points) || 0}<small>pts</small></b></li>`).join("")}</ol>`;
 }
 
 function playerFinale() {
   const players = rankedPlayers();
-  const place = players.findIndex((player) => player.id === playerId || player.name === playerName) + 1;
-  const player = place ? players[place - 1] : null;
+  const player = players.find((entry) => entry.id === playerId || entry.name === playerName) || null;
+  const place = player?.rank || 0;
   const isWinner = place === 1;
   if (state.presentationScreen === "final_suspense") {
     app.innerHTML = shell(`<main class="player-main player-main--finale"><section class="player-finale player-finale--suspense"><p class="eyebrow">Final reveal</p><h1>And the winner is…</h1><div class="finale-drumbeat" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><p>The host is about to reveal the podium.</p></section></main>`, true);
