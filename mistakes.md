@@ -186,6 +186,46 @@ When the host played a numbered finale intro, the presentation received a new `a
 - Update cue-specific DOM state in place: the active tile, playback marker, and timer readout should not require rebuilding the screen.
 - Test cue A → cue B → playback end on every audio-enabled question type, and assert that the presentation render function is not called.
 
+## 15. I fixed the remount boundary for one surface and left the others alone
+
+Lesson 14 gave Presentation a render key so an audio cue could not remount the
+shared screen. The player view already had one. The Host never got one — and the
+Host is the surface where a remount costs the most, because it is the only
+surface a human is actively *typing into* while the room is live. Every player
+answer, keystroke on a multi-part answer, join, and door pick ran a full
+`app.innerHTML` rebuild of the Host, which destroyed focus and in-progress text
+in the manual-score and question-jump controls, reverted an unapplied
+question-jump selection, restarted the timer interval, re-bound every listener,
+and re-fetched every private image through the Worker media proxy.
+
+The root mistake was treating "the presentation flashes" as the bug rather than
+as one instance of a bug class. The fix was applied where it was reported
+instead of everywhere the same shape existed.
+
+A second, quieter mistake: the symptom was blamed on the obviously-ungated
+branch in `receive()`, but the Host never receives its own state broadcasts
+(`BroadcastChannel` does not echo to the sender, and the realtime channel sets
+`broadcast: { self: false }`). The real cost was three unconditional `render()`
+calls in the player-message handlers. The plausible-looking line was not the
+line doing the damage.
+
+### What to do next time
+
+- When a render/remount boundary is added to one surface, immediately audit
+  every other surface for the same gap, and say in the fix which surfaces were
+  checked and which were deliberately left alone.
+- Rank surfaces by what a remount destroys, not by how often it happens. A
+  surface holding keyboard focus, in-progress text, a timer, or fetched media
+  deserves the boundary first.
+- Treat an operator console as stateful UI, not as a projection. Focus,
+  selection, scroll position, and half-typed input are real state that no
+  broadcast from another client should be able to clear.
+- Prove which call is actually firing before fixing the one that looks wrong.
+  Trace whether the message can even reach the surface.
+- Make anything that re-fetches over the network on every render (here,
+  `loadPrivateImage`) cache by asset ID, so a render-frequency regression
+  cannot turn into a request storm during a live show.
+
 ## Practices to carry into the next project
 
 - Start with explicit contracts for state, roles, visibility, and ownership.

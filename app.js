@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -394,7 +394,7 @@ async function acceptDoorChoice(payload) {
     const next = { playerId: payload.playerId, playerName: payload.playerName || "Guest", logoKey: normalizePlayerLogoKey(payload.logoKey), doorId: payload.doorId };
     state.doorPicks = [...(state.doorPicks || []).filter((entry) => entry.playerId !== next.playerId), next];
   }
-  emit(); render();
+  emit(); patchHostLiveRegions();
 }
 
 async function jumpToQuestion() {
@@ -583,8 +583,10 @@ function acceptSubmission(payload) {
   // clients, so bridge the confirmed host receipt to the presentation tab.
   localChannel.postMessage({ type: "presentation-submission", payload });
   // A submission only changes the Host's received count. Rebroadcasting the
-  // full room state here remounts the presentation for every phone tap.
-  render();
+  // full room state here remounts the presentation for every phone tap, and a
+  // full render() would remount the Host itself just as often -- players tap
+  // and retap, and multi_fill_in_the_blank auto-saves roughly per keystroke.
+  patchHostLiveRegions();
 }
 
 function receive(message) {
@@ -605,10 +607,17 @@ function receive(message) {
     }
     const priorPlayerRenderKey = view === "player" ? playerRenderKey(state) : null;
     const priorPresenterRenderKey = view === "presenter" ? presenterRenderKey(state) : null;
+    const priorHostRenderKey = view === "host" ? hostRenderKey(state) : null;
     state = data.state;
     const playerChanged = view === "player" && priorPlayerRenderKey !== playerRenderKey(state);
     const presenterChanged = view === "presenter" && priorPresenterRenderKey !== presenterRenderKey(state);
-    if (!["player", "presenter"].includes(view) || playerChanged || presenterChanged) render();
+    // The Host is an operator console, not a projection: it holds focus,
+    // in-progress typing, a timer interval and proxied media. Give it the same
+    // remount gate the player and presentation views already have, and patch
+    // its live counters in place when nothing structural moved.
+    const hostChanged = view === "host" && priorHostRenderKey !== hostRenderKey(state);
+    if (view === "host" ? hostChanged : (!["player", "presenter"].includes(view) || playerChanged || presenterChanged)) render();
+    else if (view === "host") patchHostLiveRegions();
     else if (view === "player") {
       updateMultiBlankPlayingState();
       updateDoorChoicePlayingState();
@@ -662,6 +671,65 @@ function presenterRenderKey(roomState) {
   const { mediaCommand, ...visualState } = withMediaCommand;
   return JSON.stringify(visualState);
 }
+
+// A phone tap, a keystroke in a multi-blank answer, a late join or a door pick
+// changes only the Host's live counters -- never its layout. Patch those nodes
+// in place rather than rebuilding the Host through app.innerHTML, which would
+// throw away keyboard focus and half-typed host-panel entries (manual score,
+// question jump, and any other host text input), tear down and restart the
+// timer interval, drop and re-add every per-node listener attachEvents()
+// binds, and revoke then refetch every private image through the Worker media
+// proxy. See hostRenderKey() in quiz-core.js and mistakes.md #14.
+//
+// Everything written here is either a text node or markup with no listeners of
+// its own, so nothing this touches can be left with a dead handler.
+function patchHostLiveRegions() {
+  if (view !== "host") return;
+  const counts = hostLiveCounts(state);
+
+  const submittedCount = document.querySelector("[data-host-submitted-count]");
+  if (submittedCount) submittedCount.innerHTML = `${counts.submitted}<span> / ${counts.players}</span>`;
+
+  const answerResults = document.querySelector("[data-host-answer-results]");
+  if (answerResults) answerResults.innerHTML = answerResultsPanel();
+
+  const rows = leaderboardRows();
+  document.querySelectorAll("[data-leaderboard]").forEach((node) => { node.innerHTML = rows; });
+
+  const doorsPicked = (state.doorPicks || []).length;
+  const doorsBoard = document.querySelector("[data-host-doors-board]");
+  if (doorsBoard) doorsBoard.outerHTML = doorChoiceCards({ compact: true });
+  const doorsCount = document.querySelector("[data-host-doors-count]");
+  if (doorsCount) doorsCount.innerHTML = `${doorsPicked}<span> / ${counts.players}</span>`;
+  const doorsEyebrow = document.querySelector("[data-host-doors-eyebrow]");
+  if (doorsEyebrow && state.phase !== "door_reveal") doorsEyebrow.textContent = `${doorsPicked} of ${counts.players} picked`;
+
+  // Highlight the cued intro without rebuilding the buttons, which carry click
+  // listeners. Same reasoning as the presentation fix in mistakes.md #14: an
+  // audio cue is not a layout change.
+  document.querySelectorAll("[data-play-intro]").forEach((button) => {
+    const isActive = button.dataset.playIntro === state.activeClipId;
+    button.classList.toggle("btn-primary", isActive);
+    button.classList.toggle("btn-secondary", !isActive);
+  });
+
+  // The manual-score controls unlock once the first player joins and their
+  // roster has to stay current -- but never underneath the host's own hands.
+  // Anything the host is focused on is left exactly as they left it.
+  const scoreNote = document.querySelector("[data-score-note]");
+  if (scoreNote) scoreNote.textContent = manualScoreNote();
+  const scorePicker = document.querySelector("[data-score-player]");
+  if (scorePicker && document.activeElement !== scorePicker) {
+    const chosen = scorePicker.value;
+    scorePicker.innerHTML = manualScorePlayerOptions();
+    if (chosen && state.players.some((player) => player.id === chosen)) scorePicker.value = chosen;
+  }
+  const canAdjust = params.has("room") && counts.players > 0;
+  document.querySelectorAll("[data-score-player], [data-score-points], [data-score-reason], [data-adjust-score]").forEach((node) => {
+    if (node !== document.activeElement) node.disabled = !canAdjust;
+  });
+}
+
 localChannel.onmessage = receive;
 
 function emit() {
@@ -799,7 +867,7 @@ function acceptPlayerPresence(payload) {
   // Presence is transport-only: persisting it would increment the answer
   // revision while a player is entering an answer.
   emit();
-  render();
+  patchHostLiveRegions();
 }
 
 async function connectHostedRoom() {
@@ -1619,9 +1687,15 @@ async function loadPrivateImage(image) {
   image.src = objectUrl;
 }
 
-function leaderboard() {
+// Split from leaderboard() so patchHostLiveRegions() can refresh the standings
+// in place. The rows carry no listeners, so replacing them is safe.
+function leaderboardRows() {
   const players = [...state.players].sort((a, b) => Number(b.points) - Number(a.points) || String(a.name).localeCompare(String(b.name)));
-  return `<section class="leaderboard-card"><h3>Current leaderboard</h3><div class="leaderboard">${players.map((p, i) => `<div class="leader"><span class="place">${i + 1}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${i === 0 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("")}</div></section>`;
+  return players.map((p, i) => `<div class="leader"><span class="place">${i + 1}</span>${playerLogoMarkup(p, "player-logo--host")}<span><b>${escapeHtml(p.name)}</b><br/><small>${i === 0 ? "Holding the lead" : "In the mix"}</small></span><b>${Number(p.points) || 0}</b></div>`).join("");
+}
+
+function leaderboard() {
+  return `<section class="leaderboard-card"><h3>Current leaderboard</h3><div class="leaderboard" data-leaderboard>${leaderboardRows()}</div></section>`;
 }
 
 function answerResultsPanel() {
@@ -1632,12 +1706,22 @@ function answerResultsPanel() {
   return `<div class="answer-results"><strong>Who got it right</strong><div class="answer-results-overall"><b>${results.correctCount}</b><span> / ${results.totalSubmitted} fully correct</span></div>${parts}</div>`;
 }
 
+// The note and the roster options are shared with patchHostLiveRegions() so a
+// late joiner updates the picker without the two copies drifting apart.
+function manualScoreNote() {
+  if (!params.has("room")) return "Create or load a hosted room to award points.";
+  return state.players.length ? "Awards appear as a celebration in Presentation." : "This appears ready once at least one player has joined.";
+}
+
+function manualScorePlayerOptions() {
+  return `<option value="">Choose player</option>${state.players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`).join("")}`;
+}
+
 function manualScoreControls() {
   if (view !== "host") return "";
   const isHosted = params.has("room");
   const canAdjust = isHosted && state.players.length > 0;
-  const note = !isHosted ? "Create or load a hosted room to award points." : !state.players.length ? "This appears ready once at least one player has joined." : "Awards appear as a celebration in Presentation.";
-  return `<div class="manual-score"><strong>Manual score adjustment</strong><span>${note}</span><select data-score-player aria-label="Player" ${canAdjust ? "" : "disabled"}><option value="">Choose player</option>${state.players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`).join("")}</select><input data-score-points type="number" step="0.5" placeholder="+/- points" aria-label="Points to add or subtract" ${canAdjust ? "" : "disabled"} /><input data-score-reason maxlength="120" placeholder="Reason (optional)" aria-label="Adjustment reason" ${canAdjust ? "" : "disabled"} /><button class="btn btn-secondary" data-adjust-score ${canAdjust ? "" : "disabled"}>Apply adjustment</button></div>`;
+  return `<div class="manual-score"><strong>Manual score adjustment</strong><span data-score-note>${manualScoreNote()}</span><select data-score-player aria-label="Player" ${canAdjust ? "" : "disabled"}>${manualScorePlayerOptions()}</select><input data-score-points type="number" step="0.5" placeholder="+/- points" aria-label="Points to add or subtract" ${canAdjust ? "" : "disabled"} /><input data-score-reason maxlength="120" placeholder="Reason (optional)" aria-label="Adjustment reason" ${canAdjust ? "" : "disabled"} /><button class="btn btn-secondary" data-adjust-score ${canAdjust ? "" : "disabled"}>Apply adjustment</button></div>`;
 }
 
 function csvCell(value) {
@@ -1703,7 +1787,9 @@ function doorChoiceCards({ interactive = false, compact = false } = {}) {
   const config = doorBonusDefinition();
   const entries = state.phase === "door_reveal" ? (state.doorResults || []) : (state.doorPicks || []);
   const selectedDoorId = (state.doorPicks || []).find((entry) => entry.playerId === (doorPlayerRecordId || playerId))?.doorId;
-  return `<div class="door-grid ${compact ? "door-grid--compact" : ""}">${(config?.doors || []).map((door, doorIndex) => {
+  // Only the Host's compact board gets the patch hook; the player's variant
+// renders real buttons that carry click listeners and must not be replaced.
+  return `<div class="door-grid ${compact ? "door-grid--compact" : ""}" ${compact ? "data-host-doors-board" : ""}>${(config?.doors || []).map((door, doorIndex) => {
     const players = entries.filter((entry) => entry.doorId === door.id);
     const people = interactive ? "" : players.length ? `<div class="door-players">${players.map((entry, index) => `<span class="door-player ${state.phase === "door_reveal" ? Number(entry.multiplier) < 1 ? "is-penalty" : "is-boost" : ""}" style="--door-player-delay:${index * .06}s">${playerLogoMarkup({ logoKey: entry.logoKey }, "player-logo--door")}<b>${escapeHtml(entry.playerName)}</b>${state.phase === "door_reveal" ? `<strong>${formatMultiplier(entry.multiplier)}</strong>` : ""}</span>`).join("")}</div>` : `<p class="door-empty">No picks yet</p>`;
     const content = `<span class="door-number">Door ${doorIndex + 1}</span><span class="door-icon door-icon--${escapeHtml(door.icon)}" aria-hidden="true">${doorIconSymbol(door.icon)}</span><h3>${escapeHtml(door.name)}</h3><div class="door-effect"><span>Possible effect</span><p class="door-odds">${escapeHtml(doorOdds(door))}</p></div>${people}`;
@@ -1715,7 +1801,7 @@ function renderHostDoors() {
   const picked = (state.doorPicks || []).length;
   const targetRound = hostQuizDefinition?.rounds?.[state.targetRoundIndex];
   const revealed = state.phase === "door_reveal";
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow">${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow" data-host-doors-eyebrow>${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-doors-count>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostFinale() {
@@ -1753,7 +1839,7 @@ function renderHost() {
     ? '<p class="host-auto-advance" role="status">Opening the first question…</p>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div>${answerResultsPanel()}${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {

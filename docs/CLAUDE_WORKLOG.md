@@ -2,6 +2,82 @@
 
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
+## 2026-08-18 — Stop the Host screen rebuilding itself on every player action
+
+- **Branch:** `claude/host-render-gate`
+- **Bug (user-reported):** "The host screen appears to be refreshing a lot, perhaps every time the players do anything."
+- **Files touched:**
+  - `quiz-core.js` — new `HOST_LIVE_STATE_FIELDS`, `hostRenderKey()`, `hostLiveCounts()`. Put here rather than in `app.js` so the remount boundary is directly testable, per CLAUDE.md.
+  - `app.js` — new `patchHostLiveRegions()`; `receive()` now gates the Host remount on `hostRenderKey`; `acceptSubmission()`, `acceptPlayerPresence()` and `acceptDoorChoice()` patch instead of calling `render()`; `leaderboard()` split into `leaderboardRows()` + `data-leaderboard`; `manualScoreControls()` split into `manualScoreNote()` / `manualScorePlayerOptions()`; patch hooks added to the Host and Host-doors markup.
+  - `test/host-render-gate.test.js` — new.
+
+### Root cause actually confirmed (not the one first suspected)
+
+The initial hypothesis was `receive()`'s ungated Host branch at the `!["player","presenter"].includes(view)` clause. That clause is a real gap and is now closed, **but it was not the driver of the reported symptom.** The Host does not receive its own `state` broadcasts: `BroadcastChannel` does not deliver to the posting context, the Supabase channel is created with `broadcast: { self: false }`, and `emit()` returns early for every view except `host`. So that clause only fires for a second Host tab or the landing view.
+
+The actual cause was three *unconditional* `render()` calls on player-originated messages:
+
+- `acceptSubmission()` — every `submission` broadcast.
+- `acceptPlayerPresence()` — every player join.
+- `acceptDoorChoice()` — every door pick.
+
+Players broadcast a submission on every answer tap, every categorize tap, every matching-dropdown change, every drag-drop, and — through `queueAutoSubmission({ allowEmpty: true, delay: 40 })` on `[data-multi-blank]` — roughly **once per keystroke** on multi-fill-in-the-blank questions. Each one ran `render()` → `renderHost()` → `app.innerHTML = shell(...)`, discarding and rebuilding the entire Host layout.
+
+What that rebuild was costing on every phone tap, all of which the host perceives as "refreshing":
+
+1. Keyboard focus and half-typed text in `[data-score-points]`, `[data-score-reason]`, and the `[data-jump-question]` selection — destroyed mid-keystroke. An unapplied question-jump choice silently snapped back to the current question.
+2. Every `[data-private-image]` was re-fetched through the Worker media proxy: `render()` revokes `imageMediaObjectUrls` and `attachEvents()` re-runs `loadPrivateImage()`, which has no cache. A room of players answering produced a continuous stream of proxy requests and visible image flicker.
+3. `startTimerTicker()` cleared and restarted the 250 ms `setInterval` every time.
+4. All ~40 per-node listeners in `attachEvents()` were torn down and re-bound (they are per-node `addEventListener`, not delegated — confirmed before changing render frequency).
+
+### Approach, and the alternative rejected
+
+Chose **(a) a `hostRenderKey()` remount gate plus in-place patching of the live regions**, over (b) leaving the full render in place and special-casing the three message types.
+
+- (a) is this codebase's own established pattern — `playerRenderKey()` / `presenterRenderKey()` plus targeted updaters like `updatePresenterActiveClipState()` — so it reads as consistent rather than novel.
+- `mistakes.md` #14 already prescribes exactly this and warns against putting transport-only fields in a remount boundary. The Host was simply never given the boundary that Presentation got.
+- (b) is not actually narrower in risk: it needs the same enumeration of patch targets, but leaves `receive()` able to remount the Host and gives no protection to any future inbound path.
+- (a) alone is not sufficient either — a submission genuinely does change host-visible content — which is why the gate is paired with `patchHostLiveRegions()`.
+
+`hostRenderKey()` is a **denylist**, not an allowlist (unlike `playerRenderKey()`): a newly added state field defaults to remounting the Host. For a live-audience tool a stale host screen is worse than a flickery one, so the gate fails toward re-rendering.
+
+### Kept working (each checked against the code, not assumed)
+
+- **Host typing/focus:** `patchHostLiveRegions()` never touches `.host-utilities`, the question-jump control, or any focused node — it skips the manual-score picker when `document.activeElement` is that picker, preserves its chosen value, and will not toggle `disabled` on a focused control.
+- **Timer:** the patch never calls `attachEvents()`, so `startTimerTicker()` is not re-entered and the interval survives. `[data-timer-readout]` is patched by `updateTimer()` on its own 250 ms tick, independent of render.
+- **Listeners:** per-node, bound in `attachEvents()` after each full render. Everything the patch replaces (`data-host-submitted-count`, `data-host-answer-results`, `[data-leaderboard]` rows, the Host's compact doors board) is listener-free markup; `[data-play-intro]` buttons are updated by `classList.toggle` only, never rebuilt. The doors patch hook is applied only to the host's read-only `compact` board, never the player's interactive door buttons.
+- **Media:** `videoPanel()`, `audioPanel()` and `matchingClipControls()` are no longer re-emitted on player activity at all, so the volume slider and the `<audio>`/`<video>` elements stop being recreated under the host. This is strictly better than before.
+
+### Coordination note
+
+Another agent is adding a "presented by" override text input to `hostUtilityControls()`. It needs no change here: the patch never writes into `.host-utilities`, and inbound player messages no longer remount the Host, so that input is safe mid-typing. If its state field must remount the Host when it changes *remotely*, that happens automatically — `hostRenderKey()`'s denylist means new fields are structural by default. Add it to `HOST_LIVE_STATE_FIELDS` only if something patches it in place.
+
+### Tests
+
+```
+$ node --test test/host-render-gate.test.js
+ℹ tests 14
+ℹ pass 14
+ℹ fail 0
+```
+
+Confirmed red before the fix: the first run failed on the missing `hostLiveCounts` export, and after adding the pure helpers the wiring tests still failed (`expected app.js to define function patchHostLiveRegions(`) until `app.js` was rewired.
+
+```
+$ npm test
+ℹ tests 163
+ℹ pass 162
+ℹ fail 1
+```
+
+The one failure is `test/deploy-manifest.test.js` — "author.js references ./video-processor.worker.bundle.js, which does not exist in the repository". Pre-existing and environmental: that bundle is gitignored build output absent from any fresh worktree. Verified by checking out untouched `b58adb7` into a scratch worktree and reproducing the identical failure there. Did not run the video build or touch that file.
+
+### Not verified
+
+- No live browser run. This repo's app-layer tests are all source-text assertions and there is no jsdom or headless browser available (adding a dependency needs approval), so the DOM patch itself is covered by pure-function tests plus wiring/contract assertions, **not** by executing `patchHostLiveRegions()` against a real DOM. The behaviour worth eyeballing live is listed in the handoff.
+- No Supabase or Worker round-trip exercised.
+
+
 ## 2026-08-17 — Show the join URL on the presentation title screen only
 
 - **Branch:** `claude/title-screen-url`

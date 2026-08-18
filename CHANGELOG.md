@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-18
+
+- Fixed the Host screen visibly refreshing every time a player did anything. Each answer tap, each keystroke in a fill-in-the-blank answer, each player joining, and each door pick rebuilt the entire Host layout from scratch — which wiped out half-typed manual-score and question-jump entries, reset an unapplied question-jump choice, restarted the question timer's tick, and re-downloaded every private image through the media proxy. The Host now rebuilds only when the screen genuinely changes; the answers-received count, the leaderboard, the "Who got it right" panel, the manual-score player list, and the doors board update in place and stay live.
+
 ## 2026-08-17
 
 - Raised the local source-file size limit for the "Trim and upload clip" audio buttons (question audio cue, title music, finale, between-round, matching clips) from 25 MB to 500 MB. The old cap was really the final-upload limit for the rendered clip, not the raw source an author picks before trimming — a large local WAV/FLAC source could hit it long before the much smaller trimmed clip ever would.
