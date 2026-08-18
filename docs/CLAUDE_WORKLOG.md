@@ -2,6 +2,43 @@
 
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
+## 2026-08-17 — Show the join URL on the presentation title screen only
+
+- **Branch:** `claude/title-screen-url`
+- **Feature (user-requested):** On the Presentation title screen (the opening screen shown before the host starts round 1), show the public join URL `brainstorm.matthewbelinkie.com` alongside the QR code and room code, so a room without a scannable phone camera can still join by typing the address. Confirmed the URL should not appear anywhere once the quiz begins — it already didn't (see below).
+- **Files touched:**
+  - `app.js` — `presentationTitlePage()` (the sole renderer of the title screen's join card): added `<span class="presentation-title-domain">brainstorm.matthewbelinkie.com</span>` between the "Scan the code with your phone" line and the room code.
+  - `styles.css` — added `.presentation-title-join .presentation-title-domain{color:#fff;font-weight:800}` next to the existing `.presentation-title-join` rules, so the domain reads as bold white text at a distance (it already inherited the join card's base `span` size/color).
+  - `test/presentation-layout.test.js` — added a regression test asserting (a) `presentationTitlePage()` contains the domain span, (b) the CSS rule exists, and (c) `presentationCornerJoinQr()` — the small corner badge used everywhere *after* the title screen — does not contain the domain text.
+
+### What was confirmed before writing code
+
+- The title screen is rendered exclusively by `presentationTitlePage()` (`app.js`), used only when `state.presentationScreen === "title"`.
+- Once the quiz begins (`presentationScreen` moves off `"title"`), join info during play is shown only via `presentationCornerJoinQr()`, a small corner badge with a QR code and the room code — it never included URL text, before or after this change. So "don't show the URL once the quiz begins" was already true; this change only needed to add the URL to the title screen, not remove anything.
+- The player's own device never displays the room URL or code (players have already joined by the time they see their own screen), so no player-view change was needed.
+- The QR code itself already encodes the real `location.origin` dynamically (not a hardcoded domain) — the new text is static, human-readable branding for manual entry, per the user's explicit request for that literal string.
+
+### Test
+
+```
+$ node --test test/presentation-layout.test.js
+```
+Confirmed the new test fails on the pre-fix code: temporarily `git stash`-ed `app.js`/`styles.css` (keeping the new test), reran, got the expected `AssertionError` on the missing `presentation-title-domain` span, then `git stash pop`-ed the fix back before proceeding.
+
+```
+$ npm test
+...
+ℹ tests 141
+ℹ pass 140
+ℹ fail 1
+```
+The one failure (`test/deploy-manifest.test.js`: "every local file referenced by a shipped file is itself shipped") is pre-existing and unrelated: `video-processor.worker.bundle.js` is a `.gitignore`d generated build artifact (`npm run build:video`) that simply isn't present in this fresh worktree yet — it exists in the main checkout but not here. Did not run the video build or touch that file, per CLAUDE.md's "do not hand-edit generated bundles."
+
+### Could not verify
+
+- Visual appearance on an actual projector/presentation display — this was verified by reading the rendered markup/CSS and the existing test-suite conventions (this repo's presentation-layer tests are all source-text assertions, no headless browser rendering available here), not by looking at the live screen.
+- No live room / Supabase round-trip exercised — this is a static-copy change to an existing, already-tested render path; no state or data-flow logic changed.
+
 ## 2026-08-17 — Android join-screen logo picker overlap
 
 - **Branch:** `claude/fix-android-logo-picker-overlap`

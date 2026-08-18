@@ -86,6 +86,14 @@ test("presentation reserves one title QR and uses a large corner QR with a simpl
   assert.match(brand, /presentation-card--intermission \.player-logo--presentation \{[^}]*width:min\(100%,150px\)/);
 });
 
+test("the title screen shows the public join URL beside the room code, and it does not carry over once the quiz begins", () => {
+  const titlePageFn = app.slice(app.indexOf("function presentationTitlePage"), app.indexOf("function rankedPlayers"));
+  assert.match(titlePageFn, /<span class="presentation-title-domain">brainstorm\.matthewbelinkie\.com<\/span>/);
+  assert.match(styles, /\.presentation-title-join \.presentation-title-domain\{/);
+  const cornerQrFn = app.slice(app.indexOf("function presentationCornerJoinQr"), app.indexOf("function presentationCornerJoinQr") + 300);
+  assert.doesNotMatch(cornerQrFn, /brainstorm\.matthewbelinkie\.com/);
+});
+
 test("title lyrics use a non-interactive animated overlay that preserves lines", () => {
   assert.match(app, /presentation-title-caption/);
   assert.match(brand, /\.presentation-title-caption \{[\s\S]*pointer-events: none[\s\S]*transition: opacity \.24s/);
