@@ -1217,14 +1217,26 @@ function closestNumberTarget() {
   return presenterQuestionDefinition()?.targetNumber ?? hostQuestion.targetNumber ?? state.revealedNumber;
 }
 
+// The server's full set of guesses for this question, or null when the
+// authoritative fetch has not succeeded for it.
+//
+// This used to fall back to realtimeClosestNumberGuesses, which holds only the
+// submission broadcasts this tab happened to receive while it was open on this
+// question -- a Presentation tab opened mid-question, or one that reconnected,
+// holds a subset. The board built on top of this ranks players, prints the ★
+// and decides the tie set, all of which 0017_closest_number_scoring.sql already
+// computed from every submission. Ranking a subset put a confident wrong winner
+// on the shared screen while the points went to a player who was not even on
+// the board. Returning null lets the board say it could not load rather than
+// answer from a partial list.
 function closestNumberResultEntries(questionId = state.questionId || state.question?.id) {
-  if (closestNumberGuessesQuestionId === questionId) return closestNumberGuesses;
-  return realtimeClosestNumberGuessesQuestionId === questionId ? [...realtimeClosestNumberGuesses.values()] : [];
+  return closestNumberGuessesQuestionId === questionId ? closestNumberGuesses : null;
 }
 
 function closestNumberResultsBoard() {
   const target = closestNumberDecimal(closestNumberTarget());
-  const rawEntries = closestNumberResultEntries()
+  const loadedEntries = closestNumberResultEntries();
+  const rawEntries = (loadedEntries || [])
     .map((entry) => ({ ...entry, decimal: closestNumberDecimal(entry.guess) }))
     .filter((entry) => entry.decimal && target);
   const scale = Math.max(target?.scale || 0, ...rawEntries.map((entry) => entry.decimal.scale));
@@ -1243,10 +1255,14 @@ function closestNumberResultsBoard() {
     const direction = entry.distance === 0n ? "Exact match" : `${formatClosestDecimal(entry.distance, scale)} ${entry.units < targetUnits ? "below" : "above"}`;
     return `<li class="closest-match-row ${winner ? "is-winner" : ""}" style="--guess-index:${index}"><span class="closest-match-place">${winner ? "★" : rank}</span>${playerLogoMarkup({ logoKey: entry.logoKey }, "player-logo--closest-match")}<strong>${escapeHtml(entry.playerName)}</strong><b>${escapeHtml(formatClosestDecimal(entry.units, scale))}</b><small>${escapeHtml(direction)}</small>${winner ? '<em>Closest!</em>' : ""}</li>`;
   }).join("");
+  // "Not loaded", "failed to load" and "nobody guessed" are three different
+  // things and only the last one may be stated as a result.
   const content = rows
     ? `<ol class="closest-match-list">${rows}</ol>`
-    : closestNumberGuessesError
-      ? '<p class="closest-match-empty">Guesses could not be loaded. Please try again.</p>'
+    : loadedEntries === null
+      ? closestNumberGuessesError
+        ? '<p class="closest-match-empty">Guesses could not be loaded. Please try again.</p>'
+        : '<p class="closest-match-empty">Loading guesses…</p>'
       : '<p class="closest-match-empty">No valid guesses were submitted.</p>';
   const targetLabel = target ? formatClosestDecimal(targetUnits, scale) : "—";
   return `<section class="closest-match-results" data-closest-match-results aria-live="polite"><header><div><p class="eyebrow">Closest match</p><h3>Actual number <strong>${escapeHtml(targetLabel)}</strong></h3></div>${entries.length ? `<span>${entries.filter((entry) => entry.distance === winnerDistance).length > 1 ? "Tied winners" : "Winning guess"}</span>` : ""}</header>${content}</section>`;
