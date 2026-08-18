@@ -9,6 +9,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 - Fixed importing a quiz JSON file not saving the imported quiz as the browser draft. An author could import a quiz, refresh without touching a field, and get the previous draft back; the Publish button also still reflected the pre-import quiz.
 - Fixed the "Remove audio" button on between-round bonus sounds doing nothing while reporting "Saved in this browser — download or publish when ready". The clip stayed attached and still played in the room. Removing a between-round sound now works, and a remove control the editor does not recognize no longer claims to have saved anything.
 - The author editor and the automated tests now use one shared quiz validator instead of two divergent copies. Publish, Validate, Apply raw JSON, Import, and the Quiz health panel keep every rule they already enforced, and additionally validate between-round bonus audio asset IDs.
+- Added a "Presented by" override to the Host screen's session controls, so the same quiz file can be run for different audiences without saving a new version. Typing a credit line replaces the quiz's authored "presented by" text on both the opening and closing Presentation title screens, updating the shared screen live; clearing the field restores the quiz's own line. The override applies to the current session only and is never written back into the quiz. The authoring editor's existing "Presented by" field still sets the default.
 
 ## 2026-08-17
 

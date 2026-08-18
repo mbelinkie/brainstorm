@@ -35,6 +35,25 @@ export function normalizedAudioVolume(value) {
   return Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
 }
 
+// The opening and closing presentation title cards carry a "presented by"
+// credit line above the quiz title. The quiz file supplies the authored
+// default (titlePage.presenter), but one quiz often runs for several different
+// audiences, so the host screen can override that credit for a single session.
+// The override travels in room state and is never written back into the quiz
+// JSON — that is the whole point, so the same file stays reusable.
+//
+// An override counts only when it has visible text. Blanking the host field
+// therefore restores the authored credit instead of hiding the line, while an
+// authored empty string still hides it (`??`, not `||`), which is how a quiz
+// deliberately opts out of the credit line.
+export const DEFAULT_PRESENTER_CREDIT = "ADO&S PRESENTS";
+
+export function resolvePresenterCredit(override, authoredPresenter) {
+  const trimmedOverride = typeof override === "string" ? override.trim() : "";
+  if (trimmedOverride) return trimmedOverride;
+  return authoredPresenter ?? DEFAULT_PRESENTER_CREDIT;
+}
+
 // Host-only, post-reveal analytics: how many submitted answers were correct,
 // broken down per part for multi-part question types. This never decides
 // scoring — it only summarizes raw answers the host already collected

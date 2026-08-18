@@ -19,7 +19,9 @@ test("music-note title logo remains present beside optional title artwork", () =
 });
 
 test("opening and closing presentation cards use the quiz-configured presenter line", () => {
-  assert.match(app, /const presenter = titlePage\.presenter \?\? "ADO&S PRESENTS"/);
+  // The authored value is still the source of truth; it now passes through the
+  // shared resolver so a host's per-session override can win over it.
+  assert.equal(app.match(/const presenter = resolvePresenterCredit\(state\.presenterOverride, titlePage\.presenter\)/g)?.length, 2);
   assert.match(app, /const presenterMarkup = presenter \? `<p class="eyebrow">\$\{escapeHtml\(presenter\)\}<\/p>` : ""/);
 });
 
