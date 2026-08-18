@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, presenterRenderKey, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -612,6 +612,7 @@ function receive(message) {
     }
     else if (view === "presenter") {
       updatePresenterActiveClipState();
+      updatePresenterScoreCelebration();
       if (presentationAudioArmed) applyPresentationAudioCommand().catch((error) => console.warn("Presentation clip unavailable.", error));
       if (presentationMediaArmed) applyPresentationMediaCommand().catch((error) => console.warn("Presentation video unavailable.", error));
     }
@@ -651,15 +652,6 @@ function playerRenderKey(roomState) {
   });
 }
 
-function presenterRenderKey(roomState) {
-  // Audio controls increment the server revision and replace audioCommand, but
-  // neither change is visual. Keep the presentation DOM mounted so a host cue
-  // cannot flash the shared screen while still applying the command above.
-  const { activeClipId, audioCommand, revision, submitted, ...withAudioVolume } = roomState || {};
-  const { audioVolume, ...withMediaCommand } = withAudioVolume;
-  const { mediaCommand, ...visualState } = withMediaCommand;
-  return JSON.stringify(visualState);
-}
 localChannel.onmessage = receive;
 
 function emit() {
@@ -1137,6 +1129,27 @@ function updateMultiBlankPlayingState() {
     const status = row.querySelector("[data-multi-blank-playback-status]");
     if (status) status.innerHTML = isPlaying ? '<span class="intro-playing-dot" aria-hidden="true">♫</span> Now playing' : "Listen closely";
   });
+}
+
+// The celebration toast is a fixed overlay appended after the scene card, so it
+// is no longer part of the presentation render key -- a manual score adjustment
+// used to remount the reveal twice, once on the adjustment and again when the
+// notification expired 6,600 ms later. Swap it in place instead, producing the
+// same DOM renderPresenter() would have.
+function updatePresenterScoreCelebration() {
+  const main = document.querySelector(".presentation-main");
+  if (!main) return;
+  const existing = main.querySelector(".score-celebration");
+  const markup = scoreCelebration();
+  if (!markup) {
+    existing?.remove();
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const next = template.content.firstElementChild;
+  if (existing) existing.replaceWith(next);
+  else main.append(next);
 }
 
 function updatePresenterActiveClipState() {

@@ -202,3 +202,59 @@ export function revealKeyFor(question = {}, phase, surface, revealed = {}) {
   if (surface === "host") return revealedAnswerKeys(question, "reveal")[field];
   return revealed?.[field] ?? EMPTY_REVEAL_KEYS[field];
 }
+
+// --- Presentation remount boundary -------------------------------------------
+//
+// Presentation re-renders only when this key changes, because a re-render is
+// expensive there: it revokes every private-image object URL and re-issues a
+// Worker fetch for each one, and every entrance animation restarts. A field
+// that is not part of what the shared screen currently shows must therefore
+// stay out of the key and, where it is visible at all, be applied in place.
+//
+// mistakes.md #14 asks that every broadcast field be classified structural,
+// visual, or transport-only before it enters this boundary. Six were; four
+// were not, and each of those four remounted the shared screen mid-question
+// (review 2026-08-17, C15 / APP F3).
+
+// Scenes that put the roster or a scoreboard on the shared screen, and so must
+// redraw when `players` changes. Everywhere else -- a question, the locked
+// board, a reveal -- `players` is transport-only, and a late join or a score
+// adjustment must not blank and re-download the question image.
+const PRESENTATION_ROSTER_SCREENS = new Set([
+  "title", // the waiting-room roster
+  "round_end", // roundTransitionCard's end-of-round scoreboard
+  "final_podium", // the top three
+  "final_scores" // the paged final standings
+]);
+
+// The door cards read doorPicks (and doorResults, which is structural and
+// always in the key) only while the doors are the scene.
+const PRESENTATION_DOOR_PHASES = new Set(["door_choice", "door_reveal"]);
+
+export function presenterRenderKey(roomState) {
+  const {
+    // Transport-only. Audio and video cues bump the revision and replace the
+    // command, but a cue is applied to the mounted DOM, never by remounting it.
+    activeClipId,
+    audioCommand,
+    revision,
+    submitted,
+    audioVolume,
+    mediaCommand,
+    // Host navigation history. Presentation never renders it at all.
+    screenHistory,
+    // A fixed overlay appended after the card, not part of the scene. It is
+    // swapped in place, so neither its arrival nor its expiry may remount --
+    // which used to mean a manual score adjustment remounted the reveal twice.
+    scoreNotification,
+    // Visual on some scenes only; re-added below when they are the scene.
+    players,
+    doorPicks,
+    ...visualState
+  } = roomState || {};
+  // `complete` renders the final leaderboard without going through one of the
+  // finale screens, so it needs the roster too.
+  if (PRESENTATION_ROSTER_SCREENS.has(visualState.presentationScreen) || visualState.phase === "complete") visualState.players = players;
+  if (PRESENTATION_DOOR_PHASES.has(visualState.phase)) visualState.doorPicks = doorPicks;
+  return JSON.stringify(visualState);
+}

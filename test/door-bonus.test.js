@@ -63,7 +63,7 @@ test("between-round flow reveals one scoreboard, then moves to door choice and t
   assert.match(styles, /@keyframes round-title-arrival/);
   assert.doesNotMatch(styles, /player-round-transition:has\(.player-transition-splash h1\)\{background:#fff\}/);
   assert.match(app, /function updateDoorChoicePlayingState/);
-  assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nfunction presenterRenderKey/)?.[0] || "", /doorPicks:/);
+  assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nlocalChannel\.onmessage/)?.[0] || "", /doorPicks:/);
 });
 
 test("advancing within a round opens the next question without a leaderboard", () => {
