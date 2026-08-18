@@ -4,7 +4,7 @@ Status: Active build record
 Audience: Product/design/engineering  
 Initial use: Live work trivia for approximately 10–20 players over Google Meet
 
-Last updated: 2026-08-14
+Last updated: 2026-08-18
 
 ## Build status
 
@@ -16,7 +16,7 @@ Last updated: 2026-08-14
 | 3 — Core questions, scoring, and leaderboard | Complete for MVP | Choice, text, matching, ordering, closest-number, categorize, and leaderboard scoring are implemented, along with manual score adjustment and richer reveal/leaderboard modes. |
 | 4 — Music and advanced question formats | In progress | Matching, host-only audio cues/URLs, fill-in, ordering, categorization, and private audio/image upload are implemented. Real clip and image preparation remain. |
 | 5 — Authoring workflow | In progress | Browser editor, JSON import/export, client-side schema validation, magic-link author authentication, protected publishing, host quiz selection, basic quiz/round management, search/filtering, templates for every supported question type, and a private media library with previews, names, asset reuse, and safe cleanup are live. |
-| 6 — Hardening and dress rehearsal | Planned | Needs a complete real-content Google Meet rehearsal with several phones. |
+| 6 — Hardening and dress rehearsal | In progress | Sentry error reporting is live in the browser build, and reconnect plus stale-revision submission recovery shipped 2026-08-17. Still needs a complete real-content Google Meet rehearsal with several phones. |
 
 ## Current implementation snapshot
 
@@ -26,18 +26,27 @@ Last updated: 2026-08-14
 - Supabase (US East Free plan) provides protected RPCs, Postgres persistence, Realtime Broadcast, Auth, and server-side scoring.
 - Host creates a six-character room; players join with a room code and display name.
 - The host alone advances lobby → open → lock → reveal → next question → complete. Player phones never receive future questions, answer keys, host reveal notes, or host-only media information.
-- Between non-final rounds, enabled quizzes enter a host-controlled door-choice and reward-reveal phase. A resolved multiplier applies to automatic points in the immediately following round only.
+- Between non-final rounds, enabled quizzes enter a host-controlled door-choice and reward-reveal phase. A resolved multiplier applies to automatic points in the immediately following round only. A second, independent multiplier — late-join catch-up — can also apply. Both are described in §7, “Score modifiers.”
 - Sessions recover after a host refresh using the stored room state and fixed quiz version.
 - Score totals derive from server-written score events and appear in a shared leaderboard.
 - Door choices and randomized outcomes are persisted and resolved by protected server functions so refreshes cannot reroll rewards.
 
 ### Current question support
 
-- Single choice, multiple choice, true/false, and label-based image selection.
-- Short answer and one-blank fill-in-the-blank with normalized accepted-answer matching.
+Eleven authorable types. §5 describes each one and marks the parts that were
+specified but never built.
+
+- Single choice, multiple choice, and true/false.
+- Image selection, with private uploaded artwork per option rather than text labels. The player control is single-select.
+- Short answer and fill-in-the-blank with normalized accepted-answer matching.
+- Multi-blank fill-in-the-blank: independently scored, autosaved fields linked to numbered clips, with per-blank partial credit.
+- Closest number: the closest valid guess wins, and tied closest guesses split the authored points.
 - Arrange in order, exact-scored.
 - Matching, with one point per correct pair; used for the piano-intro finale.
-- Categorize: assign every listed item to one of two named categories; full-credit automatic scoring when all assignments are correct.
+- Categorize: assign every listed item to a named category. The editor requires exactly two categories; the scoring RPC is category-count agnostic and scores all-or-nothing.
+
+A twelfth type, `numeric_estimate`, has a player control and a line in this
+document’s “Later formats” list, but no scoring branch anywhere. See §5.
 
 ### Authoring and access
 
@@ -50,7 +59,7 @@ Last updated: 2026-08-14
 
 - The editor opens the music bank by default; it can start a blank one-round quiz and add, duplicate, delete, or reorder rounds and questions. It cannot yet manage prior versions.
 - Image selection accepts private JPG, PNG, and WebP uploads per option. Before upload, authors can choose square, widescreen, standard, or original framing and set an image focal point; the editor then converts the selected crop to a maximum-1600px WebP derivative and can copy originals into an author-chosen local folder. Joined players can retrieve only assets on the active question; richer library flow remains.
-- Audio can be referenced by an optional host-only URL or played from a prepared external host source. Authors can upload private clips; the host retrieves them through an authorized application proxy. Hosted clips have play/pause, restart, volume, elapsed-time controls, and ready/unavailable status. Trimming, normalization, and richer media management remain.
+- Audio can be referenced by an optional host-only URL or played from a prepared external host source. Authors can upload private clips; the host retrieves them through an authorized application proxy. Hosted clips have play, pause, restart, volume, elapsed-time controls, and ready/unavailable status. Authors can trim a clip against a waveform, apply fades, and either accept automatic −16 dBFS loudness levelling or bake in a manual 1–150% gain. Replacing a clip in place, without reconfiguring the question, remains.
 - Hosts have a lobby QR join code and 15/20/30/45/60-second question timers that synchronize to players and automatically request the authoritative lock when the host tab reaches zero. There is no host review queue, partial credit for sorting, or participant removal. The host can download final standings and detailed score-event audit CSVs, and record auditable manual score adjustments.
 - A complete music-content pass is still needed: real licensed/authorized clips, consistent album art, and final cue windows.
 
@@ -65,9 +74,12 @@ Last updated: 2026-08-14
 
 1. Prepare the first music game’s assets: source the clips, choose clip windows, collect album art, crop/resize it consistently, and add the resulting URLs/cues.
 2. Run a full Google Meet rehearsal with at least 5–10 devices, including tab-audio sharing and a refresh/reconnect test.
-3. Improve generic quiz creation: blank-quiz template, round management, duplicate controls, and a cleaner quiz library/version view.
-4. Add media refinement: image crop/library plus audio trimming, normalization, preload status, and media management.
-5. Add game-operation polish: QR join, timer, manual adjustments, and results export.
+
+Three earlier items are done and have been removed: generic quiz creation
+(blank-quiz template, round and duplicate management, quiz library), media
+refinement (image crop and library, audio trimming and normalization), and
+game-operation polish (QR join, timers, manual adjustments, results export).
+Prior-version management in the editor is still outstanding.
 
 ## 1. Product definition
 
@@ -125,25 +137,38 @@ The server owns the canonical session state. Clients render that state; they do 
 ```text
 Draft quiz
   → Lobby
-  → Round intro
-  → Question ready
   → Question open
   → Question locked
   → Answer reveal
-  → Question results or leaderboard
   → Next question / next round
+  → Door choice → Door reveal        (between non-final rounds, when enabled)
   → Final podium
   → Session complete
 ```
 
+The authoritative phase lives in `sessions.phase`. Screens that are not phases
+— the title page, round-start cards, and between-round intermissions — live in
+a host-computed `presentationScreen` field inside the `sessions.state` JSONB,
+alongside `intermissionStage` and `screenHistory`.
+
+Two pieces of drift to know about before changing this:
+
+- The `session_phase` enum still contains `round_intro`, `question_ready`, and
+  `leaderboard`. **Nothing ever writes them.** Earlier versions of this document
+  described them as live states.
+- `locked` is written, but in practice it is reached only through timer expiry,
+  so the presenter’s “Answers locked” scene does not appear in a timer-less
+  show. Whether `locked` should be a scene the host can enter deliberately is an
+  open question, not a settled behavior.
+
 ### State rules
 
 - Players cannot request or infer the next question from the player interface.
-- A question accepts submissions only while its server state is `open`.
+- A question accepts submissions only while its server state is `open`, its question ID matches, and the client’s revision matches the server’s.
 - Locking is authoritative on the server, not based on a phone’s local timer.
-- The host may reopen a question only through an explicit override.
 - Reconnected players receive the current state and their existing submission.
 - Answer keys and future questions are never sent to player clients before reveal.
+- The host’s “Jump to any question” control reopens a question with no override step and no guard. Re-scoring an already-scored question appends a second set of score events. This is a known defect, recorded here so the next session does not mistake it for the intended “explicit override” this document used to describe.
 
 ## 4. Audio experience
 
@@ -213,48 +238,74 @@ The production runbook will instruct the host to share the **Chrome tab** contai
 
 Question types should use one scoring interface and one lifecycle, even though their answer controls differ.
 
-### v1 formats
+### Shipped formats
 
-1. **Single choice**
-   - Text or image answers
-   - One correct option
-   - Optional speed bonus
+Eleven types are authorable. “Not built” below marks something this document
+once described as a feature and that no code implements — kept in place rather
+than deleted so it does not get re-specified by accident.
 
-2. **Multiple choice**
+1. **Single choice** (`single_choice`)
+   - Text answers, or private uploaded artwork per option
+   - One correct option; full points for the correct answer
+   - Not built: speed bonus
+
+2. **Multiple choice** (`multiple_choice`)
    - Select all applicable answers
-   - Configurable exact-match or partial-credit scoring
+   - Scored as exact set equality. Not built: partial credit, and the configuration flag that would select it
 
-3. **True or false**
-   - Specialized fast two-option layout
+3. **True or false** (`true_false`)
+   - Authored and scored exactly as single choice, and rendered with the same control. There is no specialized two-option layout, and the editor accepts more than two options
 
-4. **Image selection**
-   - One or multiple selectable images
-   - Useful for artists, album art, and movie posters
+4. **Image selection** (`image_selection`)
+   - Private uploaded artwork per option, for artists, album art, and movie posters
+   - The player control is **single-select**. The editor and the scoring RPC both accept several IDs in `correctOptionIds`, and the RPC awards full points for any one of them. These three surfaces disagree; treat multi-select image selection as unresolved rather than supported
 
-5. **Short answer**
-   - Exact and normalized accepted variants
-   - Host review queue for unmatched answers
-   - Optional manual award/reject/partial credit
+5. **Short answer** (`short_answer`)
+   - Exact and normalized accepted variants. Normalization lowercases and strips everything outside `[a-z0-9]`, on both the server and the host’s summary
+   - Presentation shows an anonymous wall of submitted answers after lock
+   - Not built: a host review queue for unmatched answers. Manual score adjustment (§7) is the shipped substitute
 
-6. **Fill in the blank**
-   - One or more answer fields
+6. **Fill in the blank** (`fill_in_the_blank`)
    - Normalized comparison and accepted variants
-   - Appropriate for short lyric fragments; avoid storing/displaying large lyric excerpts
-   - Audio variant supports multiple independently scored, autosaved title fields linked to numbered clips
+   - Appropriate for short lyric fragments; avoid storing or displaying large lyric excerpts
+   - **One field.** The player control renders one input and the scoring RPC reads `blanks[0]` only, but the editor validates every entry in `blanks[]` and will publish a question with several. A multi-blank question authored this way silently loses every blank after the first. Use `multi_fill_in_the_blank` instead
 
-7. **Arrange in order / sort**
+7. **Multi-blank fill in the blank** (`multi_fill_in_the_blank`)
+   - Independently scored, autosaved fields linked to numbered clips. No enforced maximum; the piano-intro finale uses ten
+   - Per-blank accepted answers, `pointsPerBlank`, and genuine partial credit: correct blanks × the rate
+   - The row for the currently playing clip is highlighted without interrupting typing
+
+8. **Arrange in order / sort** (`arrange_in_order`)
    - Touch-friendly vertical reorder
-   - Exact order or position-based partial credit
+   - Scored all or nothing. Not built: position-based partial credit
 
-8. **Matching**
-   - One-to-one pairs
-   - Tap item, then tap match on phones; drag-and-drop is optional on larger screens
+9. **Matching** (`matching`)
+   - One-to-one pairs, one point per correct pair
+   - **Players get one `<select>` per clip**, with duplicate assignment prevented. The drag-and-drop board is the host and Presentation view, not the phone. §6 describes the phone interaction correctly
    - Supports the piano-intro finale as ten numbered clips matched to ten song titles
 
-9. **Categorize**
-   - Sort listed items into one of two named categories
-   - Current MVP uses a mobile-friendly category selector per item
-   - Full-credit automatic scoring when every item is assigned correctly
+10. **Categorize** (`categorize`)
+    - Sort listed items into named categories, using a mobile-friendly category selector per item
+    - The editor requires exactly two categories. The scoring RPC counts assignments and is agnostic to how many categories there are
+    - Full-credit automatic scoring when every item is assigned correctly; no partial credit
+
+11. **Closest number** (`closest_number`)
+    - A single numeric target, authored as `targetNumber`
+    - The closest valid guess wins the authored points; tied closest guesses split them evenly
+    - Presentation shows a ranked guess board after lock, fetched through the Worker with the host credential
+
+### Half-built: `numeric_estimate`
+
+`numeric_estimate` has a player control, submit handling, and a test pinning it
+in the rendered type list. It has **no** scoring branch in any migration, is not
+in the editor’s supported-type list, and has no validation rule. A
+`numeric_estimate` question therefore renders, accepts answers, locks, and
+awards zero points to everyone without saying so. An instance still sits in the
+bundled question bank’s `optionalTieBreak`, outside `rounds` where no validator
+walks, keyed on `answer` — a field no code reads.
+
+Whether to finish it or retire it is an open decision. Do not author one until
+that is settled.
 
 ### Later formats
 
@@ -265,6 +316,11 @@ Question types should use one scoring interface and one lifecycle, even though t
 - Poll with no correct answer
 - Wager question
 - Team answer mode
+
+A twelfth round type, **Prompt Battle**, has an approved design that this
+document does not yet cover:
+[docs/superpowers/specs/2026-08-17-prompt-battle-design.md](docs/superpowers/specs/2026-08-17-prompt-battle-design.md).
+It is not implemented.
 
 ## 6. Piano-intro finale
 
@@ -289,34 +345,57 @@ This is a featured round, not ten unrelated questions. It can use either the reu
 ### Scoring
 
 - Matching defaults to one point per correct pair; multiple fill-in awards the authored points per correct blank
-- Optional completion bonus
-- No speed bonus by default; the round rewards recognition, not network latency
+- Not built: a completion bonus
+- No speed bonus. There is no speed bonus anywhere in the product; the round rewards recognition, not network latency
 
 ## 7. Scoring and leaderboard
 
 ### Scoring model
 
-- Each question defines maximum base points.
-- Speed bonus is optional by question and capped.
-- Partial credit is supported for matching, ordering, and configurable multiple choice.
-- Host adjustments are recorded as auditable score events rather than overwriting totals.
-- Ties share rank until a tie-breaker is played.
+- Each question defines maximum base points. `matching` and `multi_fill_in_the_blank` are the exceptions: they define `pointsPerPair` and `pointsPerBlank`, and the maximum is implicit.
+- Partial credit is supported for **matching and multi-blank fill-in only**. Ordering and multiple choice are all-or-nothing. §Known limitations already said there is no partial credit for sorting; §5 now agrees rather than contradicting it.
+- Host adjustments are recorded as auditable score events rather than overwriting totals. Since 0022 they are unbounded in magnitude, and since 0027 the reason is optional.
+- Ties share rank until a tie-breaker is played. Today this holds on the standings CSV and the Presentation scoreboard; the host leaderboard panel, the player mini-leaderboard, and a player’s own finish position each number rows sequentially instead, so two tied players can be shown different ranks. Those three are defects against this rule, not alternative choices.
+- Not built: a speed bonus, in any form.
+
+### Score modifiers
+
+Two independent multipliers can apply to automatically awarded points. Neither
+touches manual adjustments.
+
+| | Door bonus (`0025`) | Late-join catch-up (`0026`) |
+|---|---|---|
+| Who gets it | Every player who picks a door during a between-round door phase | A player joining after the session has started, once only |
+| Value | Whatever the chosen door’s randomized outcome resolves to | `1 + target_round_index / (total_rounds − 1)` |
+| Range | Authored per door. **May be below 1.0** — a door can cost points. The bundled defaults are EV-balanced around 1.20× and include 0.8× and 0.6× outcomes | Always ≥ 1, capped at 2× |
+| Cap | 10×, enforced in validation and in the database | 2× |
+| Scope | The immediately following round only, automatic points only | One round only, automatic points only |
+
+**Precedence is `greatest()`, not multiplication.** A `before insert` trigger on
+`score_events` resolves the two and writes the larger, then recomputes `points`
+from `base_points`. A player with a 1.2× door and a 1.6× catch-up gets 1.6×, not
+1.92×.
+
+`base_points`, `multiplier`, and the resolved `reason` are stored on the event
+and survive into the detailed score-event CSV, so an audit can explain how any
+total was reached.
+
+Door choices and their randomized outcomes are persisted and resolved by
+protected server functions, so a refresh cannot reroll a reward.
 
 ### Leaderboard views
 
 - Between-round full leaderboard
-- Optional top-five quick reveal after a question
 - Final animated podium for top three
-- Rank change indicator since previous reveal
-- Player’s own phone may show personal rank and score after reveal
-- Host can hide scores while retaining ranking if desired
+- Player’s own phone shows personal rank and score after reveal, plus a fixed top-eight list at the finale
+- Not built: a top-five quick reveal after a question, a rank-change indicator since the previous reveal, and a hide-scores-keep-ranking control
 
 ### Fairness rules
 
-- Server receipt time determines any speed bonus.
-- A short grace window may absorb ordinary network jitter.
-- Audio matching and host-reviewed short answers should not use speed scoring.
+- `submissions.submitted_at` is recorded but never read for scoring, because there is no speed bonus.
+- There is **no server-side grace window**. `submit_live_answer` rejects outright on a phase other than `question_open`, a mismatched question ID, or a stale revision. Network jitter is absorbed on the client instead: a rejected submission refetches room state and resubmits once if the same question is still open, and the player sees pending, confirmed, rejected, and retryable as four distinct states.
 - Duplicate submissions update the existing response while open; they do not create additional score events.
+- Re-scoring is a different matter. `lock_and_score_live_question` re-reads the stored submissions and inserts a fresh set of score events every time it runs, and `score_events` has no uniqueness constraint. Reopening and re-revealing a scored question therefore awards its points twice. Reaching that state through the Previous-screen control is blocked; reaching it through “Jump to any question” is not. This is a known defect (see §3).
 
 ## 8. Quiz authoring
 
@@ -411,7 +490,7 @@ The design system should validate contrast for all semantic color pairings. Colo
 - Minimum practical width: 320 px
 - Primary answer targets at least 44×44 px
 - Sticky submit/action area where appropriate
-- Avoid precision drag gestures; matching defaults to tap-to-pair
+- Avoid precision drag gestures. Matching on a phone is one `<select>` per clip with duplicate assignment prevented, not tap-to-pair; the drag board is the host and Presentation view
 - Reconnection and submission state always visible
 
 ## 10. Proposed technical architecture
@@ -459,33 +538,40 @@ Quiz definitions + media storage
 
 ## 11. Core data model
 
+**The quiz content model is not normalized.** A whole published quiz — rounds,
+questions, options, answer keys, media references, title page, door
+configuration, finale audio — is one JSONB document in
+`quiz_versions.definition`. Every scoring RPC walks that document directly with
+`jsonb_array_elements`. Earlier versions of this section listed seven
+normalized tables (`rounds`, `questions`, `answer_options`,
+`accepted_answers`, `session_state_events`, `submission_items`,
+`leaderboard_snapshots`). **None of them were ever built.** They are recorded
+here as never-built so that a future session does not write a migration against
+them.
+
 ### Quiz content
 
 - `quizzes`
-- `quiz_versions`
-- `rounds`
-- `questions`
-- `answer_options`
-- `media_assets`
-- `accepted_answers`
+- `quiz_versions` — holds the immutable JSONB `definition` for one published version
+- `quiz_authors` (`0008`) — the publishing allowlist
+- `media_assets` (`0010`, extended for video by `0032`) — private uploaded audio, images, and video derivatives
 
 ### Live game
 
-- `sessions`
-- `session_players`
-- `session_state_events`
-- `submissions`
-- `submission_items` for matching/multipart answers
-- `score_events`
-- `leaderboard_snapshots`
+- `sessions` — room code, phase, current round/question index, `revision`, and a `state` JSONB holding the host-computed screen model
+- `session_players` — roster, display name, logo, join time, late-join catch-up bookkeeping
+- `submissions` — one row per player per question, upserted
+- `score_events` — append-only, with `base_points`, `multiplier`, `points`, `reason`, and `created_by`
+- `session_door_choices` (`0025`) — persisted door picks and their resolved outcomes
 
 ### Important invariants
 
-- A session references a fixed quiz version.
-- One current submission exists per player/question; revisions are timestamped.
-- Score totals derive from score events.
-- State changes are ordered and carry a monotonically increasing revision number.
-- Clients ignore stale revisions.
+- A session references a fixed quiz version, and that version’s definition is immutable. Publishing creates a new version rather than changing rooms that already exist.
+- One current submission exists per player/question; a repeat submission updates it.
+- Score totals derive from score events, never from a mutable total.
+- State changes are ordered and carry a monotonically increasing `revision`.
+- Clients ignore stale revisions, and the server rejects submissions that carry one.
+- Migration history equals production state: every persistent change is a new ordered migration, and applied migrations are never edited or renumbered.
 
 ## 12. Delivery phases
 
@@ -727,3 +813,73 @@ Do not wait for a drag-and-drop visual editor. The live runner, scoreboard, and 
 ## 18. Presentation video clips
 
 Ordinary questions may carry one private presentation medium: either audio or a video derivative, never both. Authors trim MP4, MOV, or WebM source locally and upload only a standardized private MP4; the source file and edit metadata remain local. Video is Host-cued but rendered only in Presentation, including embedded audio. Player payloads intentionally omit the video asset UUID, labels, source metadata, and playback URL.
+
+## 19. Shipped features this document did not previously describe
+
+Each of these is real, tested behavior. They are grouped here rather than
+woven in, so the addition is visible in the diff; fold them into the relevant
+sections when those sections are next revised.
+
+### Player logos
+
+Twenty selectable avatars, chosen at join alongside the display name, persisted
+on `session_players.logo_key` (`0021`), and rendered on phones, the host panel,
+Presentation, door groupings, and the podium.
+
+### Opening title page and waiting-room music
+
+A quiz may carry a `titlePage`: title, subtitle, presenter name, theme art, an
+animated background, the join QR code, and host-cued music. It is the first
+Presentation screen and is not a session phase.
+
+### SRT and ASS lyric captions
+
+Title-page audio may carry timed text parsed from SRT or ASS, including
+karaoke segment timings. Bounded at 500 cues and 500 segments per cue, and
+validated as such. Rendered only on Presentation, driven by the audio clock.
+
+### Finale audio slots
+
+Suspense, podium, and standings cues, authored per quiz under `finale.audio`.
+Note that the editor’s validator checks these asset IDs and the shared
+`quiz-validation.js` module checks `betweenRoundBonus.audio` instead — the two
+validators check different parts of the document. Merging them is open work.
+
+### “Who got it right” summary
+
+A host-only, post-reveal panel showing how many submitted answers were correct,
+with a per-part breakdown for matching, categorize, and multi-blank questions.
+It is computed in the browser by `tallyQuestionResults` in `quiz-core.js`, from
+data the host already holds.
+
+**It is a deliberate hand-mirror of the comparison rules in
+`0030_multi_fill_in_the_blank_scoring.sql`.** If that migration’s comparison
+logic changes, this must change with it, or the host’s live “X of Y correct”
+will silently disagree with the points actually awarded. Nothing currently
+asserts the two agree.
+
+### Host volume carry-forward and manual loudness
+
+One host-set volume applies to every later cue across all scopes, including
+automatic between-round and finale audio. Separately, an author can bake a
+manual 1–150% gain into an uploaded clip in place of the automatic −16 dBFS
+levelling.
+
+### Client-side auto-submit retry
+
+When a submission is rejected for a stale revision, the player’s client
+refetches room state and resubmits once if the same question is still open.
+This is the client-side stand-in for the server grace window §7 used to
+describe, and it is also the mitigation for §15’s “Realtime clients drift”
+risk.
+
+### Sentry error monitoring
+
+Live, not planned. The DSN ships in `config.js` and is public by design; that
+file remains free of secrets.
+
+### Question jump control
+
+A “Jump to any question” select in the live host panel, labelled a testing
+shortcut but rendered in real hosted rooms. See §3 and §7 for the re-scoring
+defect it exposes.
