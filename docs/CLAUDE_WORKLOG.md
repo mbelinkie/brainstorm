@@ -496,3 +496,66 @@ $ npm test
   - Did not open `author.html` in a browser to visually confirm the preview-column layout looks correct with the assistant panel gone, or that the per-image "⌄" menu (now containing only "Upload image") still opens/closes and looks reasonable with one item instead of two.
   - Did not deploy or exercise the live Cloudflare Worker — confirmed by source inspection and the regression test that `/media-assistant/search` is gone from `cloudflare-worker.js`, `server.mjs`, and `wrangler.jsonc`, but did not hit a running Worker to confirm the route now 404s.
   - Left the `source` parameter on `author.js`'s `uploadPrivateImage(file, optionIndex, source = null)` in place even though the only caller that ever passed a non-null `source` (`approveSuggestedImage`) is gone — it's dead but harmless (defaults to `null`, which is also what plain manual uploads already pass), and removing it would touch a function several other tests slice by name; left it rather than risk an unrelated regression for a cosmetic cleanup.
+
+## 2026-08-18 — Host-side "presented by" override for the presentation title cards
+
+- **Branch:** `claude/presented-by-override`
+- **Feature (user-requested):** "Expose the PRESENTED BY text in the hosting screen… there should be an override in the hosting screen, so I can do a quiz for multiple audiences without creating a new version of the json." One quiz file, many audiences; the credit line changes per show, at host time, without editing or re-saving the quiz.
+- **Files touched:**
+  - `quiz-core.js` — new `resolvePresenterCredit(override, authoredPresenter)` and `DEFAULT_PRESENTER_CREDIT`. Per CLAUDE.md ("prefer putting new logic here… testability is the point"), the whole precedence rule lives in this importable module rather than inside `app.js`. A trimmed non-empty override wins; anything else falls back to `authoredPresenter ?? "ADO&S PRESENTS"`, which preserves the previous `??` semantics exactly (an authored empty string still hides the line).
+  - `app.js` — five surgical edits: import the resolver; add `presenterOverride: ""` to `defaultState`; add `presenterOverride: state.presenterOverride || ""` to `publicRoomState()`; swap the two hardcoded `const presenter = titlePage.presenter ?? "ADO&S PRESENTS"` lines (in `presentationTitlePage()` and `finalScoreTitlePage()`) for the resolver; add `presenterOverrideControl()` rendered from `hostUtilityControls()`, plus an input/change handler next to the existing audio-volume handler.
+  - `styles.css` — one `.host-presenter-override` rule block, placed beside `.question-jump` and matching its host-panel idiom (grid, `--line` top border, 12px purple label, muted 11px help text).
+  - `test/presenter-credit-override.test.js` — new, 11 tests (see below).
+  - `test/presentation-layout.test.js` — updated the existing "opening and closing presentation cards use the quiz-configured presenter line" test, which pinned the exact literal `const presenter = titlePage.presenter ?? "ADO&S PRESENTS"`. It now asserts both title cards call the resolver (`.match(...).length === 2`); the test's original intent, that the authored value drives the credit line, is preserved.
+  - `PRODUCT_SPEC.md` — documented the override under "Host" and in the big-screen view's list. The **quiz JSON data model did not change** — `titlePage.presenter` already existed and is untouched — but the room-state payload gained a public field, so the spec now says where the override lives and that it is never written back.
+  - `CHANGELOG.md` — one user-facing line under a new `## 2026-08-18` section.
+
+### Design calls and why
+
+- **Authoring was already done.** `author.js:406` already renders a "Presented by" input (`data-title-field="presenter"`, `maxlength="120"`), `quiz-validation.js:9` already bounds it, and `quiz.sample.json` / `music-trivia.question-bank.json` already carry `titlePage.presenter: "ADO&S PRESENTS"`. Per the task's instruction, I confirmed this and left it alone. The new host input reuses the same 120-character limit so the two fields cannot disagree.
+- **Room state, not host-local state.** This was forced by the code, not a preference: `presentationTitlePage()` and `finalScoreTitlePage()` run in the **presenter** view, which fetches its *own* copy of `hostQuizDefinition` (`app.js` ~line 830, gated on the host secret). A host-local variable would never reach the big screen. `publicRoomState()` is the only payload the presenter receives, so the override rides there. It is a public credit line — the same class of data as the `quizTitle`/`quizSubtitle` already in that payload — so it leaks nothing to players.
+- **Broadcast the raw override, not the resolved string.** The presenter resolves the override against its own authored copy. This keeps the fallback local, so clearing the override restores the authored line with no extra round trip, and it leaves existing no-override behavior byte-identical.
+- **It survives a host reload, deliberately.** This came free and I kept it: `persistHostState()` writes `publicState: publicRoomState()` to the server, and the reload path merges `savedRoom.state` back into `state`. A host who refreshes mid-show should not silently lose the audience's name from the closing card. It is still per-session — scoped to the room, never to the quiz file.
+- **Placed in `hostUtilityControls()`, which renders on all three host screens** (main, doors, finale). The closing card shows the same credit line as the opening one, so the host must be able to set or fix it at either end of a show.
+- **No `render()` in the input handler.** It mirrors the existing audio-volume control exactly: `input` → update state + `emit()` (live big-screen update, no server write); `change` (blur/Enter) → also `persistHostState()`. A `render()` on keystroke would replace the host panel's `innerHTML` and destroy the input mid-typing. There is a regression test asserting the handler contains no `render()` call.
+- **Presenter repaint needs no render-path change.** `presenterRenderKey()` destructures away only the non-visual fields (`activeClipId`, `audioCommand`, `revision`, `submitted`, `audioVolume`, `mediaCommand`) and stringifies the rest, so `presenterOverride` is in the key automatically and a change repaints the shared screen. I touched neither `render()` nor the gating in `receive()`, per the concurrent-agent coordination constraint. A test asserts `presenterRenderKey` does not strip the field.
+
+### Commands run and actual output
+
+```
+$ npm test
+ℹ tests 160
+ℹ suites 0
+ℹ pass 160
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2122.408605
+```
+
+Baseline before any edit was 149 pass / 0 fail, so the 11 new tests are the whole delta.
+
+Verified the new tests actually discriminate rather than passing vacuously: backed `app.js` up to a scratch directory, reverted the `publicRoomState()` field and both resolver call sites to their pre-change form, and re-ran the new file — the two wiring tests failed as intended:
+
+```
+✖ the override travels to the presentation screen in the broadcast room state
+✖ both the opening and closing title cards resolve the override against the quiz file
+ℹ tests 11
+ℹ pass 9
+ℹ fail 2
+```
+
+Then restored from the backup and confirmed `md5` byte-identical to the pre-mutation file, `node --check app.js` clean, and the full suite green again.
+
+### Could not verify
+
+- **No browser verification of any kind.** I did not run the dev server, open the host screen, or watch a real presentation screen update. Everything visual here — that the new control sits sensibly in the host panel, that `.host-presenter-override` looks right next to `.question-jump`, and above all that the credit line actually repaints live on the big screen when the host types — is argued from source reading and tests, not observed. This is the main thing to check live.
+- **The two-tab live path is unproven.** The chain (host `input` → `emit()` → Supabase broadcast → `receive()` → `presenterRenderKey` differs → `render()`) is verified only structurally.
+- **Host-reload persistence is unproven end to end.** It follows from `persistHostState()` writing `publicRoomState()` and the reload merging `savedRoom.state`, but I did not actually refresh a live host.
+
+### Handoffs / notes for whoever is next
+
+- **For the concurrent host-render-gate agent:** I added exactly one new host control and one state field; I did not touch `render()` or the gating in `receive()`. But be aware this is now a **text input on the host screen**, which is the known mid-typing-destruction hazard. My handler avoids self-inflicted re-renders, and because state is updated on every keystroke the input's `value` is repopulated correctly if some *other* code path re-renders — but the **caret position will jump to the end**, and an IME composition would be interrupted. If the render gate ends up re-rendering the host panel on unrelated events (a player submission, a presence ping), that will be user-visible as caret jitter while typing a credit line. The clean fix, if it becomes a problem, is to skip re-rendering while `document.activeElement` is inside the host panel — that belongs in the render-gating slice, not here, so I left it alone.
+- **Pre-existing, unrelated:** a fresh worktree has no `video-processor.worker.bundle.js` (git-ignored generated output), so `test/deploy-manifest.test.js` fails until `npm run build:video` is run. Same gap the 2026-08-17 image-assistant entry hit. I ran `npm run build:video` rather than copying the bundle; installed nothing and did not touch `package-lock.json`.
+- **Known limitation, left as-is:** a presentation screen opened without the host secret has `hostQuizDefinition === null`, so it already showed the default `"ADO&S PRESENTS"` rather than the authored credit, both before and after this change. The override still works there (it wins regardless of the authored value). Broadcasting the *resolved* credit instead of the raw override would incidentally fix that too, but it changes existing no-override behavior, so I judged it out of scope.

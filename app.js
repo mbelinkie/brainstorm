@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, resolvePresenterCredit, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -140,7 +140,10 @@ const defaultState = {
   doorResults: [],
   targetRoundIndex: null,
   intermissionStage: null,
-  screenHistory: []
+  screenHistory: [],
+  // Per-session "presented by" override set from the host screen. Empty means
+  // "use the quiz file's own credit line"; it is never saved to the quiz JSON.
+  presenterOverride: ""
 };
 
 
@@ -159,6 +162,10 @@ function publicRoomState() {
   return {
     quizTitle: hostQuizDefinition?.title || state.quizTitle || "Quiz night",
     quizSubtitle: hostQuizDefinition?.titlePage?.subtitle || state.quizSubtitle || "Get ready — we’ll begin shortly.",
+    // Public credit line only — the same class of data as quizTitle above, and
+    // it must reach the presentation screen, which resolves it against the
+    // quiz file's authored value.
+    presenterOverride: state.presenterOverride || "",
     phase: state.phase,
     presentationScreen: state.presentationScreen || "intermission",
     revision: state.revision || 0,
@@ -1021,7 +1028,17 @@ function roundProgress() {
 }
 
 function hostUtilityControls() {
-  return `<div class="host-utilities"><button class="btn btn-secondary" data-previous>Previous <span class="keyhint">P / ←</span></button><button class="btn btn-secondary" data-next-screen>Next <span class="keyhint">N / →</span></button><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button></div>`;
+  return `<div class="host-utilities"><button class="btn btn-secondary" data-previous>Previous <span class="keyhint">P / ←</span></button><button class="btn btn-secondary" data-next-screen>Next <span class="keyhint">N / →</span></button><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button></div>${presenterOverrideControl()}`;
+}
+
+// Per-session credit line. This lives on every host screen (including the
+// finale) because the closing title card shows the same line as the opening
+// one, so the host must be able to set or correct it at either end of a show.
+function presenterOverrideControl() {
+  if (view !== "host") return "";
+  const authoredCredit = resolvePresenterCredit("", hostQuizDefinition?.titlePage?.presenter);
+  const restoreHint = authoredCredit ? `restore “${escapeHtml(authoredCredit)}”` : "restore the quiz's own (blank) credit line";
+  return `<div class="host-presenter-override"><label for="presenter-override-input">Presented by <span>this show only</span></label><input id="presenter-override-input" data-presenter-override type="text" maxlength="120" autocomplete="off" value="${escapeHtml(state.presenterOverride || "")}" placeholder="${escapeHtml(authoredCredit || "No credit line")}" /><small>Shows above the quiz title on the opening and closing screens. Clear it to ${restoreHint}. Never saved into the quiz file.</small></div>`;
 }
 
 function questionJumpControls() {
@@ -1802,7 +1819,7 @@ function presentationTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
   const subtitle = titlePage.subtitle || "Get your phone ready — we’ll begin shortly.";
-  const presenter = titlePage.presenter ?? "ADO&S PRESENTS";
+  const presenter = resolvePresenterCredit(state.presenterOverride, titlePage.presenter);
   const presenterMarkup = presenter ? `<p class="eyebrow">${escapeHtml(presenter)}</p>` : "";
   const titleIcon = titlePage.icon || "♫";
   const musicLogo = `<span class="presentation-title-music-logo" aria-hidden="true">${escapeHtml(titleIcon)}</span>`;
@@ -1849,7 +1866,7 @@ function finalPodiumCard() {
 function finalScoreTitlePage() {
   const titlePage = hostQuizDefinition?.titlePage || {};
   const title = hostQuizDefinition?.title || "Quiz night";
-  const presenter = titlePage.presenter ?? "ADO&S PRESENTS";
+  const presenter = resolvePresenterCredit(state.presenterOverride, titlePage.presenter);
   const presenterMarkup = presenter ? `<p class="eyebrow">${escapeHtml(presenter)}</p>` : "";
   // The closing screen is about the players and their final standing, so it
   // intentionally omits the circular music-note title treatment.
@@ -2387,6 +2404,24 @@ function attachEvents() {
       await persistHostState();
     });
   });
+  // Mirrors the audio-volume control above: update state and broadcast on
+  // every keystroke so the shared screen tracks the credit line live, but only
+  // write to the server on commit (blur/Enter). Deliberately no render() call —
+  // re-rendering the host panel mid-keystroke would destroy the very input the
+  // host is typing into.
+  const presenterOverrideInput = document.querySelector("[data-presenter-override]");
+  if (presenterOverrideInput) {
+    const applyPresenterOverride = () => {
+      if (view !== "host") return;
+      state.presenterOverride = presenterOverrideInput.value;
+      emit();
+    };
+    presenterOverrideInput.addEventListener("input", applyPresenterOverride);
+    presenterOverrideInput.addEventListener("change", async () => {
+      applyPresenterOverride();
+      await persistHostState();
+    });
+  }
   document.querySelectorAll("[data-video-command]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "host" || !hostQuizDefinition || !hostQuestion.video) return;
     state.mediaCommand = { id: crypto.randomUUID(), kind: "video", action: button.dataset.videoCommand, mediaScope: "question", questionId: hostQuestion.id };

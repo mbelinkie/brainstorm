@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-18
+
+- Added a "Presented by" override to the Host screen's session controls, so the same quiz file can be run for different audiences without saving a new version. Typing a credit line replaces the quiz's authored "presented by" text on both the opening and closing Presentation title screens, updating the shared screen live; clearing the field restores the quiz's own line. The override applies to the current session only and is never written back into the quiz. The authoring editor's existing "Presented by" field still sets the default.
+
 ## 2026-08-17
 
 - Raised the local source-file size limit for the "Trim and upload clip" audio buttons (question audio cue, title music, finale, between-round, matching clips) from 25 MB to 500 MB. The old cap was really the final-upload limit for the rendered clip, not the raw source an author picks before trimming — a large local WAV/FLAC source could hit it long before the much smaller trimmed clip ever would.

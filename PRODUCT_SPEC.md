@@ -95,6 +95,8 @@ The host can run a polished, varied music quiz without manually collecting or to
 
 Creates or selects a quiz, starts a room, controls the game, plays audio, resolves manually graded answers, and reveals the leaderboard.
 
+The host may also override the quiz's authored "presented by" credit line (`titlePage.presenter`) for a single session, so one quiz file can be run for several different audiences without being edited and re-saved. The override is session state carried in the room broadcast, never written back into the quiz JSON; clearing it restores the authored credit.
+
 ### Player
 
 Joins with a nickname, answers only the current question, sees a clear submitted/locked state, and follows shared reveals and scores.
@@ -106,6 +108,7 @@ The browser tab shared into Google Meet. It is the visual center of the game and
 It shows:
 
 - Lobby and join code/QR code
+- Opening and closing title cards, including the "presented by" credit line (authored in the quiz, optionally overridden by the host for the current session)
 - Round title cards
 - Current question and answer choices where appropriate
 - Audio playback controls for audio questions
