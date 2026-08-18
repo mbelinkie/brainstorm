@@ -2030,6 +2030,17 @@ function presentationCornerJoinQr() {
   return `<div class="presenter-join-qr presenter-join-qr--corner" aria-label="Scan to join this quiz"><canvas data-join-qr aria-hidden="true"></canvas><span>${escapeHtml(roomCode)}</span></div>`;
 }
 
+// The countdown lives in its own fixed, top-center badge — a sibling of the
+// corner join QR, not nested inside the round heading — so it never gets
+// tucked under the QR badge that floats over the top-right corner. See
+// mistakes.md #7: Presentation should not rebuild local layout assumptions
+// inside the round heading; give shared-screen overlays their own slot.
+function presentationTimerBadge() {
+  if (state.phase !== "open") return "";
+  const readout = timerDisplay();
+  return readout ? `<div class="presentation-timer-badge" data-presentation-timer-badge>${readout}</div>` : "";
+}
+
 function renderPresenter() {
   const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
@@ -2057,7 +2068,7 @@ function renderPresenter() {
   const displayedRound = ["door_choice", "door_reveal"].includes(state.phase) ? Number(state.targetRoundIndex) + 1 : state.question?.round || 1;
   const displayedTitle = ["door_choice", "door_reveal"].includes(state.phase) ? hostQuizDefinition?.rounds?.[state.targetRoundIndex]?.title || "Next round" : state.question?.roundTitle || "Brainstorm";
   const isFullscreenFinale = ["final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen);
-  const heading = ["title", "round_end", "round_start", "final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen) ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1>${state.phase === "open" ? timerDisplay() : ""}</section>`;
+  const heading = ["title", "round_end", "round_start", "final_suspense", "final_podium", "final_scores"].includes(state.presentationScreen) ? "" : `<section class="presentation-round presentation-round--${state.phase}"><p class="eyebrow">${phaseLabel} · Round ${displayedRound} of ${state.question?.totalRounds || 1}</p><h1>${escapeHtml(state.phase === "complete" ? "Quiz Complete" : displayedTitle)}</h1></section>`;
   const fullscreenControl = '<div class="presentation-fullscreen-corner"><button class="presentation-fullscreen-toggle" data-toggle-fullscreen aria-label="Toggle fullscreen presentation" title="Toggle fullscreen">⛶</button></div>';
   // Keep the ordinary title-page QR behavior explicit; finale screens are
   // intentionally QR-free so they read as a clean, full-screen send-off.
@@ -2066,7 +2077,7 @@ function renderPresenter() {
   // The title page already has its own join code. On every other presentation
   // screen, replace the room badge with the corner QR and its room ID.
   const titleTopbar = brandTopbar(false, false, state.presentationScreen === "title");
-  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || state.presentationScreen === "round_start" || state.presentationScreen === "round_end" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${fullscreenControl}${soundGate}`, true);
+  app.innerHTML = shell(`${isFullscreenFinale ? "" : titleTopbar}<main class="presentation-main ${state.presentationScreen === "title" || state.presentationScreen === "round_start" || state.presentationScreen === "round_end" || isFullscreenFinale ? "presentation-main--title" : ""}">${heading}${card}${scoreCelebration()}</main>${cornerJoinQr}${presentationTimerBadge()}${fullscreenControl}${soundGate}`, true);
   const videoStage = document.querySelector("[data-presentation-video-stage]");
   if (videoStage && presentationVideoPlayer) videoStage.append(presentationVideoPlayer);
   updateTitleCaption();

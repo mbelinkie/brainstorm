@@ -73,7 +73,30 @@ test("next-question navigation follows the authored question ID, not a restored 
 });
 
 test("presenter timer is a prominent shared-screen control", () => {
-  assert.match(styles, /presentation-round \.question-timer\{[^}]*min-width:clamp\(112px,13vw,190px\)[^}]*font-size:clamp\(30px,5\.6vh,68px\)/);
+  assert.match(styles, /\.is-presentation \.presentation-timer-badge \.question-timer\{[^}]*min-width:clamp\(112px,13vw,190px\)[^}]*font-size:clamp\(30px,5\.6vh,68px\)/);
+});
+
+test("presenter timer sits in its own fixed top-center badge, clear of the corner join QR", () => {
+  // The timer must not be rendered inside the round heading (where it used to
+  // sit at the right edge, overlapping the corner QR badge) or inside the
+  // corner QR container itself.
+  const renderPresenterFn = app.slice(app.indexOf("function renderPresenter()"), app.indexOf("function playerScoreCards"));
+  const headingMarkup = renderPresenterFn.match(/const heading = [\s\S]*?;\n/)?.[0] || "";
+  assert.doesNotMatch(headingMarkup, /timerDisplay\(\)/);
+  const cornerQrFn = app.slice(app.indexOf("function presentationCornerJoinQr"), app.indexOf("function presentationCornerJoinQr") + 300);
+  assert.doesNotMatch(cornerQrFn, /timerDisplay\(\)|data-timer-readout/);
+
+  // It renders instead as its own sibling element, still exposing the
+  // data-timer-readout hook that updateTimer() ticks on a 250ms interval,
+  // and still supports the is-expired state.
+  assert.match(app, /function presentationTimerBadge\(\)[\s\S]*?<div class="presentation-timer-badge"[^>]*>\$\{readout\}<\/div>/);
+  assert.match(renderPresenterFn, /\$\{cornerJoinQr\}\$\{presentationTimerBadge\(\)\}/);
+  assert.match(app, /data-timer-readout/);
+
+  // Positioned as a fixed, horizontally centered badge — top-center of the
+  // screen — independent of the corner QR's top-right fixed position.
+  assert.match(styles, /\.presentation-timer-badge\{position:fixed;[^}]*left:50%;transform:translate\(-50%,-50%\)/);
+  assert.match(styles, /\.presenter-join-qr--corner\{position:fixed;[^}]*top:14px;right:/);
 });
 
 test("presentation reserves one title QR and uses a large corner QR with a simple question-transition card", () => {
