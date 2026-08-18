@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { fadeFactor, outputVideoDimensions, validateVideoEdit, clampManualAudioVolumePercent, manualAudioVolumeGain, resolveAudioClipProcessing } from "../video-utils.js";
+import { fadeFactor, outputVideoDimensions, validateVideoEdit, clampManualAudioVolumePercent, manualAudioVolumeGain, resolveAudioClipProcessing, audioSourceFileError, MAX_AUDIO_SOURCE_BYTES } from "../video-utils.js";
 import { toPlayerQuestion } from "../quiz-core.js";
 import { validateQuiz } from "../quiz-validation.js";
 
@@ -27,6 +27,14 @@ test("manual audio volume override clamps percent and bypasses automatic levelin
   assert.deepEqual(resolveAudioClipProcessing({ normalize: true, outputGain: 1 }, 40), { normalize: false, outputGain: .4 });
   // A manual override also wins over a non-default base, e.g. door background music.
   assert.deepEqual(resolveAudioClipProcessing({ normalize: false, outputGain: .5 }, 30), { normalize: false, outputGain: .3 });
+});
+
+test("audio source file gate accepts a large local audio file and rejects non-audio or oversized files", () => {
+  assert.equal(audioSourceFileError({ type: "audio/wav", size: MAX_AUDIO_SOURCE_BYTES }), null);
+  assert.equal(audioSourceFileError({ type: "audio/wav", size: 26214400 + 1 }), null); // bigger than the old 25 MB cap is fine now
+  assert.equal(audioSourceFileError(null), "Choose an audio file up to 500 MB.");
+  assert.equal(audioSourceFileError({ type: "video/mp4", size: 1000 }), "Choose an audio file up to 500 MB.");
+  assert.equal(audioSourceFileError({ type: "audio/wav", size: MAX_AUDIO_SOURCE_BYTES + 1 }), "Choose an audio file up to 500 MB.");
 });
 
 test("video output dimensions preserve aspect ratio and AVC-safe pixels", () => {
