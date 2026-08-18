@@ -426,14 +426,19 @@ function bindEditorEvents() {
   document.querySelectorAll("[data-remove-between-round-audio]").forEach((button) => button.addEventListener("click", () => { if (bonusConfig().audio) delete bonusConfig().audio[button.dataset.removeBetweenRoundAudio]; markChanged(); renderEditor(); renderPreview(); }));
   document.querySelectorAll("[data-remove-audio]").forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.removeAudio;
+    let removed = true;
     if (target === "question") {
       if (question().audio) delete question().audio.mediaAssetId;
     } else if (target.startsWith("finale:")) {
       if (finaleConfig().audio) delete finaleConfig().audio[target.slice(7)];
+    } else if (target.startsWith("between:")) {
+      if (bonusConfig().audio) delete bonusConfig().audio[target.slice(8)];
     } else if (target.startsWith("clip:")) {
       const clip = question().clips?.[Number(target.slice(5))];
       if (clip) delete clip.mediaAssetId;
-    }
+    } else removed = false;
+    // Nothing was removed, so nothing may report itself as saved.
+    if (!removed) return;
     markChanged();
     renderEditor();
     renderPreview();

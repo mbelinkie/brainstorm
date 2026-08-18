@@ -42,6 +42,24 @@ test("importing a JSON file persists the draft it just adopted", () => {
   assert.doesNotMatch(importer, /download to keep edits/);
 });
 
+test("removing a between-round sound actually removes it, and an unrecognised target never reports a save", () => {
+  const start = author.indexOf('document.querySelectorAll("[data-remove-audio]")');
+  const source = author.slice(start, author.indexOf('document.querySelectorAll("[data-remove-image]")', start));
+  const body = source.slice(source.indexOf("=> {") + 4, source.lastIndexOf("}));"));
+  const handler = new Function("button", "question", "finaleConfig", "bonusConfig", "markChanged", "renderEditor", "renderPreview", body);
+  const bonus = { audio: { roundEnd: { mediaAssetId: "asset-1" }, doorChoice: { mediaAssetId: "asset-2" } } };
+  const noop = () => {};
+  let saved = 0;
+  const run = (target) => handler({ dataset: { removeAudio: target } }, () => ({}), () => ({}), () => bonus, () => { saved += 1; }, noop, noop);
+  run("between:roundEnd");
+  assert.deepEqual(Object.keys(bonus.audio), ["doorChoice"]);
+  assert.equal(saved, 1);
+  saved = 0;
+  run("mystery:thing");
+  assert.deepEqual(Object.keys(bonus.audio), ["doorChoice"]);
+  assert.equal(saved, 0);
+});
+
 test("valid attached images do not depend on the media-library list", () => {
   const preview = author.slice(author.indexOf("function attachedImagePreview"), author.indexOf("function imageReformatButton"));
   assert.match(preview, /validAssetId\(assetId\)/);
