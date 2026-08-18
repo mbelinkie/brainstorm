@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_SESSION_TTL_MS, tallyQuestionResults, toPlayerQuestion } from "../quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, PLAYER_IDENTITY_ROOM_LIMIT, PLAYER_SESSION_TTL_MS, playerIdentityForRoom, readPlayerIdentityStore, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "../quiz-core.js";
 
 test("player payload is an explicit allowlist", () => {
   const player = toPlayerQuestion({ id: "q1", type: "image_selection", prompt: "Choose", correctOptionIds: ["a"], hostReveal: "Secret", audio: { url: "https://private.example/clip" }, options: [{ id: "a", label: "Visible", imageAssetId: "asset-1", imageSource: "Private source" }] });
@@ -65,6 +65,93 @@ test("a player identity with no recorded activity is treated as expired", () => 
   assert.equal(isPlayerSessionExpired(null), true);
   assert.equal(isPlayerSessionExpired(undefined), true);
   assert.equal(isPlayerSessionExpired("not-a-timestamp"), true);
+});
+
+// The saved identity is keyed by room code, so the TTL above and the room a
+// phone is scanning into are enforced independently. The reported bug was a
+// phone that played room ABC123 an hour ago -- comfortably inside the TTL --
+// reusing that name and logo when it scanned the QR for an unrelated room.
+const NOW = Date.parse("2026-08-18T21:00:00Z");
+const identityStore = (rooms) => JSON.stringify(rooms);
+const roomA = { playerId: "token-a", playerName: "Belinkie", logoKey: "avatar-03", lastActiveAt: NOW - 60 * 60 * 1000 };
+
+test("rejoining the same room inside the TTL restores the saved name, logo, and token", () => {
+  // The must-not-regress case: a phone that screen-locked, had its tab
+  // evicted, or closed the tab mid-game rescans the SAME QR and has to land
+  // back on its existing score rather than on a blank join screen.
+  const restored = playerIdentityForRoom(identityStore({ ABC123: roomA }), "ABC123", NOW);
+  assert.equal(restored.playerName, "Belinkie");
+  assert.equal(restored.logoKey, "avatar-03");
+  assert.equal(restored.playerId, "token-a", "the player token must survive, or the server issues a new player row");
+});
+
+test("scanning a DIFFERENT room inside the TTL offers no saved identity", () => {
+  // The reported bug. One hour idle, so isPlayerSessionExpired() alone would
+  // happily hand back the old name; keying by room is what stops it.
+  assert.equal(isPlayerSessionExpired(roomA.lastActiveAt, NOW), false);
+  assert.equal(playerIdentityForRoom(identityStore({ ABC123: roomA }), "XYZ789", NOW), null);
+});
+
+test("rejoining the same room past the TTL offers no saved identity", () => {
+  const stale = { ...roomA, lastActiveAt: NOW - PLAYER_SESSION_TTL_MS - 1 };
+  assert.equal(playerIdentityForRoom(identityStore({ ABC123: stale }), "ABC123", NOW), null);
+});
+
+test("joining a second room retains the first room's identity rather than clobbering it", () => {
+  // A host running two rooms back to back, or a player who opens the wrong QR
+  // code and then rescans the right one, must still be able to return to the
+  // first room and find their existing score attached to their token.
+  const afterJoiningB = writePlayerIdentityForRoom(identityStore({ ABC123: roomA }), "XYZ789", { playerId: "token-b", playerName: "Belinkie", logoKey: "avatar-07" }, NOW);
+  assert.equal(playerIdentityForRoom(afterJoiningB, "XYZ789", NOW).playerId, "token-b");
+  const backInA = playerIdentityForRoom(afterJoiningB, "ABC123", NOW);
+  assert.equal(backInA.playerId, "token-a");
+  assert.equal(backInA.playerName, "Belinkie");
+  assert.equal(backInA.lastActiveAt, roomA.lastActiveAt, "room A's own TTL clock must not be extended by activity in room B");
+});
+
+test("each room's identity expires on its own clock", () => {
+  const raw = identityStore({ ABC123: roomA, XYZ789: { ...roomA, playerId: "token-b", lastActiveAt: NOW - PLAYER_SESSION_TTL_MS - 1 } });
+  assert.ok(playerIdentityForRoom(raw, "ABC123", NOW));
+  assert.equal(playerIdentityForRoom(raw, "XYZ789", NOW), null);
+});
+
+test("writing an identity prunes expired rooms and caps how many are kept", () => {
+  const rooms = { EXPIRE: { ...roomA, lastActiveAt: NOW - PLAYER_SESSION_TTL_MS - 1 } };
+  for (let index = 0; index < PLAYER_IDENTITY_ROOM_LIMIT + 4; index += 1) rooms[`ROOM${index}`] = { ...roomA, playerId: `token-${index}`, lastActiveAt: NOW - index * 1000 };
+  const written = writePlayerIdentityForRoom(identityStore(rooms), "NEWEST", { playerId: "token-new", playerName: "Belinkie", logoKey: "avatar-01" }, NOW);
+  const kept = Object.keys(JSON.parse(written));
+  assert.equal(kept.length, PLAYER_IDENTITY_ROOM_LIMIT);
+  assert.equal(kept[0], "NEWEST");
+  assert.ok(!kept.includes("EXPIRE"), "an expired room entry must not survive a write");
+  assert.ok(!kept.includes("ROOM11"), "the least recently active rooms are evicted first");
+});
+
+test("the legacy unkeyed identity is adopted onto a room without extending its TTL", () => {
+  // app.js's one-shot migration passes the legacy activity timestamp through
+  // rather than restamping to now, so an adopted identity still expires when
+  // the original 6-hour gap runs out instead of getting a free extension.
+  const legacyAt = NOW - 5 * 60 * 60 * 1000;
+  const migrated = writePlayerIdentityForRoom("", "ABC123", { playerId: "legacy-token", playerName: "Belinkie", logoKey: "avatar-03", lastActiveAt: legacyAt }, NOW);
+  assert.equal(playerIdentityForRoom(migrated, "ABC123", NOW).lastActiveAt, legacyAt);
+  assert.equal(playerIdentityForRoom(migrated, "ABC123", legacyAt + PLAYER_SESSION_TTL_MS + 1), null);
+});
+
+test("an unreadable identity store degrades to no saved identity instead of throwing", () => {
+  for (const raw of ["", null, undefined, "not json", "[1,2,3]", '"a string"', '{"ABC123":null}']) {
+    assert.equal(playerIdentityForRoom(raw, "ABC123", NOW), null);
+    assert.deepEqual(readPlayerIdentityStore(raw, NOW), {});
+  }
+});
+
+test("an entry with no player token is not a resumable identity", () => {
+  // app.js persists the room entry as soon as the join screen renders, before
+  // a name exists; that half-written entry must not skip the join screen.
+  assert.equal(playerIdentityForRoom(identityStore({ ABC123: { playerId: "", playerName: "", logoKey: "", lastActiveAt: NOW } }), "ABC123", NOW), null);
+});
+
+test("a missing room code never resolves to another room's identity", () => {
+  assert.equal(playerIdentityForRoom(identityStore({ ABC123: roomA }), "", NOW), null);
+  assert.equal(playerIdentityForRoom(identityStore({ ABC123: roomA }), undefined, NOW), null);
 });
 
 // tallyQuestionResults() is the host's post-reveal "who got it right"

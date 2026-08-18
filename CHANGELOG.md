@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-08-18
+
+- Fixed a phone that had recently played still skipping the join screen when it scanned the QR code for a *different* room, reusing the previous game's name and logo. The 6-hour inactivity expiry added on 2026-08-17 only bounded how long ago a device last played, not which room it played in, so a player who joined an earlier room the same evening was silently carried into the next one. A saved name and logo now belong to the room code they were created in: entering a new room always offers a fresh name and icon, while rescanning the same room's QR still restores the player's identity and score after a screen lock, an evicted tab, or an accidentally closed tab. Identities for other rooms are kept, not discarded, so a player who opens the wrong QR code and then rescans the right one lands back on their existing score.
+
 ## 2026-08-17
 
 - Raised the local source-file size limit for the "Trim and upload clip" audio buttons (question audio cue, title music, finale, between-round, matching clips) from 25 MB to 500 MB. The old cap was really the final-upload limit for the rendered clip, not the raw source an author picks before trimming — a large local WAV/FLAC source could hit it long before the much smaller trimmed clip ever would.

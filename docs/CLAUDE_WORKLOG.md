@@ -496,3 +496,64 @@ $ npm test
   - Did not open `author.html` in a browser to visually confirm the preview-column layout looks correct with the assistant panel gone, or that the per-image "⌄" menu (now containing only "Upload image") still opens/closes and looks reasonable with one item instead of two.
   - Did not deploy or exercise the live Cloudflare Worker — confirmed by source inspection and the regression test that `/media-assistant/search` is gone from `cloudflare-worker.js`, `server.mjs`, and `wrangler.jsonc`, but did not hit a running Worker to confirm the route now 404s.
   - Left the `source` parameter on `author.js`'s `uploadPrivateImage(file, optionIndex, source = null)` in place even though the only caller that ever passed a non-null `source` (`approveSuggestedImage`) is gone — it's dead but harmless (defaults to `null`, which is also what plain manual uploads already pass), and removing it would touch a function several other tests slice by name; left it rather than risk an unrelated regression for a cosmetic cleanup.
+
+## 2026-08-18 — Saved player identity was time-bounded but not room-scoped
+
+- **Branch:** `claude/room-scoped-player-identity`, worktree `.claude/worktrees/claude-room-scoped-player-identity` off `main` at `b58adb7`.
+- **Bug (user-reported):** "When a person tries to enter a NEW room with the same phone, they should get a new opportunity to pick a name and icon. Authentication shouldn't last forever. I just tested it and scanning the QR code with my phone immediately brings up my old name/icon."
+- **Files touched:** `quiz-core.js`, `app.js`, `test/quiz-core.test.js`, `test/player-logo.test.js`, `CHANGELOG.md`, this file.
+
+### Diagnosis (confirmed, not assumed)
+
+The branch the user was unsure about *did* merge: `git merge-base --is-ancestor 22f24c3 main` exits 0, and `22f24c3` ("fix: expire saved player identity after a 6-hour session gap") is in `git log main`. It implemented the wrong axis for this symptom. It added `musicTriviaPlayerSessionAt` plus `isPlayerSessionExpired()` with a 6-hour TTL, clearing the identity only when the device had been idle that long. Nothing in it referenced the room. That commit's own worklog entry says so outright: "Did not scope the TTL by room code — the reported symptom is purely about elapsed time."
+
+So a phone that played room `ABC123` an hour ago and then scanned the QR for the unrelated room `XYZ789` was well inside the TTL, `playerName` was still populated, and `renderPlayer()`'s `params.has("room") && !playerName` gate never fired — the join screen was skipped and the auto-rejoin branch (`app.js`, `view === "player" && params.has("room") && playerName`) joined the new room under the old name and logo. "How long ago did this phone play" and "which room did it play in" are orthogonal, and only the first had been built. Reproduced as a model rather than on hardware; see "Could not verify".
+
+### Design decisions
+
+**Room code as the key.** `public.room_code()` draws 6 characters from a 32-character alphabet, `sessions.room_code` carries a `unique` constraint, and `create_live_room` loops retrying on `unique_violation` (`supabase/migrations/0002_live_room_rpc.sql`). No migration deletes session rows, so a code is never recycled onto a later, unrelated game. The room code is therefore a durable identifier, not a reusable slot, and is safe to key persisted identity on.
+
+**#3 — other rooms are RETAINED, not clobbered.** Identity is stored as a small map (`quizPlayerIdentities`) keyed by room code, each entry carrying its own `lastActiveAt`. Clobbering on each new join would be a few bytes cheaper and materially worse: a player who opens the wrong QR code (a stale poster, a neighbour's screen), picks a name, and then rescans the right one would have had their real room's token destroyed, and would rejoin as a brand-new player with a zeroed score — the exact catastrophic failure this task warned against, just triggered a different way. Same for a host running two rooms back to back who sends a phone back to the first. Retention costs a few hundred bytes; the map is pruned of expired entries and capped at `PLAYER_IDENTITY_ROOM_LIMIT` (8) most-recently-active rooms on every write, so it cannot grow without bound. Activity in one room never refreshes another room's clock — each entry expires on its own TTL.
+
+**#4 — the legacy unkeyed identity is migrated onto the current room, but only with proof.** Phones in the wild hold the old flat `musicTriviaPlayerId` / `musicTriviaPlayerName` / `quizPlayerLogoKey` / `musicTriviaPlayerSessionAt` keys. Dropping them outright is the simplest option and was rejected: a deploy can land mid-game, and every phone in a live room would be shown the join screen, re-join under a fresh token, and be orphaned from its score — worse for a live-audience tool than the bug being fixed. Migrating blindly onto the current room is also wrong: the legacy blob carries no room information, so a phone that played a *different* room an hour ago would get the reported bug one last time.
+
+The resolution uses evidence already on the device. `quiz-door-player:<roomCode>` is *already* room-keyed and is written by `rememberDoorPlayerRecord()` on every successful join and auto-rejoin (`join_live_room` always returns `playerId`, migration `0002`), so its presence proves this device genuinely joined *this* room. `migrateLegacyPlayerIdentity()` adopts the legacy identity onto the current room only when all of: the legacy name and token exist, `isPlayerSessionExpired()` says it is still inside the 6-hour TTL, the URL has a `room` param, and that room's door record exists. Otherwise it is discarded. Either way the legacy keys are removed from both storages, so the migration runs at most once per device. The original activity stamp is carried through rather than refreshed, so an adopted identity does not get a free TTL extension. Every failure mode of this gate falls toward *asking* for a name, never toward reusing the wrong one.
+
+**#2 — the TTL was layered under, not replaced.** `PLAYER_SESSION_TTL_MS` and `isPlayerSessionExpired()` are unchanged and now do the per-entry expiry inside the store, plus gate the legacy migration. `savePlayerIdentity()` restamps on join, name/logo pick, and door pick — the same events `savePlayerValue()` stamped before — so the TTL remains a *session gap*, not a hard clock.
+
+### Fix
+
+`quiz-core.js` gained pure, directly unit-tested helpers: `readPlayerIdentityStore()`, `playerIdentityForRoom()`, `writePlayerIdentityForRoom()`, and `PLAYER_IDENTITY_ROOM_LIMIT`. All are string-in/string-out over the serialized store, so the room-and-TTL logic is testable without a DOM. `app.js` reads its identity through `playerIdentityForRoom(localStorage.getItem(PLAYER_IDENTITY_KEY), roomCode)` and writes it through `savePlayerIdentity()`; an unknown room yields no identity, so the existing `!playerName` join-screen gate fires naturally without being touched.
+
+### Commands run and actual output
+
+```
+$ npm test        # baseline, before any edit
+ℹ tests 149
+ℹ pass 148
+ℹ fail 1          # pre-existing: test/deploy-manifest.test.js, see below
+
+$ npm test        # after the fix
+ℹ tests 161
+ℹ suites 0
+ℹ pass 161
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+The 1 baseline failure was `test/deploy-manifest.test.js` — `author.js references "./video-processor.worker.bundle.js", which does not exist` — a git-ignored generated artifact absent from any fresh worktree, failing identically before I touched anything. As a previous session did, I copied the already-built bundle from the main checkout into this worktree to get a clean full-suite run; I did not rebuild it, run `npm install`, or touch `package-lock.json` (`node_modules` and its `esbuild` devDependency are absent here). The file is git-ignored and is not in my commit.
+
+Verified the new tests actually fail without the fix, per TDD: restored `app.js` and `quiz-core.js` from `HEAD` into the worktree (backing my versions up to the scratchpad first, then copying them back) and re-ran the two test files — 4 structural tests in `player-logo.test.js` failed and `quiz-core.test.js` failed to load at all on the missing imports. Also confirmed the behavioural delta directly: with a store holding room `ABC123` last active one hour ago, a TTL-only lookup returns `"Belinkie"` for room `XYZ789` (the bug) while `playerIdentityForRoom()` returns `null`, and the same-room lookup still returns `"Belinkie"`.
+
+### Not regressed
+
+`test/player-logo.test.js`'s Android join-screen logo-layout test (commit `6532ffc`, the `min-height: 0` grid-row collapse) is untouched and passes; my change touches no CSS. The auto-submit test ("auto-submit skips a selection after its question has closed or changed") passes. Two pre-existing string-matching assertions in `player-logo.test.js` referenced storage mechanisms this change removes (`savePlayerValue("musicTriviaPlayerId", playerId)`, `savePlayerValue("quizPlayerLogoKey", playerLogoKey)`, and the `PLAYER_SESSION_ACTIVITY_KEY` wiring); I rewrote those assertions onto the new mechanism while keeping each test's original intent, and the behavioural guarantees they were proxying for are now covered by real unit tests in `quiz-core.test.js` instead of string matching.
+
+### Could not verify
+
+- **No real device, no live room.** Everything is a `localStorage` model verified in unit tests plus structural assertions that `app.js` is wired in the right order. I did not open the app on a phone, scan a QR code, or watch a join screen appear. The manual steps to confirm are in the handoff.
+- **The legacy migration path on a device that actually holds legacy keys.** The gate is asserted structurally and its TTL-carryover behaviour is unit-tested through `writePlayerIdentityForRoom()`, but I could not exercise a real phone whose storage predates this change. This is the highest-value thing for the user to spot-check on a handset that played before the deploy.
+- **The `PLAYER_IDENTITY_ROOM_LIMIT` cap of 8.** A judgment call. Visiting a room writes an entry even before a name is chosen, so casually opening several room URLs inside one TTL window consumes slots; 8 is far above any realistic quiz night, and eviction is least-recently-active first, but the number is not derived from data.
+- Did not touch `supabase/migrations/` — this is entirely client-side join-screen gating, no schema or server change.

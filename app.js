@@ -1,5 +1,5 @@
 import { randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, tallyQuestionResults, toPlayerQuestion } from "./quiz-core.js";
+import { correctOptionId, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -492,19 +492,21 @@ async function showNextScreen() {
 }
 // A player token is the credential that lets a phone resume its existing
 // player record. Unlike a tab session, local storage survives closing the
-// browser and scanning the room QR code again on the same device -- but only
-// for the same live session. PLAYER_SESSION_ACTIVITY_KEY tracks when this
-// device last used its saved identity; if that gap exceeds the TTL (a closed
-// tab reopened next week, not a QR rescan a minute later), the identity below
-// is wiped before it's read, so the join screen asks for a name again instead
-// of quietly reusing a previous game's name and logo.
-const PLAYER_SESSION_ACTIVITY_KEY = "musicTriviaPlayerSessionAt";
-if (isPlayerSessionExpired(localStorage.getItem(PLAYER_SESSION_ACTIVITY_KEY))) {
-  for (const key of ["musicTriviaPlayerId", "musicTriviaPlayerName", "quizPlayerLogoKey", PLAYER_SESSION_ACTIVITY_KEY]) {
-    localStorage.removeItem(key);
-    sessionStorage.removeItem(key);
-  }
-}
+// browser and scanning the room QR code again on the same device -- but the
+// saved identity is scoped to ONE ROOM, and to one live session within it.
+// Two independent bounds apply and both are needed:
+//   * time -- isPlayerSessionExpired()'s 6-hour TTL, so a phone that played
+//     last night is asked for a name again tonight; and
+//   * room -- the identity is stored under the room code it was created in
+//     (see quiz-core.js), so scanning a QR for a DIFFERENT room shows the join
+//     screen fresh however recently this phone played. The TTL alone cannot do
+//     that: "how long ago" and "which room" are orthogonal questions.
+// Rejoining the SAME room inside the TTL still restores name, logo, and player
+// token silently. That is what makes a screen lock, an evicted tab, or an
+// accidentally closed tab recoverable mid-game, and it must not regress.
+const PLAYER_IDENTITY_KEY = "quizPlayerIdentities";
+// The pre-room-keyed layout that phones in the wild are still holding.
+const LEGACY_PLAYER_KEYS = { playerId: "musicTriviaPlayerId", playerName: "musicTriviaPlayerName", logoKey: "quizPlayerLogoKey", activity: "musicTriviaPlayerSessionAt" };
 function persistedPlayerValue(key) {
   const value = localStorage.getItem(key) || sessionStorage.getItem(key) || "";
   if (value && !localStorage.getItem(key)) localStorage.setItem(key, value);
@@ -513,16 +515,52 @@ function persistedPlayerValue(key) {
 function savePlayerValue(key, value) {
   localStorage.setItem(key, value);
   sessionStorage.setItem(key, value);
-  localStorage.setItem(PLAYER_SESSION_ACTIVITY_KEY, String(Date.now()));
 }
-let playerId = persistedPlayerValue("musicTriviaPlayerId") || crypto.randomUUID();
-savePlayerValue("musicTriviaPlayerId", playerId);
-let playerName = persistedPlayerValue("musicTriviaPlayerName");
-let playerLogoKey = normalizePlayerLogoKey(persistedPlayerValue("quizPlayerLogoKey"));
+// Normalize the old unkeyed identity at this one boundary, once per device,
+// rather than carrying the legacy shape through the rest of the app
+// (mistakes.md #8). A deploy can land mid-game: dropping the identity outright
+// would show every phone in a live room the join screen and orphan players
+// from their scores, which is worse than the bug being fixed here. So the
+// legacy identity is adopted onto the CURRENT room -- but only with proof it
+// belongs to this room. `quiz-door-player:<roomCode>` is already room-keyed
+// and is written on every successful join, so its presence means this device
+// demonstrably joined THIS room. Without that proof, past the TTL, or with no
+// room in the URL, the legacy identity is discarded instead, so a phone that
+// played a different room an hour ago does not get the reported bug even once.
+// Either way the legacy keys are removed, so this can only run once.
+function migrateLegacyPlayerIdentity() {
+  const legacy = {
+    playerId: persistedPlayerValue(LEGACY_PLAYER_KEYS.playerId),
+    playerName: persistedPlayerValue(LEGACY_PLAYER_KEYS.playerName),
+    logoKey: persistedPlayerValue(LEGACY_PLAYER_KEYS.logoKey)
+  };
+  const lastActiveAt = localStorage.getItem(LEGACY_PLAYER_KEYS.activity);
+  for (const key of Object.values(LEGACY_PLAYER_KEYS)) {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  }
+  if (!legacy.playerId || !legacy.playerName) return;
+  if (isPlayerSessionExpired(lastActiveAt)) return;
+  if (!params.has("room") || !persistedPlayerValue(`quiz-door-player:${roomCode}`)) return;
+  localStorage.setItem(PLAYER_IDENTITY_KEY, writePlayerIdentityForRoom(localStorage.getItem(PLAYER_IDENTITY_KEY), roomCode, { ...legacy, lastActiveAt: Number(lastActiveAt) }));
+}
+migrateLegacyPlayerIdentity();
+const savedPlayerIdentity = playerIdentityForRoom(localStorage.getItem(PLAYER_IDENTITY_KEY), roomCode);
+let playerId = savedPlayerIdentity?.playerId || crypto.randomUUID();
+let playerName = savedPlayerIdentity?.playerName || "";
+let playerLogoKey = normalizePlayerLogoKey(savedPlayerIdentity?.logoKey);
+// Stamping on every identity write is what keeps the TTL a *session gap*
+// rather than a hard clock: join, name/logo pick, and door pick each refresh
+// this room's entry, and only this room's.
+function savePlayerIdentity() {
+  localStorage.setItem(PLAYER_IDENTITY_KEY, writePlayerIdentityForRoom(localStorage.getItem(PLAYER_IDENTITY_KEY), roomCode, { playerId, playerName, logoKey: playerLogoKey }));
+}
+savePlayerIdentity();
 let doorPlayerRecordId = persistedPlayerValue(`quiz-door-player:${roomCode}`);
 function rememberDoorPlayerRecord(id) {
   doorPlayerRecordId = id;
   savePlayerValue(`quiz-door-player:${roomCode}`, id);
+  savePlayerIdentity();
 }
 let lateJoinBonus = null;
 
@@ -2224,8 +2262,7 @@ function attachEvents() {
     try {
       const joined = await roomApi.joinRoom({ roomCode, displayName: name, playerToken: playerId, logoKey: playerLogoKey });
       playerName = name;
-      savePlayerValue("musicTriviaPlayerName", name);
-      savePlayerValue("quizPlayerLogoKey", playerLogoKey);
+      savePlayerIdentity();
       rememberDoorPlayerRecord(joined.playerId);
       state = { ...state, ...joined.state, revision: joined.revision };
       lateJoinBonus = joined.lateJoinBonus || null;
