@@ -42,19 +42,139 @@
       "id": "movie-songs",
       "title": "Movie Songs",
       "intro": "The song is famous. The film may be even more famous.",
-      "questions": []
+      "questions": [
+        {
+          "id": "movie-heart",
+          "type": "single_choice",
+          "prompt": "Which film made ‘My Heart Will Go On’ a worldwide hit?",
+          "options": [
+            { "id": "a", "label": "Titanic" },
+            { "id": "b", "label": "The Bodyguard" },
+            { "id": "c", "label": "Ghost" },
+            { "id": "d", "label": "Pearl Harbor" }
+          ],
+          "correctOptionIds": ["a"],
+          "points": 1,
+          "hostReveal": "Titanic. Celine Dion recorded it for the 1997 film."
+        },
+        {
+          "id": "movie-tiger",
+          "type": "true_false",
+          "prompt": "‘Eye of the Tiger’ was written for a Rocky film.",
+          "options": [
+            { "id": "true", "label": "True" },
+            { "id": "false", "label": "False" }
+          ],
+          "correctOptionIds": ["true"],
+          "points": 1,
+          "hostReveal": "True. Survivor wrote it for Rocky III at Sylvester Stallone’s request."
+        },
+        {
+          "id": "movie-animated",
+          "type": "categorize",
+          "prompt": "Did each song come from an animated film or a live-action film?",
+          "categories": [
+            { "id": "animated", "label": "Animated film" },
+            { "id": "live-action", "label": "Live-action film" }
+          ],
+          "items": [
+            { "id": "let-it-go", "label": "Let It Go" },
+            { "id": "circle-of-life", "label": "Circle of Life" },
+            { "id": "skyfall", "label": "Skyfall" },
+            { "id": "lose-yourself", "label": "Lose Yourself" }
+          ],
+          "correctCategories": {
+            "let-it-go": "animated",
+            "circle-of-life": "animated",
+            "skyfall": "live-action",
+            "lose-yourself": "live-action"
+          },
+          "points": 2,
+          "hostReveal": "Frozen and The Lion King are the animated pair; Skyfall and 8 Mile are live action."
+        }
+      ]
     },
     {
       "id": "india-biggest-hits",
       "title": "India’s Biggest Hits",
       "intro": "A celebratory mix of massive hits across languages and eras.",
-      "questions": []
+      "questions": [
+        {
+          "id": "india-rahman",
+          "type": "single_choice",
+          "prompt": "Which composer won two Academy Awards for his work on ‘Slumdog Millionaire’?",
+          "options": [
+            { "id": "a", "label": "A. R. Rahman" },
+            { "id": "b", "label": "Ilaiyaraaja" },
+            { "id": "c", "label": "Shankar Mahadevan" },
+            { "id": "d", "label": "Amit Trivedi" }
+          ],
+          "correctOptionIds": ["a"],
+          "points": 1,
+          "hostReveal": "A. R. Rahman. He won Best Original Score and Best Original Song in 2009."
+        },
+        {
+          "id": "india-playback",
+          "type": "multiple_choice",
+          "prompt": "Which of these artists are best known as playback singers?",
+          "options": [
+            { "id": "a", "label": "Lata Mangeshkar" },
+            { "id": "b", "label": "Kishore Kumar" },
+            { "id": "c", "label": "Ravi Shankar" },
+            { "id": "d", "label": "Zakir Hussain" }
+          ],
+          "correctOptionIds": ["a", "b"],
+          "points": 2,
+          "hostReveal": "Lata Mangeshkar and Kishore Kumar. Ravi Shankar is a sitarist and Zakir Hussain a tabla player."
+        },
+        {
+          "id": "india-sholay",
+          "type": "closest_number",
+          "prompt": "In which year was the film ‘Sholay’ first released?",
+          "targetNumber": 1975,
+          "points": 2,
+          "hostReveal": "1975. The closest guess wins, and tied closest guesses split the points."
+        }
+      ]
     },
     {
       "id": "finish-the-lyric",
       "title": "Finish the Lyric",
       "intro": "The next line is yours to find.",
-      "questions": []
+      "questions": [
+        {
+          "id": "lyric-hey",
+          "type": "fill_in_the_blank",
+          "prompt": "Complete the Beatles song title: ‘Hey ___’.",
+          "blanks": [
+            { "id": "blank-1", "acceptedAnswers": ["Jude"] }
+          ],
+          "points": 1,
+          "hostReveal": "Hey Jude."
+        },
+        {
+          "id": "lyric-bohemian",
+          "type": "short_answer",
+          "prompt": "Complete the Queen song title: ‘Bohemian ___’.",
+          "acceptedAnswers": ["Rhapsody", "Rapsody"],
+          "points": 1,
+          "hostReveal": "Bohemian Rhapsody. Matching ignores case and punctuation."
+        },
+        {
+          "id": "lyric-order",
+          "type": "arrange_in_order",
+          "prompt": "Put these songs in order of release, earliest first.",
+          "items": [
+            { "id": "bohemian-rhapsody", "label": "Bohemian Rhapsody" },
+            { "id": "stayin-alive", "label": "Stayin’ Alive" },
+            { "id": "billie-jean", "label": "Billie Jean" },
+            { "id": "like-a-prayer", "label": "Like a Prayer" }
+          ],
+          "correctOrder": ["bohemian-rhapsody", "stayin-alive", "billie-jean", "like-a-prayer"],
+          "points": 2,
+          "hostReveal": "1975, 1977, 1983, 1989. Ordering is scored all or nothing, so one swap costs the question."
+        }
+      ]
     },
     {
       "id": "piano-intro-match",
@@ -89,7 +209,18 @@
             { "id": "i", "label": "Song title I" },
             { "id": "j", "label": "Song title J" }
           ],
-          "correctPairs": {},
+          "correctPairs": {
+            "clip-1": "a",
+            "clip-2": "b",
+            "clip-3": "c",
+            "clip-4": "d",
+            "clip-5": "e",
+            "clip-6": "f",
+            "clip-7": "g",
+            "clip-8": "h",
+            "clip-9": "i",
+            "clip-10": "j"
+          },
           "pointsPerPair": 1,
           "speedBonus": false,
           "hostReveal": "Reveal one pair at a time, replaying each clip if useful."

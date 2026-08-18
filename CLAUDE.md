@@ -126,9 +126,16 @@ release-blocking defect, not a style issue.
   partial credit, multipliers, and tie handling are resolved in Supabase RPCs
   from the stored quiz key. The browser never decides points.
 - **Players never receive future state.** No upcoming questions, correct
-  answers, reveal media, asset IDs, or usable media URLs reach a player payload
-  before the host reveals. Private media is served only through the Worker proxy
-  with the host's room secret.
+  answers, reveal media, or usable media URLs reach a player payload before the
+  host reveals. The single exception is deliberate: a player may hold the active
+  question's option artwork ID (`options[].imageAssetId`), which `0029` allows
+  and `can_access_live_media` gates. Every other asset reference — question
+  audio, matching clip audio, reveal art — is host- and Presentation-only. Note
+  that `toPlayerQuestion` forwards `items` and `categories` through unfiltered,
+  so artwork attached there would reach a phone and then be refused; do not
+  author it until the payload allowlist and the media policy agree again.
+  Private media is served only through the Worker proxy with the host's room
+  secret or the player's session token.
 - **Presentation is a strict projection** of authoritative state, and carries
   no host controls or production notes.
 - **Cross-client commands are self-identifying.** Audio and media cues carry the

@@ -66,7 +66,10 @@ test("every local file referenced by a shipped file is itself shipped", () => {
         `${entry} references "./${reference}", which prepare-deploy.mjs does not ship — it would 404 in production. Add it to publicFiles.`
       );
       assert.ok(
-        fs.existsSync(new URL(reference, root)),
+        // `generatedArtifacts` already excused this reference from the two
+        // checks above; excusing it here too is what lets a clean checkout be
+        // green before `npm run build:video` has ever run.
+        generatedArtifacts.has(reference) || fs.existsSync(new URL(reference, root)),
         `${entry} references "./${reference}", which does not exist in the repository`
       );
     }
@@ -93,6 +96,59 @@ test("local reference material is never shipped", () => {
     assert.ok(!entry.startsWith("local-reference"), `prepare-deploy.mjs must not ship "${entry}"`);
   }
   assert.match(fs.readFileSync(new URL(".gitignore", root), "utf8"), /^local-reference\/$/m);
+});
+
+test("raw source media is never shipped", () => {
+  // Same guarantee as `local-reference/`, for the invariant that matters more:
+  // original filenames name the tracks, so shipping them would reveal answers.
+  for (const entry of publicFiles) {
+    assert.ok(!entry.startsWith("music quiz originals"), `prepare-deploy.mjs must not ship "${entry}"`);
+  }
+  assert.match(fs.readFileSync(new URL(".gitignore", root), "utf8"), /^music quiz originals\/$/m);
+});
+
+test("no shipped file carries a secret", () => {
+  // `config.js` is publishable by design and holds a Supabase *publishable*
+  // key; a service-role key or secret key in anything the browser downloads is
+  // a critical defect. This scans what actually ships, so it also covers a key
+  // pasted into a quiz definition, a CSS comment, or an SVG.
+  const secretPatterns = [
+    [/service_role/i, "a service_role reference"],
+    [/SUPABASE_SECRET_KEY/i, "a SUPABASE_SECRET_KEY reference"],
+    [/\bsb_secret_[A-Za-z0-9_-]+/, "a Supabase secret key"],
+    // A signed JWT: three base64url segments. Supabase's legacy anon and
+    // service-role keys both take this shape, and neither belongs in a
+    // shipped file now that publishable keys exist.
+    [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/, "a JWT-shaped credential"]
+  ];
+  const scannable = /\.(js|mjs|html|css|json|svg|txt|md)$/i;
+
+  function scan(relativePath) {
+    const target = new URL(relativePath, root);
+    if (fs.statSync(target).isDirectory()) {
+      for (const child of fs.readdirSync(target)) scan(`${relativePath}/${child}`);
+      return;
+    }
+    if (!scannable.test(relativePath)) return;
+    const source = fs.readFileSync(target, "utf8");
+    for (const [pattern, description] of secretPatterns) {
+      assert.doesNotMatch(source, pattern, `prepare-deploy.mjs ships "${relativePath}", which contains ${description}`);
+    }
+  }
+
+  let scanned = 0;
+  for (const entry of publicFiles) {
+    if (generatedArtifacts.has(entry)) continue;
+    scan(entry);
+    scanned += 1;
+  }
+  assert.ok(scanned > 0, "expected to scan at least one shipped file");
+  // Guard against the scan quietly passing because the patterns stopped
+  // matching anything: they must still fire on a known-bad sample.
+  const sample = 'const key = "sb_secret_AAAAAAAAAA"; // service_role, SUPABASE_SECRET_KEY, eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYWEifQ.c2lnbmF0dXJl';
+  for (const [pattern, description] of secretPatterns) {
+    assert.match(sample, pattern, `the pattern for ${description} no longer matches a known-bad sample`);
+  }
 });
 
 test("assets referenced from the player icon set exist", () => {

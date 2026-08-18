@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { validateQuiz } from "../quiz-validation.js";
 
+// Naming note: tests prefixed "migration presence" or "source presence" assert
+// that a named rule still exists in the migration or source text they read.
+// They are change detectors, not proofs of behavior — nothing here executes the
+// SQL or renders a surface, so a refactor that preserves the matched strings
+// while changing what they do passes. Read them as "this rule has not been
+// deleted", and keep behavioral coverage in the tests that import real
+// functions (quiz-core, quiz-validation, quiz-fixtures, subtitle-core,
+// image-crop, answer-submission-recovery, deploy-manifest).
+
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const styles = fs.readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const api = fs.readFileSync(new URL("../room-api.js", import.meta.url), "utf8");
@@ -24,7 +33,7 @@ test("door validation rejects malformed probabilities and multipliers", () => {
   assert.match(validateQuiz(quiz).join(" "), /positive chances and multipliers/);
 });
 
-test("door choices and reveals are server-authoritative and persisted", () => {
+test("migration and source presence: 0025 persists door choices under a unique key and row lock", () => {
   assert.match(api, /choose_live_door/);
   assert.match(api, /reveal_live_door_rewards/);
   assert.match(migration, /unique \(session_id, player_id, target_round_index\)/);
@@ -33,14 +42,14 @@ test("door choices and reveals are server-authoritative and persisted", () => {
   assert.match(migration, /active_session\.phase::text = 'door_choice'/);
 });
 
-test("resolved multiplier applies only to automatic scoring in its target round", () => {
+test("migration presence: 0025 scopes the resolved multiplier to its target round", () => {
   assert.match(migration, /c\.target_round_index = active_session\.current_round_index/);
   assert.match(migration, /awarded_points := round\(base_awarded_points \* active_multiplier, 2\)/);
   assert.match(migration, /created_by, base_points, multiplier/);
   assert.doesNotMatch(migration.slice(0, migration.indexOf("create or replace function public.lock_and_score_live_question")), /adjust_live_score/);
 });
 
-test("all three game surfaces expose the door lifecycle", () => {
+test("source presence: all three game surfaces render the door lifecycle", () => {
   assert.match(app, /function renderHostDoors/);
   assert.match(app, /presentation-card--doors/);
   assert.match(app, /player-main--doors/);
@@ -48,7 +57,7 @@ test("all three game surfaces expose the door lifecycle", () => {
   assert.match(app, /No door selected/);
 });
 
-test("between-round flow reveals one scoreboard, then moves to door choice and the next-round card", () => {
+test("source presence: the between-round flow wires scoreboard, door choice, and next-round card", () => {
   assert.match(app, /async function startRoundEnd/);
   assert.match(app, /async function startRound/);
   assert.match(app, /End of Round \$\{roundNumber\}/);
@@ -66,7 +75,7 @@ test("between-round flow reveals one scoreboard, then moves to door choice and t
   assert.doesNotMatch(app.match(/function playerRenderKey\([\s\S]*?\n}\n\nfunction presenterRenderKey/)?.[0] || "", /doorPicks:/);
 });
 
-test("advancing within a round opens the next question without a leaderboard", () => {
+test("source presence: advanceQuestion opens the next question without a leaderboard", () => {
   const advance = app.slice(app.indexOf("async function advanceQuestion"), app.indexOf("function cueBetweenRoundAudio"));
   assert.match(advance, /nextRound !== roundIndex/);
   assert.match(advance, /state\.phase = "open"/);

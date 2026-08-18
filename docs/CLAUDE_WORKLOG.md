@@ -678,48 +678,52 @@ $ npm test
 - **No `render()` in the input handler.** It mirrors the existing audio-volume control exactly: `input` → update state + `emit()` (live big-screen update, no server write); `change` (blur/Enter) → also `persistHostState()`. A `render()` on keystroke would replace the host panel's `innerHTML` and destroy the input mid-typing. There is a regression test asserting the handler contains no `render()` call.
 - **Presenter repaint needs no render-path change.** `presenterRenderKey()` destructures away only the non-visual fields (`activeClipId`, `audioCommand`, `revision`, `submitted`, `audioVolume`, `mediaCommand`) and stringifies the rest, so `presenterOverride` is in the key automatically and a change repaints the shared screen. I touched neither `render()` nor the gating in `receive()`, per the concurrent-agent coordination constraint. A test asserts `presenterRenderKey` does not strip the field.
 ## 2026-08-18 — Saved player identity was time-bounded but not room-scoped
-
 - **Branch:** `claude/room-scoped-player-identity`, worktree `.claude/worktrees/claude-room-scoped-player-identity` off `main` at `b58adb7`.
 - **Bug (user-reported):** "When a person tries to enter a NEW room with the same phone, they should get a new opportunity to pick a name and icon. Authentication shouldn't last forever. I just tested it and scanning the QR code with my phone immediately brings up my old name/icon."
 - **Files touched:** `quiz-core.js`, `app.js`, `test/quiz-core.test.js`, `test/player-logo.test.js`, `CHANGELOG.md`, this file.
-
 ### Diagnosis (confirmed, not assumed)
-
 The branch the user was unsure about *did* merge: `git merge-base --is-ancestor 22f24c3 main` exits 0, and `22f24c3` ("fix: expire saved player identity after a 6-hour session gap") is in `git log main`. It implemented the wrong axis for this symptom. It added `musicTriviaPlayerSessionAt` plus `isPlayerSessionExpired()` with a 6-hour TTL, clearing the identity only when the device had been idle that long. Nothing in it referenced the room. That commit's own worklog entry says so outright: "Did not scope the TTL by room code — the reported symptom is purely about elapsed time."
-
 So a phone that played room `ABC123` an hour ago and then scanned the QR for the unrelated room `XYZ789` was well inside the TTL, `playerName` was still populated, and `renderPlayer()`'s `params.has("room") && !playerName` gate never fired — the join screen was skipped and the auto-rejoin branch (`app.js`, `view === "player" && params.has("room") && playerName`) joined the new room under the old name and logo. "How long ago did this phone play" and "which room did it play in" are orthogonal, and only the first had been built. Reproduced as a model rather than on hardware; see "Could not verify".
-
 ### Design decisions
-
 **Room code as the key.** `public.room_code()` draws 6 characters from a 32-character alphabet, `sessions.room_code` carries a `unique` constraint, and `create_live_room` loops retrying on `unique_violation` (`supabase/migrations/0002_live_room_rpc.sql`). No migration deletes session rows, so a code is never recycled onto a later, unrelated game. The room code is therefore a durable identifier, not a reusable slot, and is safe to key persisted identity on.
-
 **#3 — other rooms are RETAINED, not clobbered.** Identity is stored as a small map (`quizPlayerIdentities`) keyed by room code, each entry carrying its own `lastActiveAt`. Clobbering on each new join would be a few bytes cheaper and materially worse: a player who opens the wrong QR code (a stale poster, a neighbour's screen), picks a name, and then rescans the right one would have had their real room's token destroyed, and would rejoin as a brand-new player with a zeroed score — the exact catastrophic failure this task warned against, just triggered a different way. Same for a host running two rooms back to back who sends a phone back to the first. Retention costs a few hundred bytes; the map is pruned of expired entries and capped at `PLAYER_IDENTITY_ROOM_LIMIT` (8) most-recently-active rooms on every write, so it cannot grow without bound. Activity in one room never refreshes another room's clock — each entry expires on its own TTL.
-
 **#4 — the legacy unkeyed identity is migrated onto the current room, but only with proof.** Phones in the wild hold the old flat `musicTriviaPlayerId` / `musicTriviaPlayerName` / `quizPlayerLogoKey` / `musicTriviaPlayerSessionAt` keys. Dropping them outright is the simplest option and was rejected: a deploy can land mid-game, and every phone in a live room would be shown the join screen, re-join under a fresh token, and be orphaned from its score — worse for a live-audience tool than the bug being fixed. Migrating blindly onto the current room is also wrong: the legacy blob carries no room information, so a phone that played a *different* room an hour ago would get the reported bug one last time.
-
 The resolution uses evidence already on the device. `quiz-door-player:<roomCode>` is *already* room-keyed and is written by `rememberDoorPlayerRecord()` on every successful join and auto-rejoin (`join_live_room` always returns `playerId`, migration `0002`), so its presence proves this device genuinely joined *this* room. `migrateLegacyPlayerIdentity()` adopts the legacy identity onto the current room only when all of: the legacy name and token exist, `isPlayerSessionExpired()` says it is still inside the 6-hour TTL, the URL has a `room` param, and that room's door record exists. Otherwise it is discarded. Either way the legacy keys are removed from both storages, so the migration runs at most once per device. The original activity stamp is carried through rather than refreshed, so an adopted identity does not get a free TTL extension. Every failure mode of this gate falls toward *asking* for a name, never toward reusing the wrong one.
-
 **#2 — the TTL was layered under, not replaced.** `PLAYER_SESSION_TTL_MS` and `isPlayerSessionExpired()` are unchanged and now do the per-entry expiry inside the store, plus gate the legacy migration. `savePlayerIdentity()` restamps on join, name/logo pick, and door pick — the same events `savePlayerValue()` stamped before — so the TTL remains a *session gap*, not a hard clock.
-
 ### Fix
-
 `quiz-core.js` gained pure, directly unit-tested helpers: `readPlayerIdentityStore()`, `playerIdentityForRoom()`, `writePlayerIdentityForRoom()`, and `PLAYER_IDENTITY_ROOM_LIMIT`. All are string-in/string-out over the serialized store, so the room-and-TTL logic is testable without a DOM. `app.js` reads its identity through `playerIdentityForRoom(localStorage.getItem(PLAYER_IDENTITY_KEY), roomCode)` and writes it through `savePlayerIdentity()`; an unknown room yields no identity, so the existing `!playerName` join-screen gate fires naturally without being touched.
-
 ### Commands run and actual output
-
-```
-$ npm test
 ℹ tests 160
 ℹ pass 160
 $ npm test        # baseline, before any edit
 ℹ tests 149
 ℹ pass 148
 ℹ fail 1          # pre-existing: test/deploy-manifest.test.js, see below
-
 $ npm test        # after the fix
 ℹ tests 161
-ℹ suites 0
 ℹ pass 161
+## 2026-08-18 — Cheap independent tests, the sample fixture, and the product spec
+
+- **Branch:** `claude/tests-and-spec`, worktree `quiz-tests-and-spec`, based on `b58adb7`. One of four parallel worktrees; this was batch **G** of `docs/reviews/2026-08-17-consolidated-plan.md` §4 — findings C30, C27, the fixture half of C18, and the fixture entry of C32. Deliberately the lowest-risk batch: no runtime code, no migrations. `app.js`, `author.js`, `quiz-core.js`, `quiz-validation.js`, `cloudflare-worker.js`, and `supabase/migrations/` were read but never modified.
+- **Baseline correction.** The plan records `b58adb7` as 158 tests / 158 pass. In a clean worktree it is **149 tests, 148 pass, 1 fail**. The nine-test difference is `test/image-engine.test.js`, an untracked in-flight slice that exists only in the main checkout; the failure is `deploy-manifest.test.js` looking for the git-ignored `video-processor.worker.bundle.js`. The 2026-08-17 worklog entry above records copying that bundle in from the main checkout to work around it. That workaround should no longer be needed — see below.
+
+### What landed
+
+- `quiz.sample.json` — rounds 2, 3, and 4 had `"questions": []` and the matching finale had `"correctPairs": {}`. Filled all four. Rounds gained three questions each, chosen to widen type coverage from two types to nine (single choice, true/false, categorize, multiple choice, closest number, fill-in-the-blank, short answer, arrange-in-order, matching). Image selection and multi-blank were left out because both need real private media assets. The "Finish the Lyric" round is authored as song-title completion rather than lyric fragments; the real bundled bank already carries the actual lyric round.
+- `test/quiz-fixtures.test.js` — new, 12 tests. Both fixtures through `validateQuiz`, a no-empty-round assertion, an answer-key-leak check over `toPlayerQuestion` at every nesting depth, an asset-ID sentinel check, a per-question scoring round trip against `tallyQuestionResults`, and a guard on artwork attached to `items`/`categories`.
+- `test/migration-hygiene.test.js` — new, 2 tests. Migration prefixes unique, contiguous, starting at 0001. Worker table reads (including PostgREST `select=` embeds) checked against `grant select on table … to service_role` in the migrations.
+- `test/deploy-manifest.test.js` — `generatedArtifacts` now also excuses the *referenced* bundle, not just the manifest entry, so a clean checkout is green without `npm run build:video`. Added `raw source media is never shipped` and `no shipped file carries a secret`.
+- `test/scoring-contract.test.js`, `test/late-join-bonus.test.js`, `test/door-bonus.test.js` — ten test names relabelled `migration presence:` / `source presence:`, plus a header in each explaining they are change detectors, not behavioral proofs. No assertion changed.
+- `PRODUCT_SPEC.md` — §3, §4, §5, §6, §7, §9, §11 corrected; new §7 "Score modifiers" and new §19 for shipped-but-unspecified features.
+- `CLAUDE.md` — the "no asset IDs" player-privacy invariant amended to match the shipped, `0029`-endorsed design.
+
+### Commands actually run
+
+```
+$ npm test
+ℹ tests 165
+ℹ suites 0
+ℹ pass 165
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
@@ -740,19 +744,40 @@ Then restored from the backup and confirmed `md5` byte-identical to the pre-muta
 - **For the concurrent host-render-gate agent:** I added exactly one new host control and one state field; I did not touch `render()` or the gating in `receive()`. But be aware this is now a **text input on the host screen**, which is the known mid-typing-destruction hazard. My handler avoids self-inflicted re-renders, and because state is updated on every keystroke the input's `value` is repopulated correctly if some *other* code path re-renders — but the **caret position will jump to the end**, and an IME composition would be interrupted. If the render gate ends up re-rendering the host panel on unrelated events (a player submission, a presence ping), that will be user-visible as caret jitter while typing a credit line. The clean fix, if it becomes a problem, is to skip re-rendering while `document.activeElement` is inside the host panel — that belongs in the render-gating slice, not here, so I left it alone.
 - **Pre-existing, unrelated:** a fresh worktree has no `video-processor.worker.bundle.js` (git-ignored generated output), so `test/deploy-manifest.test.js` fails until `npm run build:video` is run. Same gap the 2026-08-17 image-assistant entry hit. I ran `npm run build:video` rather than copying the bundle; installed nothing and did not touch `package-lock.json`.
 - **Known limitation, left as-is:** a presentation screen opened without the host secret has `hostQuizDefinition === null`, so it already showed the default `"ADO&S PRESENTS"` rather than the authored credit, both before and after this change. The override still works there (it wins regardless of the authored value). Broadcasting the *resolved* credit instead of the raw override would incidentally fix that too, but it changes existing no-override behavior, so I judged it out of scope.
-```
-
 The 1 baseline failure was `test/deploy-manifest.test.js` — `author.js references "./video-processor.worker.bundle.js", which does not exist` — a git-ignored generated artifact absent from any fresh worktree, failing identically before I touched anything. As a previous session did, I copied the already-built bundle from the main checkout into this worktree to get a clean full-suite run; I did not rebuild it, run `npm install`, or touch `package-lock.json` (`node_modules` and its `esbuild` devDependency are absent here). The file is git-ignored and is not in my commit.
-
 Verified the new tests actually fail without the fix, per TDD: restored `app.js` and `quiz-core.js` from `HEAD` into the worktree (backing my versions up to the scratchpad first, then copying them back) and re-ran the two test files — 4 structural tests in `player-logo.test.js` failed and `quiz-core.test.js` failed to load at all on the missing imports. Also confirmed the behavioural delta directly: with a store holding room `ABC123` last active one hour ago, a TTL-only lookup returns `"Belinkie"` for room `XYZ789` (the bug) while `playerIdentityForRoom()` returns `null`, and the same-room lookup still returns `"Belinkie"`.
-
 ### Not regressed
-
 `test/player-logo.test.js`'s Android join-screen logo-layout test (commit `6532ffc`, the `min-height: 0` grid-row collapse) is untouched and passes; my change touches no CSS. The auto-submit test ("auto-submit skips a selection after its question has closed or changed") passes. Two pre-existing string-matching assertions in `player-logo.test.js` referenced storage mechanisms this change removes (`savePlayerValue("musicTriviaPlayerId", playerId)`, `savePlayerValue("quizPlayerLogoKey", playerLogoKey)`, and the `PLAYER_SESSION_ACTIVITY_KEY` wiring); I rewrote those assertions onto the new mechanism while keeping each test's original intent, and the behavioural guarantees they were proxying for are now covered by real unit tests in `quiz-core.test.js` instead of string matching.
-
 ### Could not verify
-
 - **No real device, no live room.** Everything is a `localStorage` model verified in unit tests plus structural assertions that `app.js` is wired in the right order. I did not open the app on a phone, scan a QR code, or watch a join screen appear. The manual steps to confirm are in the handoff.
 - **The legacy migration path on a device that actually holds legacy keys.** The gate is asserted structurally and its TTL-carryover behaviour is unit-tested through `writePlayerIdentityForRoom()`, but I could not exercise a real phone whose storage predates this change. This is the highest-value thing for the user to spot-check on a handset that played before the deploy.
 - **The `PLAYER_IDENTITY_ROOM_LIMIT` cap of 8.** A judgment call. Visiting a room writes an entry even before a name is chosen, so casually opening several room URLs inside one TTL window consumes slots; 8 is far above any realistic quiz night, and eviction is least-recently-active first, but the number is not derived from data.
 - Did not touch `supabase/migrations/` — this is entirely client-side join-screen gating, no schema or server change.
+ℹ duration_ms 388.194411
+```
+
+Both `validateQuiz` implementations were run over both fixtures from a scratch script (`author.js` exports nothing, so its private copy was extracted and evaluated for verification only, not committed):
+
+```
+=== quiz.sample.json ===        before          after
+quiz-validation.js : 3 errors  →  []
+author.js copy     : 4 errors  →  []
+=== music-trivia.question-bank.json ===
+both                : []       →  []
+```
+
+The fourth error in the shipped validator — `Round 5, question 1 needs complete clips, options, pair key, and positive points per pair` — is the empty `correctPairs`, and it is **not in any of the four review reports**. All four ran only `quiz-validation.js`, whose matching rule checks `!item.correctPairs` and so accepts `{}`.
+
+### Verified the new tests discriminate
+
+- Mutated a scratch copy of `quiz.sample.json` (emptied a round, planted artwork on an ordering card, added an option asset ID): four of the six fixture tests failed, and passed again on restore.
+- Planted `sb_secret_…` in `assets/kaplan-k.svg`: `no shipped file carries a secret` failed, proving the walk reaches nested directory entries. Removed.
+- The secret scan also asserts its own patterns still match a known-bad sample, so it cannot pass by matching nothing.
+
+### What remains unproven
+
+- **Nothing here was run in a browser or a live room.** The sample quiz is proven to validate and to score its own answer keys through the shared helpers. It was **not** loaded into a host session and played through, so the C18 host dead-end is proven closed only for the fixture, not for the `startRound` code path that produced it — that half belongs to whoever owns `app.js`.
+- **The trivia answers in the new sample questions are not independently fact-checked by any test.** `quiz-fixtures.test.js` derives the correct answer from the key, so a wrong-but-coherent key passes. The test comment says so.
+- **`test/quiz-fixtures.test.js` imports `quiz-validation.js`**, which is the module `prepare-deploy.mjs` ships and the existing tests use — but *not* the copy the editor runs on Publish. Both accept both fixtures today. When the two validators are merged (C19), re-point that import.
+- **`migration-hygiene.test.js` pins one open defect rather than fixing it.** `session_players` is embedded by the closest-number guess board and granted to `service_role` by no migration. Closing it needs a migration number, which only Matthew assigns. The assertion is an exact match on the missing set, so it will fail when the grant lands and the exception is left behind.
+- **`RUNBOOK.md` is now slightly stale.** It describes `quiz.sample.json` as containing "Placeholders for the five planned rounds." That file is outside this batch's ownership and was not edited.
