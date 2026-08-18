@@ -13,9 +13,14 @@ test("player UI waits for server confirmation before recording submission", () =
 });
 
 test("temporarily invalid author drafts survive refresh", () => {
-  const restore = author.slice(author.indexOf("function restoredDraft"), author.indexOf("function validateQuiz"));
+  const restore = author.slice(author.indexOf("function restoredDraft"), author.indexOf("function validationSummary"));
   assert.doesNotMatch(restore, /validateQuiz/);
   assert.match(restore, /Array\.isArray\(draft\.bank\.rounds\)/);
+});
+
+test("the editor validates with the shared quiz-validation module instead of a private copy", () => {
+  assert.match(author, /import \{ validateQuiz \} from "\.\/quiz-validation\.js";/);
+  assert.doesNotMatch(author, /function validateQuiz/);
 });
 
 test("valid attached images do not depend on the media-library list", () => {
