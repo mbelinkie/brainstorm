@@ -167,3 +167,115 @@ test("wiring: a failed auto-lock clears its latch and backs off", () => {
   assert.match(updateTimer, /timerExpiryLocking = false;/, "the latch must be cleared after every attempt");
   assert.match(updateTimer, /timerExpiryLockRetryAt = Date\.now\(\) \+ TIMER_AUTO_LOCK_RETRY_MS/);
 });
+
+// ---------------------------------------------------------------------------
+// C13 — the Host reload that lost every received answer.
+//
+// These drive the real Worker module with a stubbed global fetch instead of
+// grepping its source, so an authorization or shape regression fails here.
+// ---------------------------------------------------------------------------
+
+const { default: quizWorker } = await import("../cloudflare-worker.js");
+
+const workerEnv = { SUPABASE_URL: "https://db.test", SUPABASE_SERVICE_ROLE_KEY: "service-key" };
+
+// Runs one request against the Worker with Supabase stubbed out. `routes` maps
+// a URL fragment to the response body; anything unmatched is a test bug.
+async function callWorker(path, { headers = {}, env = workerEnv, routes = {}, status = {} } = {}) {
+  const requested = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    requested.push(target);
+    for (const [fragment, body] of Object.entries(routes)) {
+      if (target.includes(fragment)) return Response.json(body, { status: status[fragment] || 200 });
+    }
+    throw new Error(`unstubbed upstream request: ${target}`);
+  };
+  try {
+    const response = await quizWorker.fetch(new Request(`https://worker.test${path}`, { headers }), env);
+    return { response, body: await response.json().catch(() => null), requested };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+const hostHeaders = { "x-quiz-room": "f7m6vd", "x-quiz-host-secret": "host-secret" };
+
+const openRoom = {
+  "/rpc/get_host_live_room_state": { phase: "question_open", revision: 4, state: { questionId: "q7" } },
+  "/rest/v1/sessions?": [{ id: "sess-1" }],
+  "/rest/v1/submissions?": [{ player_id: "pl-1", answer: "b" }, { player_id: "pl-2", answer: { "1": "clocks" } }]
+};
+
+test("/host-submissions returns the active question's answers keyed by the roster player id", async () => {
+  // This is what a reloaded Host needs to rebuild "8 / 12 answers received"
+  // and the "Who got it right" summary. player_id is session_players.id --
+  // the same identity get_live_leaderboard() keys the roster by.
+  const { response, body, requested } = await callWorker("/host-submissions", { headers: hostHeaders, routes: openRoom });
+  assert.equal(response.status, 200);
+  assert.equal(body.questionId, "q7");
+  assert.deepEqual(body.submissions, [{ playerId: "pl-1", answer: "b" }, { playerId: "pl-2", answer: { "1": "clocks" } }]);
+  // The host secret is verified by the RPC before either table is read.
+  assert.ok(requested[0].includes("/rpc/get_host_live_room_state"));
+  assert.ok(requested.some((url) => url.includes("question_id=eq.q7")), "must scope to the active question");
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+});
+
+test("/host-submissions refuses a request without host credentials", async () => {
+  const missing = await callWorker("/host-submissions", { headers: { "x-quiz-room": "f7m6vd" } });
+  assert.equal(missing.response.status, 401);
+  assert.equal(missing.requested.length, 0, "an unauthorized request must not reach Supabase at all");
+
+  const noRoom = await callWorker("/host-submissions", { headers: { "x-quiz-host-secret": "host-secret" } });
+  assert.equal(noRoom.response.status, 401);
+
+  const unconfigured = await callWorker("/host-submissions", { headers: hostHeaders, env: { SUPABASE_URL: "https://db.test" } });
+  assert.equal(unconfigured.response.status, 401);
+});
+
+test("/host-submissions rejects a bad host secret and never reads a submission", async () => {
+  const { response, requested } = await callWorker("/host-submissions", {
+    headers: hostHeaders,
+    routes: { "/rpc/get_host_live_room_state": { message: "Host authorization failed" }, ...openRoom },
+    status: { "/rpc/get_host_live_room_state": 400 }
+  });
+  assert.equal(response.status, 403);
+  assert.ok(!requested.some((url) => url.includes("/rest/v1/submissions")), "a failed host check must not read answers");
+});
+
+test("/host-submissions carries no player names or logos", async () => {
+  // The closest-number board deliberately embeds session_players for its
+  // display; this route must not, because it feeds a count and a tally.
+  const { body } = await callWorker("/host-submissions", {
+    headers: hostHeaders,
+    routes: { ...openRoom, "/rest/v1/submissions?": [{ player_id: "pl-1", answer: "b", player: { display_name: "Ada" } }] }
+  });
+  assert.deepEqual(body.submissions, [{ playerId: "pl-1", answer: "b" }]);
+  assert.equal(JSON.stringify(body).includes("Ada"), false);
+});
+
+test("/host-submissions answers empty rather than erroring when there is nothing to recover", async () => {
+  const noQuestion = await callWorker("/host-submissions", { headers: hostHeaders, routes: { "/rpc/get_host_live_room_state": { phase: "lobby", state: {} } } });
+  assert.equal(noQuestion.response.status, 200);
+  assert.deepEqual(noQuestion.body, { questionId: null, submissions: [] });
+
+  const noSession = await callWorker("/host-submissions", { headers: hostHeaders, routes: { ...openRoom, "/rest/v1/sessions?": [] } });
+  assert.deepEqual(noSession.body, { questionId: "q7", submissions: [] });
+
+  const failed = await callWorker("/host-submissions", { headers: hostHeaders, routes: { ...openRoom, "/rest/v1/submissions?": { message: "denied" } }, status: { "/rest/v1/submissions?": 401 } });
+  assert.equal(failed.response.status, 502);
+  assert.equal(failed.body.stage, "submission-lookup");
+});
+
+test("/host-submissions answers the cross-origin preflight the custom headers require", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("preflight must not reach Supabase"); };
+  try {
+    const response = await quizWorker.fetch(new Request("https://worker.test/host-submissions", { method: "OPTIONS" }), workerEnv);
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("access-control-allow-headers"), "x-quiz-room, x-quiz-host-secret");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

@@ -59,7 +59,12 @@ test("anonymous text-answer endpoint supports the cross-origin custom-header req
 });
 
 test("closest-number guesses expose player identities only to the authorized reveal display", () => {
-  const closestRoute = worker.slice(worker.indexOf('if (request.method === "GET" && url.pathname === "/host-closest-number-guesses")'), worker.indexOf('if (request.method === "GET" && url.pathname.startsWith("/author-media/")'));
+  // End the slice at the route that now follows this one, so the assertions
+  // below keep describing the closest-number route and nothing else.
+  const closestStart = worker.indexOf('if (request.method === "GET" && url.pathname === "/host-closest-number-guesses")');
+  const closestEnd = worker.indexOf('if (request.method === "GET" && url.pathname === "/host-submissions")');
+  assert.ok(closestStart > -1 && closestEnd > closestStart, "expected the closest-number route to precede /host-submissions");
+  const closestRoute = worker.slice(closestStart, closestEnd);
   assert.match(closestRoute, /roomState\.phase !== "answer_reveal"/);
   assert.match(closestRoute, /player:session_players\(display_name,logo_key\)/);
   assert.match(closestRoute, /private, no-store/);
