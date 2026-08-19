@@ -53,6 +53,20 @@ function hostClosestNumberResponse(body, init = {}) {
   });
 }
 
+const hostSubmissionsCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-host-secret",
+  "access-control-max-age": "86400"
+};
+
+function hostSubmissionsResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...hostSubmissionsCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
 async function verifyQuizAuthor(env, token) {
   const headers = { ...supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true }), Authorization: `Bearer ${token}` };
   const response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/is_quiz_author`, { method: "POST", headers, body: "{}" });
@@ -84,6 +98,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
     // require a successful CORS preflight before the browser will issue GET.
     if (request.method === "OPTIONS" && url.pathname === "/host-text-answers") return new Response(null, { status: 204, headers: hostTextAnswersCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/host-closest-number-guesses") return new Response(null, { status: 204, headers: hostClosestNumberCorsHeaders });
+    if (request.method === "OPTIONS" && url.pathname === "/host-submissions") return new Response(null, { status: 204, headers: hostSubmissionsCorsHeaders });
     if (request.method === "GET" && url.pathname === "/media-health") {
       if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ ok: false, stage: "configuration" }, { status: 503 });
       const check = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?select=id&limit=1`, { headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY) });
@@ -160,6 +175,47 @@ if (request.method === "GET" && url.pathname === "/__version") {
         })).filter((guess) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(guess.guess))
         : [];
       return hostClosestNumberResponse({ guesses }, { headers: { "cache-control": "private, no-store" } });
+    }
+    // Host-refresh recovery. The public room state deliberately publishes
+    // `submitted: {}` -- a phone must never receive another player's answer --
+    // so a reloaded Host had no way to rebuild its own received-answer count
+    // or its "Who got it right" summary. Same shape as /host-text-answers: the
+    // RPC verifies the host secret, then the already-granted `sessions` and
+    // `submissions` reads run on the Worker's service credential. Host only;
+    // nothing here is ever served to a player token.
+    if (request.method === "GET" && url.pathname === "/host-submissions") {
+      const roomCode = request.headers.get("x-quiz-room");
+      const hostSecret = request.headers.get("x-quiz-host-secret");
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return hostSubmissionsResponse({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
+      const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+      const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
+      if (!stateResponse.ok) return hostSubmissionsResponse({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
+      const roomState = await stateResponse.json();
+      const questionId = roomState.state?.questionId;
+      // The question id is echoed back so a Host that has already moved on can
+      // discard a late answer set instead of merging it into a new question.
+      if (!questionId) return hostSubmissionsResponse({ questionId: null, submissions: [] }, { headers: { "cache-control": "private, no-store" } });
+      const sessionResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/sessions?room_code=eq.${encodeURIComponent(roomCode.trim().toUpperCase())}&select=id`, { headers });
+      if (!sessionResponse.ok) {
+        const failure = await sessionResponse.json().catch(() => ({}));
+        console.error("Host submission session lookup failed", { upstreamStatus: sessionResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
+        return hostSubmissionsResponse({ error: "Could not load the active room.", stage: "session-lookup", upstreamStatus: sessionResponse.status }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+      const [session] = await sessionResponse.json();
+      if (!session?.id) return hostSubmissionsResponse({ questionId, submissions: [] }, { headers: { "cache-control": "private, no-store" } });
+      const submissionsResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/submissions?session_id=eq.${encodeURIComponent(session.id)}&question_id=eq.${encodeURIComponent(questionId)}&select=player_id,answer&order=submitted_at.asc`, { headers });
+      if (!submissionsResponse.ok) {
+        const failure = await submissionsResponse.json().catch(() => ({}));
+        console.error("Host submission lookup failed", { upstreamStatus: submissionsResponse.status, upstreamCode: failure?.code, upstreamMessage: failure?.message });
+        return hostSubmissionsResponse({ error: "Could not load submissions.", stage: "submission-lookup", upstreamStatus: submissionsResponse.status }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+      const submissionData = await submissionsResponse.json();
+      // player_id is session_players.id -- the same identity get_live_leaderboard()
+      // keys the roster by, and the one sendSubmission() broadcasts.
+      const submissions = Array.isArray(submissionData)
+        ? submissionData.filter((row) => typeof row?.player_id === "string" && row.answer !== null && row.answer !== undefined).map((row) => ({ playerId: row.player_id, answer: row.answer }))
+        : [];
+      return hostSubmissionsResponse({ questionId, submissions }, { headers: { "cache-control": "private, no-store" } });
     }
     if (request.method === "GET" && url.pathname.startsWith("/author-media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/author-media/".length));

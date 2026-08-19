@@ -9,9 +9,26 @@ const author = fs.readFileSync(new URL("../author.js", import.meta.url), "utf8")
 const authorHtml = fs.readFileSync(new URL("../author.html", import.meta.url), "utf8");
 
 test("player UI waits for server confirmation before recording submission", () => {
-  const submit = app.slice(app.indexOf('document.querySelector("[data-submit]")'), app.indexOf('document.querySelector("[data-player]")'));
-  assert.ok(submit.indexOf("await roomApi.submitAnswer") < submit.indexOf("sessionStorage.setItem"));
-  assert.match(submit, /Your answer was not submitted\. Please try again/);
+  // Anchor on the click handler itself: `[data-submit]` is also queried by the
+  // text-answer input listener further up, and starting there swept in an
+  // unrelated host handler.
+  const handlerStart = app.indexOf('document.querySelector("[data-submit]")?.addEventListener("click"');
+  assert.ok(handlerStart > -1, "expected a [data-submit] click handler in app.js");
+  const submit = app.slice(handlerStart, app.indexOf('document.querySelector("[data-player]")'));
+  // Anchor on what the handler actually calls today and prove both anchors
+  // exist first: this assertion used to read `roomApi.submitAnswer`, which the
+  // handler stopped calling, and indexOf(-1) made it pass no matter what.
+  const sent = submit.indexOf("await submitLiveAnswerWithRecovery");
+  assert.ok(sent > -1, "expected the manual submit path to go through room-api.js");
+  // In the hosted path the only call that records success is the one guarded
+  // by the server's own answer. (The unguarded call above it is the local
+  // demo, which has no server to confirm anything.)
+  assert.match(submit.slice(sent), /if \(outcome\.status === "submitted"\) \{\s*markSubmitted\(\);/, "success must not be recorded before the server confirms it");
+  assert.match(submit, /rememberSubmission\("confirmed", questionId, answer\)/);
+  // A rejected answer stays on screen next to the button that has to be
+  // tapped again, and survives the next redraw. A modal does neither.
+  assert.match(submit, /rememberSubmission\("failed", questionId\)/);
+  assert.doesNotMatch(submit, /\balert\(/);
 });
 
 test("temporarily invalid author drafts survive refresh", () => {
@@ -150,7 +167,10 @@ test("Host can adjust audio volume on any screen without interrupting playback, 
   assert.match(app, /const volumeControl = playable \? `<label class="host-audio-volume"/);
   // setAudioCommand always stamps the host's persisted volume, regardless of
   // which scope the command targets.
-  assert.match(app, /state\.audioCommand = \{ id: crypto\.randomUUID\(\), volume: currentAudioVolume\(\), \.\.\.command \};/);
+  assert.match(app, /state\.audioCommand = \{ \.\.\.cueIdentity\(\), volume: currentAudioVolume\(\), \.\.\.command \};/);
+  // cueIdentity() supplies the command id; it also dates and room-scopes it
+  // so a reconnecting Presentation can reject a cue the room has finished with.
+  assert.match(app, /id: crypto\.randomUUID\(\),\s*\n\s*issuedAt: Date\.now\(\),\s*\n\s*roomCode,/);
   const command = app.slice(app.indexOf("async function applyPresentationAudioCommand"), app.indexOf("async function clearActiveClip"));
   assert.match(command, /presentationAudioPlayer\.volume = normalizedAudioVolume\(command\.volume\)/);
   // A volume-only command must return before preparePresentationAudio runs,
@@ -229,7 +249,8 @@ test("reveal performs locking and scoring in one host action", () => {
 });
 
 test("selection questions save without a submit button or full player redraw", () => {
-  assert.match(app, /const manualSubmit = \["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"\]/);
+  assert.match(app, /const MANUAL_SUBMIT_TYPES = \["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"\]/);
+  assert.match(app, /const manualSubmit = MANUAL_SUBMIT_TYPES\.includes\(state\.question\?\.type\)/);
   assert.match(app, /function queueAutoSubmission/);
   const answerHandler = app.slice(app.indexOf('document.querySelectorAll("[data-answer]")'), app.indexOf('document.querySelector("[data-text-answer]")'));
   assert.match(answerHandler, /queueAutoSubmission\(\)/);

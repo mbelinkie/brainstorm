@@ -930,3 +930,111 @@ The fourth error in the shipped validator — `Round 5, question 1 needs complet
 - **Not verified, and cannot be from here.** There is no database in this environment and the repo's scoring tests only read SQL as text, so **nothing below is behaviorally proven**: that the delete makes a re-lock idempotent, that door rewards survive a phase reset, that a locked submission is refused, or that categorize partial credit still scores correctly after 0034/0035 land. Neither migration has been applied to any database. The manual steps Matthew must run in a throwaway room are in the session report.
 - **Known follow-up left undone (not my file):** `submit_live_answer`'s new rejection string is not in `room-api.js`'s `SUBMIT_ANSWER_CONFLICT_REASONS`, so it classifies as `"unexpected"` and a blocked edit shows a save-failed state rather than the quiet abandoned state. It does not retry-loop and does not claim success, so it is truthful, but whoever owns `room-api.js` should add the mapping. Noted in 0035's header comment too.
 - **Also still owed, unchanged by this session:** `0033_closest_number_player_names.sql` has still never been applied to the database (`docs/2026-08-18-pause-handoff.md` §1). 0034 and 0035 queue behind it.
+## 2026-08-18 — Player + host recovery (consolidated-plan batch H)
+
+- **Branch:** `claude/host-recovery`, from `eba7276`. Baseline confirmed before any edit:
+  `npm test` → 255 tests, 255 pass, 0 fail.
+- **Findings:** C16, C13, C11, C12, C14, C18 (host half), C4 (client half). Plus one
+  mid-task request from the coordinator: map migration 0035's new `submit_live_answer`
+  rejection.
+- **Files touched:** `app.js`, `quiz-core.js`, `room-api.js`, `cloudflare-worker.js`,
+  `test/host-recovery.test.js` (new), `test/player-submission-states.test.js` (new),
+  `test/presentation-cue-freshness.test.js` (new), `test/answer-submission-recovery.test.js`,
+  `test/reliability-contract.test.js`, `test/access-control.test.js`, `test/door-bonus.test.js`,
+  `test/presentation-layout.test.js`. No migration, no `author.js`, no `styles.css`.
+
+### What landed, per finding
+
+- **C16 — `f151ee3`.** `updateTimer` set `timerExpiryLocking = true` and called an
+  un-awaited `lockQuestion()`. Pressing R inside the RPC round trip started a second
+  `lock_and_score_live_question()`, which lost the row lock and raised "The active question
+  is not open" → `alert()` on the shared laptop, and `state.phase` never became `"locked"`,
+  so `revealQuestion()` aborted. Fix: `classifyLockAndScoreError()` +
+  `lockAndScoreWithRecovery()` in `room-api.js` (already-locked is benign; re-read phase,
+  revision and leaderboard; refuse to claim a lock the server still reports as
+  `question_open`), `autoLockDecision()` in `quiz-core.js`, and a single shared in-flight
+  promise in `app.js`. The latch is now cleared after every attempt with a 2s backoff — it
+  used to be cleared only by `startTimer()`, so one transient failure killed auto-lock for
+  the rest of the show, silently.
+- **C13 — `8c01c6b` (Worker) + `d7bfac7` (client).** `/host-submissions` mirrors
+  `/host-text-answers`: verify the host secret through `get_host_live_room_state`, then read
+  `sessions` and `submissions` on the service credential. **No migration needed** — `0028`
+  already grants both tables. Returns `{ questionId, submissions: [{ playerId, answer }] }`.
+  `restoreHostSubmissions()` merges it into `state.submitted` on reconnect via
+  `mergeRecoveredSubmissions()` (recovered rows fill gaps; a broadcast that landed meanwhile
+  wins) and patches the live regions rather than remounting the console.
+- **C11 — `1c76c46`.** `submissionStatusView()` in `quiz-core.js` gives idle / sending /
+  confirmed / failed / abandoned their own message and class. The outcome lives in module
+  state plus a sessionStorage record that stores *which answer* was confirmed, so a redraw
+  reconstructs the truth instead of reading a boolean that was set on the first success and
+  never cleared. The manual Submit failure is inline beside the button instead of a modal.
+- **C12 — `e87106d`.** Already fixed in the tree by `96e0416`; the assertion that looked like
+  it covered this was inverted (below). Added a real guard for both paths.
+- **C14 — `acf9548`.** `presentationCueDecision()` in `quiz-core.js` rejects a cue from
+  another room/quiz, a duplicate, one not newer than the last applied, and a
+  playback-starting cue of unknown or stale age on a fresh mount. `cueIdentity()` stamps
+  `id`, `issuedAt`, `roomCode` and the quiz id on every audio and video cue. Arming no
+  longer wipes the applied marker. `preparePresentation{Audio,Video}()` now report whether
+  the commanded clip actually loaded, so an unavailable clip no longer plays the previous one.
+- **C18 host half — `754df79`.** `firstPlayableRound()` and `nextPlayablePosition()` in
+  `quiz-core.js`; `advanceQuestion()` and `startRound()` share them. An empty round is
+  skipped; a tail of nothing but empty rounds records a diagnostic and goes to the finale.
+- **C4 client half — `8f85d66`.** The jump control and `jumpToQuestion()` both require
+  `?testing=1`. No migration touched — the server constraint is another worker's.
+- **0035 rejection mapping — `c5fcc2a`.** "Your answer to this question is already locked"
+  now classifies as `answer-locked` and abandons quietly instead of surfacing as a failure.
+
+### Commands actually run
+
+```
+$ npm test            # on eba7276, before any edit
+ℹ tests 255
+ℹ pass 255
+ℹ fail 0
+
+$ npm test            # final
+ℹ tests 295
+ℹ pass 295
+ℹ fail 0
+```
+
+Every new test was also run against baseline copies of `app.js` / `quiz-core.js` /
+`room-api.js` / `cloudflare-worker.js` (extracted with `git show eba7276:<file>` into a
+scratch directory) and confirmed failing there first.
+
+### Two vacuous assertions found and repaired
+
+- `test/reliability-contract.test.js` anchored the manual-submit ordering check on
+  `await roomApi.submitAnswer`, which that handler stopped calling when the recovery wrapper
+  landed. `indexOf` returned -1 and `-1 < n` passed regardless. Its slice also started at the
+  *first* `[data-submit]` query — the text-input listener — sweeping in an unrelated host
+  handler. Both fixed, with existence checks before every ordering assertion.
+- `test/access-control.test.js`'s closest-number slice ran to `/author-media/` and would have
+  silently swallowed the new route. It now ends at `/host-submissions`.
+
+### Deliberate deviations from the plan
+
+- **The cue does not carry a resolved `mediaAssetId`.** The plan asked for one, but the same
+  command object is in `publicRoomState()` and reaches every player phone, and
+  `test/video-clips.test.js` already forbids an asset id there. `cueAudioSource()` gives host
+  and Presentation one shared resolution instead, which is what the asset id was for.
+- **`styles.css` was not touched** (not in this session's ownership). The new
+  `submission-pending` / `-confirmed` / `-failed` / `-abandoned` class names therefore have no
+  rules yet; the legacy `submitted` (green) and `locked` (red) classes still carry the colour,
+  so nothing renders unstyled — but a failure and a safely-locked question still *look* alike.
+- **An empty tail goes to the finale** rather than raising an explicit host error. A modal on
+  the shared laptop is the thing C16 exists to remove; the diagnostic records it instead.
+
+### What remains unproven
+
+- **Nothing here was seen in a browser.** No live room, no shared screen, no phone. See the
+  report for the per-change manual checks that matter most.
+- `/host-submissions` is exercised against a stubbed `fetch`, never against Supabase. It needs
+  a deploy before the C13 client half does anything in production; until then
+  `restoreHostSubmissions()` fails its fetch, records a diagnostic, and leaves the counter as
+  it is today. **Deploying the client without the Worker is safe; the reverse is also safe.**
+- The 20s cue-freshness window assumes host and Presentation share a clock (RUNBOOK has them
+  as two tabs on one machine). A cue that appears to come from the future is treated as fresh
+  so a skewed clock can never silence the shared screen, but a Presentation on a *second*
+  machine with a >20s slow clock could reject a legitimate first cue after arming; pressing
+  Play again issues a new cue and recovers.

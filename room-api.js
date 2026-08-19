@@ -100,23 +100,48 @@ export const roomApi = {
   }
 };
 
-// Exact rejection messages raised by submit_live_answer() in
-// supabase/migrations/0002_live_room_rpc.sql. Keep this in sync with that
-// migration. All three mean the host closed, locked, or advanced the
-// question out from under an in-flight submission — an expected concurrency
-// outcome, not a bug. Anything else (auth, network, server, data errors) is
-// unexpected and still worth reporting to diagnostics/Sentry.
+// Exact rejection messages raised by submit_live_answer(). The first three
+// come from supabase/migrations/0002_live_room_rpc.sql; the fourth is added by
+// 0035_prevent_double_scoring.sql, which stops a reopened question from
+// accepting edits to rows that were already locked and scored. Keep this in
+// sync with those migrations. All four mean the host closed, locked, or
+// advanced the question out from under an in-flight submission — an expected
+// concurrency outcome, not a bug. Anything else (auth, network, server, data
+// errors) is unexpected and still worth reporting to diagnostics/Sentry.
 const SUBMIT_ANSWER_CONFLICT_REASONS = {
   "This question has changed; refresh and try again": "stale-revision",
   "Answers are not open": "question-closed",
-  "That is not the active question": "question-changed"
+  "That is not the active question": "question-changed",
+  "Your answer to this question is already locked": "answer-locked"
 };
+
+// Conflict reasons a retry cannot fix: the answer will not be accepted however
+// many times it is sent. Only "stale-revision" is ambiguous enough to be worth
+// re-reading room state for.
+const ABANDONED_SUBMIT_REASONS = new Set(["question-closed", "question-changed", "answer-locked"]);
 
 // Classifies a submitAnswer() rejection instead of scattering raw message
 // comparisons through app.js.
 export function classifySubmitAnswerError(error) {
   const message = error instanceof Error ? error.message : undefined;
   return (message && SUBMIT_ANSWER_CONFLICT_REASONS[message]) || "unexpected";
+}
+
+// Exact rejection message raised by lock_and_score_live_question() in
+// supabase/migrations/0030_multi_fill_in_the_blank_scoring.sql (unchanged
+// since 0003_server_scoring.sql). The row is taken `for update`, so when the
+// question timer's auto-lock and the host pressing R race each other, the
+// loser blocks on the row lock and then sees this message. It means the
+// question is already locked and already scored -- exactly once -- not that
+// anything failed.
+const LOCK_AND_SCORE_CONFLICT_REASONS = {
+  "The active question is not open": "already-locked"
+};
+
+// Classifies a lockAndScore() rejection, mirroring classifySubmitAnswerError above.
+export function classifyLockAndScoreError(error) {
+  const message = error instanceof Error ? error.message : undefined;
+  return (message && LOCK_AND_SCORE_CONFLICT_REASONS[message]) || "unexpected";
 }
 
 // Exact rejection message raised by choose_live_door() in
@@ -174,7 +199,7 @@ export async function submitLiveAnswerWithRecovery({ roomCode, playerToken, ques
     return { status: "submitted", result };
   } catch (error) {
     const reason = classifySubmitAnswerError(error);
-    if (reason === "question-closed" || reason === "question-changed") return { status: "abandoned", reason };
+    if (ABANDONED_SUBMIT_REASONS.has(reason)) return { status: "abandoned", reason };
     if (reason !== "stale-revision") return { status: "failed", error };
 
     let freshRoomState;
@@ -194,5 +219,49 @@ export async function submitLiveAnswerWithRecovery({ roomCode, playerToken, ques
       if (retryReason !== "unexpected") return { status: "abandoned", reason: retryReason };
       return { status: "failed", error: retryError };
     }
+  }
+}
+
+// Locks and scores the active question for the host, treating the
+// "already locked" rejection as a benign outcome rather than an error: the
+// host's expiry timer and the host's own Reveal keypress both reach this RPC,
+// and the loser of that race must still be able to continue to the reveal.
+// On that path the authoritative phase and leaderboard are re-read from the
+// server instead of being assumed.
+//
+// Returns one of:
+//   { status: "locked",        revision, players, error? }
+//   { status: "already-locked", revision, players, error? }
+//   { status: "failed",        error }
+// A present `error` alongside "locked"/"already-locked" means the question is
+// safely locked and scored but the leaderboard refresh failed -- worth
+// reporting, never worth blocking the reveal.
+export async function lockAndScoreWithRecovery({ roomCode, hostSecret, client = roomApi }) {
+  let status = "locked";
+  let revision = null;
+  try {
+    const result = await client.lockAndScore({ roomCode, hostSecret });
+    revision = result?.revision ?? null;
+  } catch (error) {
+    if (classifyLockAndScoreError(error) !== "already-locked") return { status: "failed", error };
+    let room;
+    try {
+      room = await client.getHostRoomState({ roomCode, hostSecret });
+    } catch (stateError) {
+      return { status: "failed", error: stateError };
+    }
+    // Only believe the benign reading if the server really has moved past
+    // question_open. Anything else means the rejection did not mean what this
+    // classifier assumed, and pretending the question is locked would strand
+    // the host in a phase the server does not agree with.
+    if (!room || room.phase === "question_open") return { status: "failed", error };
+    status = "already-locked";
+    revision = room.revision ?? null;
+  }
+  try {
+    const players = await client.getLeaderboard({ roomCode, accessToken: hostSecret });
+    return { status, revision, players };
+  } catch (error) {
+    return { status, revision, players: null, error };
   }
 }

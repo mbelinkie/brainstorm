@@ -77,7 +77,8 @@ test("source presence: the between-round flow wires scoreboard, door choice, and
 
 test("source presence: advanceQuestion opens the next question without a leaderboard", () => {
   const advance = app.slice(app.indexOf("async function advanceQuestion"), app.indexOf("function cueBetweenRoundAudio"));
-  assert.match(advance, /nextRound !== roundIndex/);
+  assert.match(advance, /next\.roundChanged/);
+  assert.match(advance, /await startRoundEnd\(next\.roundIndex\)/);
   assert.match(advance, /state\.phase = "open"/);
   assert.match(advance, /state\.presentationScreen = "question"/);
   assert.doesNotMatch(advance, /presentationScreen = "intermission"/);

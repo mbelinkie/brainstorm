@@ -251,6 +251,158 @@ export function tallyQuestionResults(question = {}, submissions = {}) {
 // This is a denylist, not an allowlist, so a newly added state field defaults
 // to remounting the Host. A stale host screen is worse than a flickery one
 // during a live show; add a field here only once something patches it.
+// The question timer's auto-lock must fire exactly once per expiry, must not
+// start a second lock while one is already in flight, and must not stay dead
+// for the rest of the show because a single RPC failed. Those rules are a pure
+// decision over timer/lock state, so they live here and are tested without a
+// browser. `retryAt` is how a failed attempt backs off instead of retrying on
+// every 250 ms tick.
+export function autoLockDecision({ remaining, view, phase, locking = false, now = 0, retryAt = 0 } = {}) {
+  if (remaining !== 0) return false;
+  if (view !== "host" || phase !== "open") return false;
+  if (locking) return false;
+  return now >= retryAt;
+}
+
+// A reloaded Host rebuilds state.submitted from the server (see the
+// /host-submissions Worker route). Merging, not replacing, is the point: a
+// live broadcast that lands while the recovery request is in flight is newer
+// than the row that request read, and must win. Recovered rows only fill gaps.
+export function mergeRecoveredSubmissions(current = {}, recovered = []) {
+  const merged = { ...(current || {}) };
+  for (const entry of Array.isArray(recovered) ? recovered : []) {
+    if (!entry || typeof entry.playerId !== "string" || !entry.playerId) continue;
+    if (entry.answer === null || entry.answer === undefined) continue;
+    if (Object.prototype.hasOwnProperty.call(merged, entry.playerId)) continue;
+    merged[entry.playerId] = entry.answer;
+  }
+  return merged;
+}
+
+// PRODUCT_SPEC and mistakes.md #4 both require pending, confirmed, rejected
+// and retryable to be four distinct visible states. They were two: a failed
+// submission borrowed the confirmed/locked treatment ("submitted locked"),
+// and its message lived only in the DOM, so the next redraw replaced it with
+// "Answers saved" from a sessionStorage flag that was set on the first
+// success for a question and never cleared. The mapping lives here so every
+// state is enumerable in a test rather than reconstructed from a template.
+//
+// The legacy class names are kept alongside the new ones: `submitted` is the
+// green confirmation and `locked` the red warning that styles.css already
+// ships. The `submission-*` names are what a stylesheet should target to
+// finally tell a failure apart from a safely-locked question.
+export function submissionStatusView({ outcome = "idle", phase = "open", questionType = "", manualSubmit = false } = {}) {
+  const autoSaving = questionType === "multi_fill_in_the_blank";
+  const confirmed = outcome === "confirmed";
+  if (phase === "complete") return { state: "complete", className: confirmed ? "submitted submission-confirmed" : "", message: "Thanks for playing—the final leaderboard is on the shared screen." };
+  if (phase === "reveal") return { state: "revealed", className: confirmed ? "submitted submission-confirmed" : "", message: "Answer revealed." };
+  if (phase === "locked") return { state: "locked", className: "submitted locked submission-locked", message: "Answers are locked." };
+  switch (outcome) {
+    case "sending":
+      return { state: "sending", className: "submission-pending", message: autoSaving ? "Saving answers…" : "Saving selection…" };
+    case "confirmed":
+      return { state: "confirmed", className: "submitted submission-confirmed", message: autoSaving ? "Answers saved. You can keep editing until the host closes the question." : manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal." };
+    case "failed":
+      return { state: "failed", className: "locked submission-failed", message: autoSaving ? "Answers were not saved. Edit a field to retry." : manualSubmit ? "Not submitted. Tap Submit to try again." : "Selection was not saved. Tap it again to retry." };
+    case "abandoned":
+      return { state: "abandoned", className: "submission-abandoned", message: autoSaving ? "The question moved on before these answers were needed." : "The question moved on before this answer was needed." };
+    default:
+      return { state: "idle", className: "", message: autoSaving ? "Answers save automatically as you type." : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically." };
+  }
+}
+
+// A confirmation belongs to the answer that was confirmed, not to the
+// question. Answers are strings, numbers, or plain keyed objects (a blank per
+// index, an item per slot), so a key-order-independent deep compare is what
+// decides whether what the phone is showing is what the server accepted.
+export function sameSubmittedAnswer(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => rightKeys[index] === key && sameSubmittedAnswer(left[key], right[key]));
+}
+
+// Cross-client cue identity. mistakes.md #3 records this bug class already:
+// a command that says only "play" cannot be told apart from a command issued
+// twenty minutes ago. The command is part of publicRoomState() and is
+// persisted by set_live_room_state, so a Presentation that reconnects is
+// handed the last cue ever issued with nothing to date it by.
+//
+// Deliberately absent: the resolved media asset id. The same command object
+// is broadcast to every player phone, and an asset reference reaching a
+// player breaks the payload allowlist (see PRODUCT_SPEC and
+// test/video-clips.test.js). Presentation resolves the asset itself from the
+// authored definition it is already entitled to read; questionId, clipId,
+// audioScope and audioKey identify the cue precisely enough for that.
+export const PRESENTATION_CUE_FRESHNESS_MS = 20000;
+
+// Actions that would put sound or video on the shared screen. A pause or a
+// volume change is harmless to re-apply; these are not.
+const CUE_ACTIONS_THAT_START_PLAYBACK = new Set(["play", "restart"]);
+
+// Decides whether Presentation should act on a cue. `freshMount` means this
+// tab has not applied any cue yet in this page's life -- the state in which a
+// persisted command is of completely unknown age.
+//
+// Host and Presentation are documented as two tabs on one machine (RUNBOOK),
+// so `issuedAt` is compared against a clock they share. A cue that appears to
+// come from the future is treated as fresh rather than rejected, so a skewed
+// clock can never silence the shared screen.
+export function presentationCueDecision(command, { lastApplied = null, roomCode = "", quizVersionId = "", now = 0, freshMount = false, freshnessMs = PRESENTATION_CUE_FRESHNESS_MS } = {}) {
+  if (!command || !command.id) return { accepted: false, reason: "no-command" };
+  if (command.roomCode && roomCode && command.roomCode !== roomCode) return { accepted: false, reason: "other-room" };
+  if (command.quizVersionId && quizVersionId && command.quizVersionId !== quizVersionId) return { accepted: false, reason: "other-quiz" };
+  if (lastApplied && command.id === lastApplied.id) return { accepted: false, reason: "duplicate" };
+
+  const issuedAt = Number(command.issuedAt) || 0;
+  const lastIssuedAt = Number(lastApplied?.issuedAt) || 0;
+  if (issuedAt && lastIssuedAt && issuedAt <= lastIssuedAt) return { accepted: false, reason: "out-of-order" };
+
+  if (freshMount && CUE_ACTIONS_THAT_START_PLAYBACK.has(command.action)) {
+    // A command issued by a client old enough not to date its cues cannot be
+    // shown to be recent, and this is the one moment that matters: arming, or
+    // a reload, replaying a cue the room finished with long ago.
+    if (!issuedAt) return { accepted: false, reason: "unknown-age" };
+    if (now - issuedAt > freshnessMs) return { accepted: false, reason: "stale-cue" };
+  }
+  return { accepted: true, reason: "accepted" };
+}
+
+// An authored round can be empty, and an empty round used to be an
+// unrecoverable host state: setHostQuestion(n, 0) returned false, startRound()
+// returned, and there was no state change, no error and nothing in the
+// console -- the Next button and the arrow key simply appeared dead. These two
+// walks are the whole "where does the host go next" question, kept pure so
+// every navigation path can share one answer.
+
+// The first round at or after `startIndex` that actually has questions, or -1.
+export function firstPlayableRound(rounds = [], startIndex = 0) {
+  const list = Array.isArray(rounds) ? rounds : [];
+  for (let index = Math.max(0, Number(startIndex) || 0); index < list.length; index += 1) {
+    if ((list[index]?.questions || []).length) return index;
+  }
+  return -1;
+}
+
+// The question after `position`, skipping empty rounds. `position` omitted
+// means "the first playable question anywhere". Returns null when the quiz has
+// nothing left to play, which is the finale. `roundChanged` tells the caller
+// to show the round-end card rather than moving straight on.
+export function nextPlayablePosition(rounds = [], position = null) {
+  const list = Array.isArray(rounds) ? rounds : [];
+  let roundIndex = position ? Math.max(0, Number(position.roundIndex) || 0) : 0;
+  let questionIndex = position ? Math.max(0, Number(position.questionIndex) || 0) + 1 : 0;
+  for (; roundIndex < list.length; roundIndex += 1) {
+    if (questionIndex < (list[roundIndex]?.questions || []).length) {
+      return { roundIndex, questionIndex, roundChanged: !position || roundIndex !== position.roundIndex };
+    }
+    questionIndex = 0;
+  }
+  return null;
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker

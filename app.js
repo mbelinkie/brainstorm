@@ -1,11 +1,14 @@
-import { classifyChooseDoorError, isTransientSaveError, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") || "landing";
 const isHostedRoom = params.has("room");
+// Opt-in for controls that are safe on a rehearsal room and dangerous in a
+// live one. Off unless the host URL carries ?testing=1.
+const testingControlsEnabled = params.get("testing") === "1";
 const roomCode = params.get("room") || "local-demo";
 document.body.classList.toggle("is-presentation", view === "presenter");
 document.addEventListener("visibilitychange", () => {
@@ -20,16 +23,24 @@ let hostMediaObjectUrl = null;
 let imageMediaObjectUrls = [];
 let timerInterval = null;
 let timerExpiryLocking = false;
+// A failed auto-lock is retried, but never at the 250 ms tick rate.
+let timerExpiryLockRetryAt = 0;
+// One shared in-flight lock RPC for the timer and the host's own Reveal.
+let lockQuestionInFlight = null;
+let lockQuestionInFlightIsAuto = false;
 let activeDrag = null;
 let scoreNotificationTimer = null;
-let handledPresentationAudioCommand = null;
+// The last cue this Presentation actually acted on, for this page's life.
+// `null` means "nothing applied yet", which is exactly the state in which a
+// persisted command's age cannot be assumed (see presentationCueDecision).
+let lastAppliedAudioCommand = null;
 const presentationAudioPlayer = view === "presenter" ? new Audio() : null;
 const presentationVideoPlayer = view === "presenter" ? document.createElement("video") : null;
 if (presentationVideoPlayer) { presentationVideoPlayer.playsInline = true; presentationVideoPlayer.preload = "auto"; presentationVideoPlayer.controls = false; }
 let presentationAudioSourceKey = null;
 let presentationVideoSourceKey = null;
 let presentationVideoObjectUrl = null;
-let handledPresentationMediaCommand = null;
+let lastAppliedMediaCommand = null;
 let presentationMediaArmed = false;
 let loadedPrivateAudioAssetId = null;
 let presentationAudioArmed = false;
@@ -51,6 +62,11 @@ let realtimeClosestNumberGuesses = new Map();
 let realtimeClosestNumberGuessesQuestionId = "";
 let autoSubmitTimer = null;
 let submissionSequence = Promise.resolve();
+// The outcome of this phone's last submission for the question on screen.
+// Held in module state so a redraw reconstructs it instead of erasing it.
+let submissionOutcome = "idle";
+let submissionOutcomeQuestionId = "";
+let submissionOutcomeAnswer = null;
 // A host state save that fails leaves the server on the previous screen while
 // the host UI moves on, so every player who refreshes or reconnects gets the
 // stale round. These track the save queue and the unresolved-failure banner.
@@ -62,6 +78,10 @@ const quizWorkerOrigin = config.workerOrigin || location.origin;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
+// The question types whose answer is sent by a deliberate Submit tap rather
+// than saved as the player selects.
+const MANUAL_SUBMIT_TYPES = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"];
+const TIMER_AUTO_LOCK_RETRY_MS = 2000;
 const ROUND_START_HOLD_MS = 2600;
 const FINAL_SCORE_PAGE_SIZE = 8;
 const FINAL_SCORE_PAGE_HOLD_MS = 6000;
@@ -78,8 +98,26 @@ function currentAudioVolume() {
   // between-round, finale) until they move the slider again.
   return normalizedAudioVolume(state.audioVolume ?? state.audioCommand?.volume);
 }
+// Every cross-client cue carries who issued it, for which room and quiz, and
+// when. Without a date, a Presentation that reconnects cannot tell a cue
+// issued two seconds ago from one issued twenty minutes ago, and replays it
+// over the answer reveal (mistakes.md #3).
+function cueIdentity() {
+  return {
+    id: crypto.randomUUID(),
+    issuedAt: Date.now(),
+    roomCode,
+    // The browser holds the authored definition, not the quiz_versions row
+    // id, so this is the quiz's own id. Together with the room code it is
+    // enough to reject a cue that belongs somewhere else.
+    quizVersionId: hostQuizDefinition?.id || ""
+  };
+}
 function setAudioCommand(command) {
-  state.audioCommand = { id: crypto.randomUUID(), volume: currentAudioVolume(), ...command };
+  state.audioCommand = { ...cueIdentity(), volume: currentAudioVolume(), ...command };
+}
+function setMediaCommand(command) {
+  state.mediaCommand = { ...cueIdentity(), ...command };
 }
 function questionPresentationMedia(question) {
   if (question?.video?.mediaAssetId || question?.video?.url) return { kind: "video", ...question.video };
@@ -190,7 +228,7 @@ function publicRoomState() {
     activeClipId: state.activeClipId || null,
     audioCommand: state.audioCommand || null,
     audioVolume: currentAudioVolume(),
-    mediaCommand: state.mediaCommand ? { id: state.mediaCommand.id, kind: state.mediaCommand.kind, action: state.mediaCommand.action, mediaScope: state.mediaCommand.mediaScope, questionId: state.mediaCommand.questionId } : null,
+    mediaCommand: state.mediaCommand ? { id: state.mediaCommand.id, kind: state.mediaCommand.kind, action: state.mediaCommand.action, mediaScope: state.mediaCommand.mediaScope, questionId: state.mediaCommand.questionId, issuedAt: state.mediaCommand.issuedAt || null, roomCode: state.mediaCommand.roomCode || "", quizVersionId: state.mediaCommand.quizVersionId || "" } : null,
     scoreNotification: state.scoreNotification?.expiresAt && new Date(state.scoreNotification.expiresAt).getTime() > Date.now() ? state.scoreNotification : null,
     doorBonus: publicDoorBonus(),
     doorPicks: state.doorPicks || [],
@@ -263,21 +301,23 @@ async function advanceQuestion() {
     roundIndex: Math.max(0, (state.question?.round || 1) - 1),
     questionIndex: Math.max(0, (state.question?.questionInRound || 1) - 1)
   };
-  const roundIndex = current.roundIndex;
-  const questionIndex = current.questionIndex;
-  const nextInRound = questionIndex + 1;
-  const nextRound = nextInRound >= (hostQuizDefinition?.rounds?.[roundIndex]?.questions?.length || 0) ? roundIndex + 1 : roundIndex;
-  const nextIndex = nextRound === roundIndex ? nextInRound : 0;
   if (state.phase === "door_reveal") {
     const targetRound = Number(state.targetRoundIndex);
     await startRound(targetRound);
     return;
   }
-  if (nextRound !== roundIndex && nextRound < (hostQuizDefinition?.rounds?.length || 0)) {
-    await startRoundEnd(nextRound);
+  // One shared walk over the author's rounds. An empty round between here and
+  // the next question is skipped rather than dead-ending the host.
+  const next = nextPlayablePosition(hostQuizDefinition?.rounds, current);
+  if (!next) {
+    await startFinale();
     return;
   }
-  if (!setHostQuestion(nextRound, nextIndex)) {
+  if (next.roundChanged) {
+    await startRoundEnd(next.roundIndex);
+    return;
+  }
+  if (!setHostQuestion(next.roundIndex, next.questionIndex)) {
     await startFinale();
     return;
   }
@@ -389,8 +429,23 @@ async function startRound(targetRoundIndex = state.targetRoundIndex) {
   rememberCurrentScreen();
   // The local demo retains its sample question instead of an authored rounds
   // array, but it should still take the same Round 1 cue as a hosted quiz.
-  if (hostQuizDefinition?.rounds?.length && !setHostQuestion(targetRoundIndex, 0)) return;
-  state.targetRoundIndex = targetRoundIndex;
+  let roundToStart = targetRoundIndex;
+  if (hostQuizDefinition?.rounds?.length) {
+    // Skip forward over rounds the author left empty. This used to return
+    // here with no state change, no error and nothing in the console, so the
+    // Next button and the arrow key appeared dead with no way out.
+    roundToStart = firstPlayableRound(hostQuizDefinition.rounds, targetRoundIndex);
+    if (roundToStart === -1) {
+      // Nothing after this point has any questions, so the quiz is over. That
+      // is a content problem worth recording, not a reason to strand the host.
+      recordDiagnostic("start-round-empty", new Error(`No round from ${targetRoundIndex + 1} onward has any questions`), { roomCode, targetRoundIndex });
+      await startFinale();
+      return;
+    }
+    if (roundToStart !== targetRoundIndex) console.warn(`Round ${targetRoundIndex + 1} has no questions; starting round ${roundToStart + 1} instead.`);
+    if (!setHostQuestion(roundToStart, 0)) return;
+  }
+  state.targetRoundIndex = roundToStart;
   state.presentationScreen = "round_start";
   state.intermissionStage = "round_start";
   cueBetweenRoundAudio("roundStart");
@@ -412,6 +467,9 @@ async function acceptDoorChoice(payload) {
 }
 
 async function jumpToQuestion() {
+  // Belt and braces: the control is not rendered without the opt-in, and the
+  // handler refuses to act without it either.
+  if (!testingControlsEnabled) return;
   const value = document.querySelector("[data-jump-question]")?.value;
   const [roundIndex, questionIndex] = String(value || "").split(":").map(Number);
   if (!Number.isInteger(roundIndex) || !Number.isInteger(questionIndex) || !setHostQuestion(roundIndex, questionIndex)) return;
@@ -1001,6 +1059,9 @@ async function connectHostedRoom() {
         }
         emit();
         render();
+        // Un-awaited on purpose: the host screen must paint immediately, and
+        // this patches the two live readouts in place when it lands.
+        restoreHostSubmissions();
       }
     }
     if (view === "player" && params.has("room") && playerName) {
@@ -1031,7 +1092,29 @@ async function setPhase(phase) {
   emit();
   render();
 }
-async function lockQuestion({ renderAfter = true } = {}) {
+// Two callers reach lock_and_score_live_question(): the 250 ms timer tick's
+// auto-lock and the host pressing R (or Next). They used to be able to be in
+// flight at the same time, and the loser of that race raised "The active
+// question is not open" -> a modal alert on the shared laptop mid-show, with
+// state.phase left at "open" so revealQuestion() aborted. Share a single
+// in-flight promise the way submissionSequence serializes player answers.
+async function lockQuestion({ renderAfter = true, auto = false } = {}) {
+  if (lockQuestionInFlight) {
+    const joinedAuto = lockQuestionInFlightIsAuto;
+    await lockQuestionInFlight;
+    // A failing auto-lock stays quiet on purpose -- the clock fired, the host
+    // did not click. But a host who pressed R and merely joined that failure
+    // IS asking, so fall through to one foreground attempt that surfaces its
+    // own failure. Every other joiner is done here.
+    if (auto || !joinedAuto || state.phase !== "open" || lockQuestionInFlight) return;
+  }
+  lockQuestionInFlight = lockQuestionOnce({ renderAfter, auto });
+  lockQuestionInFlightIsAuto = auto;
+  try { await lockQuestionInFlight; }
+  finally { lockQuestionInFlight = null; lockQuestionInFlightIsAuto = false; }
+}
+
+async function lockQuestionOnce({ renderAfter = true, auto = false } = {}) {
   if (state.phase === "open") rememberCurrentScreen();
   const hostSecret = getHostSecret();
   if (!params.has("room") || !hostSecret) {
@@ -1039,19 +1122,27 @@ async function lockQuestion({ renderAfter = true } = {}) {
     if (renderAfter) await setPhase("locked");
     return;
   }
-  try {
-    const result = await roomApi.lockAndScore({ roomCode, hostSecret });
-    state.phase = "locked";
-    state.revision = result.revision;
-    state.players = await roomApi.getLeaderboard({ roomCode, accessToken: hostSecret });
-    if (renderAfter) {
-      await persistHostState();
-      emit();
-      render();
-    }
-  } catch (error) {
-    recordDiagnostic("lock-and-score", error, { roomCode, questionId: state.questionId });
-    alert(`Could not lock and score this question: ${error.message}`);
+  const outcome = await lockAndScoreWithRecovery({ roomCode, hostSecret });
+  if (outcome.status === "failed") {
+    recordDiagnostic("lock-and-score", outcome.error, { roomCode, questionId: state.questionId });
+    // The auto-lock is the timer firing. A blocking modal on the shared screen
+    // is the wrong answer to a failure nobody asked for; the next tick retries.
+    if (!auto) alert(`Could not lock and score this question: ${outcome.error.message}`);
+    return;
+  }
+  // "already-locked" means the other side of the race got there first and the
+  // server scored this question exactly once. Adopt the authoritative result
+  // it re-read, and let the reveal continue.
+  state.phase = "locked";
+  if (outcome.revision !== null && outcome.revision !== undefined) state.revision = outcome.revision;
+  if (outcome.players) state.players = outcome.players;
+  // The question is locked and scored on both of those paths, so a failed
+  // leaderboard refresh is worth reporting and never worth blocking on.
+  if (outcome.error) recordDiagnostic("lock-and-score-leaderboard", outcome.error, { roomCode, questionId: state.questionId });
+  if (renderAfter) {
+    await persistHostState();
+    emit();
+    render();
   }
 }
 async function revealQuestion() {
@@ -1112,6 +1203,7 @@ async function startTimer(seconds) {
   state.timerDurationSeconds = seconds;
   state.timerEndsAt = new Date(Date.now() + seconds * 1000).toISOString();
   timerExpiryLocking = false;
+  timerExpiryLockRetryAt = 0;
   await persistHostState();
   emit();
   render();
@@ -1131,9 +1223,16 @@ function updateTimer() {
     node.textContent = remaining === null ? "" : remaining === 0 ? "Time elapsed" : formatTimer(remaining);
     node.classList.toggle("is-expired", remaining === 0);
   });
-  if (remaining === 0 && view === "host" && state.phase === "open" && !timerExpiryLocking) {
+  if (autoLockDecision({ remaining, view, phase: state.phase, locking: timerExpiryLocking, now: Date.now(), retryAt: timerExpiryLockRetryAt })) {
     timerExpiryLocking = true;
-    lockQuestion();
+    lockQuestion({ auto: true }).catch(() => {}).finally(() => {
+      // Clearing the latch here is the repair. It used to be cleared only by
+      // startTimer(), so one transient RPC failure left it stuck true and the
+      // auto-lock was silently dead for the rest of the show. Back off so a
+      // persistent failure cannot re-attempt on every 250 ms tick.
+      timerExpiryLocking = false;
+      if (state.phase === "open") timerExpiryLockRetryAt = Date.now() + TIMER_AUTO_LOCK_RETRY_MS;
+    });
   }
 }
 
@@ -1226,11 +1325,18 @@ function presenterOverrideControl() {
   return `<div class="host-presenter-override"><label for="presenter-override-input">Presented by <span>this show only</span></label><input id="presenter-override-input" data-presenter-override type="text" maxlength="120" autocomplete="off" value="${escapeHtml(state.presenterOverride || "")}" placeholder="${escapeHtml(authoredCredit || "No credit line")}" /><small>Shows above the quiz title on the opening and closing screens. Clear it to ${restoreHint}. Never saved into the quiz file.</small></div>`;
 }
 
+// Jumping to a question resets it to its ready state, and re-opening a
+// question that has already been scored awards its points a second time:
+// lock_and_score_live_question() inserts a fresh score_events row per correct
+// submission and deletes nothing, and no unique index stops it. The durable
+// fix is a server-side constraint. Until then this labelled "Testing
+// shortcut" does not belong in every live hosted room -- it shipped in all of
+// them, one click away from silently double-scoring a round.
 function questionJumpControls() {
-  if (view !== "host" || !hostQuizDefinition?.rounds?.length) return "";
+  if (view !== "host" || !testingControlsEnabled || !hostQuizDefinition?.rounds?.length) return "";
   const currentValue = `${Math.max(0, Number(state.question?.round || 1) - 1)}:${Math.max(0, Number(state.question?.questionInRound || 1) - 1)}`;
   const choices = hostQuizDefinition.rounds.map((round, roundIndex) => `<optgroup label="${escapeHtml(round.title || `Round ${roundIndex + 1}`)}">${(round.questions || []).map((question, questionIndex) => `<option value="${roundIndex}:${questionIndex}" ${currentValue === `${roundIndex}:${questionIndex}` ? "selected" : ""}>${questionIndex + 1}. ${escapeHtml(question.prompt || question.id || "Untitled question")}</option>`).join("")}</optgroup>`).join("");
-  return `<div class="question-jump"><strong>Testing shortcut</strong><span>Jump to any question. This resets that question to its ready/intermission state.</span><select data-jump-question aria-label="Jump to question">${choices}</select><button class="btn btn-secondary" data-jump-question-button>Jump to question</button></div>`;
+  return `<div class="question-jump"><strong>Testing shortcut</strong><span>Jump to any question. This resets that question to its ready/intermission state. Do not jump back to a question that has already been scored — re-opening it awards its points again.</span><select data-jump-question aria-label="Jump to question">${choices}</select><button class="btn btn-secondary" data-jump-question-button>Jump to question</button></div>`;
 }
 
 function shortcutGuide() {
@@ -1583,6 +1689,37 @@ async function refreshAnonymousTextAnswers() {
   }
 }
 
+// A Host reload loses every received answer: publicRoomState() publishes
+// `submitted: {}` so a phone can never see another player's answer, and
+// get_host_live_room_state returns that same public state. The counter read
+// "0 / 12" while all twelve answers sat safely in the database, and
+// answerResultsPanel() saw totalSubmitted === 0 and rendered nothing at all,
+// so the "Who got it right" summary silently disappeared. PRODUCT_SPEC §3
+// promises the session recovers after a host refresh; this is what recovers
+// it. Host only, and read back through the host-authorized Worker route.
+async function restoreHostSubmissions() {
+  if (view !== "host" || !params.has("room")) return;
+  const hostSecret = getHostSecret();
+  const questionId = state.questionId || state.question?.id;
+  if (!hostSecret || !questionId) return;
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/host-submissions`, { headers: { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret } });
+    if (!response.ok) throw new Error(`Submission recovery failed (${response.status})`);
+    const result = await response.json();
+    // The host may have advanced while this was in flight, and the room may
+    // have moved on between the request and the reply. Recover only answers
+    // that still belong to the question on screen.
+    if ((state.questionId || state.question?.id) !== questionId || result?.questionId !== questionId) return;
+    state.submitted = mergeRecoveredSubmissions(state.submitted, result.submissions);
+    // Both readouts this restores are patched in place; a full render here
+    // would remount the operator console for a counter update (mistakes.md #15).
+    patchHostLiveRegions();
+  } catch (error) {
+    recordDiagnostic("host-submission-recovery", error, { roomCode, questionId });
+    console.warn("Could not restore the received-answer count.", error);
+  }
+}
+
 async function refreshClosestNumberGuesses() {
   if (view !== "presenter" || !params.has("room") || state.question?.type !== "closest_number" || state.phase !== "reveal") {
     closestNumberGuesses = [];
@@ -1712,12 +1849,16 @@ async function loadPrivatePresentationVideo(assetId) {
   presentationVideoSourceKey = assetId;
 }
 
+// Resolves true only when the commanded video is loaded and ready. An
+// unresolved source must never fall through to playback -- that is how an
+// unavailable clip ends up playing the previously loaded one.
 async function preparePresentationVideo(command = state.mediaCommand) {
-  if (view !== "presenter" || !presentationVideoPlayer) return;
+  if (view !== "presenter" || !presentationVideoPlayer) return false;
   const authoredQuestion = questionDefinitionById(command?.questionId || state.questionId || state.question?.id) || presenterQuestionDefinition();
   const video = questionPresentationMedia(authoredQuestion);
-  if (video?.kind !== "video" || !video.mediaAssetId) return;
+  if (video?.kind !== "video" || !video.mediaAssetId) return false;
   await loadPrivatePresentationVideo(video.mediaAssetId);
+  return presentationVideoSourceKey === video.mediaAssetId;
 }
 
 async function startPresentationVideo() {
@@ -1731,10 +1872,13 @@ async function startPresentationVideo() {
 
 async function applyPresentationMediaCommand() {
   const command = state.mediaCommand;
-  if (view !== "presenter" || !presentationVideoPlayer || !presentationMediaArmed || command?.kind !== "video" || !command.id || command.id === handledPresentationMediaCommand) return;
-  handledPresentationMediaCommand = command.id;
-  await preparePresentationVideo(command);
+  if (view !== "presenter" || !presentationVideoPlayer || !presentationMediaArmed || command?.kind !== "video") return;
+  const decision = presentationCueDecision(command, { lastApplied: lastAppliedMediaCommand, roomCode, quizVersionId: hostQuizDefinition?.id || "", now: Date.now(), freshMount: lastAppliedMediaCommand === null });
+  if (!decision.accepted) return;
+  lastAppliedMediaCommand = { id: command.id, issuedAt: command.issuedAt || null };
+  const prepared = await preparePresentationVideo(command);
   if (command.action === "pause") { presentationVideoPlayer.pause(); return; }
+  if (!prepared) { console.warn("Presentation video is unavailable for this cue; not starting playback."); return; }
   if (command.action === "restart") presentationVideoPlayer.currentTime = 0;
   await startPresentationVideo();
 }
@@ -1748,19 +1892,27 @@ function questionDefinitionById(questionId) {
   return null;
 }
 
-async function preparePresentationAudio(command = state.audioCommand) {
-  if (view !== "presenter" || !presentationAudioPlayer) return;
+// Resolves which authored clip a cue means. The host and Presentation use the
+// same resolution, so the cue does not have to carry an asset id that a player
+// phone must never receive.
+function cueAudioSource(command) {
   const commandedQuestion = questionDefinitionById(command?.questionId);
   const commandedIntro = command?.clipId ? commandedQuestion?.clips?.find((clip) => clip.id === command.clipId) : null;
-  const audio = command?.audioScope === "between_round"
-    ? betweenRoundAudio(command.audioKey)
-    : command?.audioScope === "finale"
-    ? finaleAudio(command.audioKey)
-    : command?.audioScope === "title"
-    ? hostQuizDefinition?.titlePage?.audio
-    : commandedIntro || commandedQuestion?.audio || (state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio : hostQuestion.audio);
+  if (command?.audioScope === "between_round") return betweenRoundAudio(command.audioKey);
+  if (command?.audioScope === "finale") return finaleAudio(command.audioKey);
+  if (command?.audioScope === "title") return hostQuizDefinition?.titlePage?.audio || null;
+  return commandedIntro || commandedQuestion?.audio || (state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio : hostQuestion.audio) || null;
+}
+
+// Resolves true only when the commanded clip is the one now loaded. Returning
+// early without saying so is what let an unavailable clip play the previously
+// loaded one instead (mistakes.md #3, one level deeper).
+async function preparePresentationAudio(command = state.audioCommand) {
+  if (view !== "presenter" || !presentationAudioPlayer) return false;
+  const audio = cueAudioSource(command);
   const sourceKey = audio?.mediaAssetId || audio?.url || null;
-  if (!sourceKey || sourceKey === presentationAudioSourceKey) return;
+  if (!sourceKey) return false;
+  if (sourceKey === presentationAudioSourceKey) return true;
   stopTitleCaptionClock();
   document.querySelector("[data-title-caption-overlay]")?.classList.remove("is-visible");
   const captionText = document.querySelector("[data-title-caption-text]");
@@ -1773,10 +1925,11 @@ async function preparePresentationAudio(command = state.audioCommand) {
     presentationAudioPlayer.src = audio.url;
     presentationAudioPlayer.load();
     presentationAudioSourceKey = sourceKey;
-    return;
+    return true;
   }
   await loadPrivateHostAudio(presentationAudioPlayer, audio.mediaAssetId);
   if (presentationAudioPlayer.src) presentationAudioSourceKey = sourceKey;
+  return presentationAudioSourceKey === sourceKey;
 }
 
 async function armPresentationAudio() {
@@ -1795,9 +1948,11 @@ async function armPresentationAudio() {
   presentationAudioPlayer.load();
   presentationAudioSourceKey = null;
   presentationAudioArmed = true;
-  // If a play command arrived before the one-time browser gesture, apply it
-  // immediately after arming instead of making the host click Play again.
-  handledPresentationAudioCommand = null;
+  // A cue that arrived before the one-time browser gesture is applied right
+  // after arming instead of making the host click Play again -- but only if
+  // it is recent. This used to clear the handled marker unconditionally,
+  // which is precisely how a cue the room finished with twenty minutes ago
+  // played over the answer reveal. Freshness now decides, not this line.
   render();
 }
 
@@ -1813,7 +1968,6 @@ async function armPresentationMedia() {
     presentationVideoPlayer.muted = wasMuted;
   }
   presentationMediaArmed = true;
-  handledPresentationMediaCommand = null;
   await preparePresentationVideo();
   render();
 }
@@ -1836,15 +1990,20 @@ async function startPresentationPlayback() {
 
 async function applyPresentationAudioCommand() {
   const command = state.audioCommand;
-  if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed || !command?.id || command.id === handledPresentationAudioCommand) return;
-  handledPresentationAudioCommand = command.id;
+  if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed) return;
+  const decision = presentationCueDecision(command, { lastApplied: lastAppliedAudioCommand, roomCode, quizVersionId: hostQuizDefinition?.id || "", now: Date.now(), freshMount: lastAppliedAudioCommand === null });
+  if (!decision.accepted) return;
+  lastAppliedAudioCommand = { id: command.id, issuedAt: command.issuedAt || null };
   presentationAudioPlayer.volume = normalizedAudioVolume(command.volume);
   // A volume-only command carries no clip identity (see the host-side
   // listener) and must never touch which clip is loaded — otherwise dragging
   // the slider mid-question could yank playback back to an unrelated scope.
   if (command.action === "volume") return;
-  await preparePresentationAudio(command);
+  const prepared = await preparePresentationAudio(command);
   if (command.action === "pause") { presentationAudioPlayer.pause(); return; }
+  // Never fall through to playback with an unresolved source: that plays
+  // whatever clip happened to be loaded last.
+  if (!prepared) { console.warn("Presentation audio is unavailable for this cue; not starting playback."); return; }
   if (command.action === "restart") presentationAudioPlayer.currentTime = 0;
   try { await startPresentationPlayback(); } catch (error) { console.warn("Presentation audio needs to be enabled once in the presentation tab.", error); }
 }
@@ -2324,13 +2483,14 @@ function renderPlayer() {
     app.innerHTML = shell(`<main class="player-main player-main--intermission">${brandTopbar()}<section class="player-card player-card--intermission player-holding-card"><header class="player-round"><p class="eyebrow">Get ready</p><h1>Next question coming up</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Between questions</p><h2>Stay on this screen.</h2><p>The next question will appear here when the host starts it.</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
     return;
   }
-  const submissionKey = `quiz-submitted:${roomCode}:${state.questionId || state.question?.id}`;
-  const isSubmitted = sessionStorage.getItem(submissionKey) === "true";
-  const manualSubmit = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"].includes(state.question?.type);
-  const autoSavingMultiBlank = state.question?.type === "multi_fill_in_the_blank";
-  const phaseMessage = state.phase === "locked" ? "Answers are locked." : state.phase === "reveal" ? "Answer revealed." : state.phase === "complete" ? "Thanks for playing—the final leaderboard is on the shared screen." : autoSavingMultiBlank ? (isSubmitted ? "Answers saved. You can keep editing until the host closes the question." : "Answers save automatically as you type.") : isSubmitted ? (manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal.") : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically.";
+  const manualSubmit = MANUAL_SUBMIT_TYPES.includes(state.question?.type);
+  // Rebuilt from the recorded outcome, never from "something was once saved
+  // for this question". A failed save used to be replaced by "Answers saved"
+  // on the next redraw, because the sessionStorage flag it read was set on
+  // the first success and never cleared.
+  const submissionStatus = submissionStatusView(submissionStatusInputs());
   const playerType = escapeHtml(state.question?.type || "question");
-  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : ""}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
+  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : ""}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}<div class="submit-bar"><span data-submission-status class="${submissionStatus.className}">${escapeHtml(submissionStatus.message)}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
 }
 
 function render() {
@@ -2395,18 +2555,71 @@ function startDrag(event) {
   window.addEventListener("pointercancel", finish, { once: true });
 }
 
-function setSubmissionStatus(message, className = "") {
+const submissionRecordKey = (questionId) => `quiz-submitted:${roomCode}:${questionId}`;
+
+// Records WHICH answer the server confirmed, not merely that something was
+// once confirmed for this question. Phones that are mid-show still hold the
+// old value, the string "true", so that shape is still understood.
+function confirmedSubmission(questionId) {
+  const raw = sessionStorage.getItem(submissionRecordKey(questionId));
+  if (!raw) return null;
+  if (raw === "true") return { legacy: true };
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+// The live outcome for the question on screen. Module state wins while this
+// page is alive; sessionStorage is what a reloaded phone recovers from.
+function submissionOutcomeNow(questionId) {
+  if (submissionOutcomeQuestionId === questionId && submissionOutcome !== "idle") {
+    // A confirmation belongs to the answer that was confirmed. Typing past a
+    // saved answer must not keep reading "saved" for text the server has
+    // never seen.
+    if (submissionOutcome !== "confirmed" || sameSubmittedAnswer(submissionOutcomeAnswer, selected)) return submissionOutcome;
+    return "idle";
+  }
+  const record = confirmedSubmission(questionId);
+  if (!record) return "idle";
+  // A reloaded phone has no module state and nothing has been typed since, so
+  // what the server confirmed is still what this phone is showing.
+  if (selected === null || record.legacy || sameSubmittedAnswer(record.answer, selected)) return "confirmed";
+  return "idle";
+}
+
+function submissionStatusInputs() {
+  return {
+    outcome: submissionOutcomeNow(state.questionId || state.question?.id || "sample-question"),
+    phase: state.phase,
+    questionType: state.question?.type,
+    manualSubmit: MANUAL_SUBMIT_TYPES.includes(state.question?.type)
+  };
+}
+
+function refreshSubmissionStatus() {
   const status = document.querySelector("[data-submission-status]");
   if (!status) return;
-  status.textContent = message;
-  status.className = className;
+  const view = submissionStatusView(submissionStatusInputs());
+  status.textContent = view.message;
+  status.className = view.className;
+}
+
+// The single place a submission outcome is recorded. Every one of the four
+// states goes through here, so none of them can be a message written straight
+// to the DOM that the next render() quietly replaces.
+function rememberSubmission(outcome, questionId, answer = null) {
+  submissionOutcome = outcome;
+  submissionOutcomeQuestionId = questionId;
+  submissionOutcomeAnswer = outcome === "confirmed" ? answer : null;
+  if (outcome === "confirmed") {
+    try { sessionStorage.setItem(submissionRecordKey(questionId), JSON.stringify({ answer })); }
+    catch { /* A full storage quota must never interrupt a quiz. */ }
+  }
+  refreshSubmissionStatus();
 }
 
 function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
   if (view !== "player" || state.phase !== "open" || (!allowEmpty && !answerReady())) return;
-  const isMultiBlank = state.question?.type === "multi_fill_in_the_blank";
   clearTimeout(autoSubmitTimer);
-  setSubmissionStatus(isMultiBlank ? "Saving answers…" : "Saving selection…");
+  rememberSubmission("sending", state.questionId || state.question?.id || "sample-question");
   autoSubmitTimer = setTimeout(() => {
     const answer = structuredClone(selected);
     const questionId = state.questionId || state.question?.id || "sample-question";
@@ -2417,10 +2630,11 @@ function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
       // expected race into a rejected RPC (and a Sentry error).
       if (view !== "player" || state.phase !== "open" || (state.questionId || state.question?.id || "sample-question") !== questionId || (state.revision || 0) !== serverRevision) return;
       const markSubmitted = () => {
-        state.submitted[playerId] = answer;
-        sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
+        // Keyed by the server's roster id, the same identity sendSubmission()
+        // broadcasts, rather than by this phone's local auth token.
+        state.submitted[doorPlayerRecordId || playerId] = answer;
         sendSubmission(answer);
-        setSubmissionStatus(isMultiBlank ? "Answers saved. You can keep editing until the host closes the question." : "Selection saved. You can change it until reveal.", "submitted");
+        rememberSubmission("confirmed", questionId, answer);
       };
       if (!params.has("room")) { markSubmitted(); return; }
       const outcome = await submitLiveAnswerWithRecovery({ roomCode, playerToken: playerId, questionId, answer, serverRevision });
@@ -2430,10 +2644,10 @@ function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
         // The host closed or advanced the question before this answer made
         // it through. That's an expected concurrency outcome, not a bug: no
         // retry, no diagnostics/Sentry report, just an accurate status.
-        setSubmissionStatus(isMultiBlank ? "The question moved on before these answers were needed." : "The question moved on before this answer was needed.");
+        rememberSubmission("abandoned", questionId);
       } else {
         recordDiagnostic("auto-submit-answer", outcome.error, { roomCode, questionId });
-        setSubmissionStatus(isMultiBlank ? "Answers were not saved. Edit a field to retry." : "Selection was not saved. Tap it again to retry.", "submitted locked");
+        rememberSubmission("failed", questionId);
       }
     });
   }, delay);
@@ -2627,7 +2841,7 @@ function attachEvents() {
     // auto-submission, this is a deliberate tap, so report the outcome rather
     // than no-oping silently.
     if (view !== "player" || state.phase !== "open") {
-      setSubmissionStatus("The question moved on before this answer was needed.");
+      rememberSubmission("abandoned", state.questionId || state.question?.id || "sample-question");
       return;
     }
     const button = event.currentTarget;
@@ -2636,10 +2850,11 @@ function attachEvents() {
     const serverRevision = state.revision || 0;
     button.disabled = true;
     button.textContent = "Submitting…";
+    rememberSubmission("sending", questionId);
     const markSubmitted = () => {
-      state.submitted[playerId] = answer;
-      sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
+      state.submitted[doorPlayerRecordId || playerId] = answer;
       sendSubmission(answer);
+      rememberSubmission("confirmed", questionId, answer);
       render();
     };
     if (!params.has("room")) { markSubmitted(); return; }
@@ -2650,13 +2865,16 @@ function attachEvents() {
       // The host closed or advanced the question before this tap made it
       // through. That's an expected concurrency outcome, not a bug: no
       // retry, no diagnostics/Sentry report, just an accurate status.
-      setSubmissionStatus("The question moved on before this answer was needed.");
+      rememberSubmission("abandoned", questionId);
       button.disabled = false;
       button.textContent = "Submit";
     } else {
       recordDiagnostic("submit-answer", outcome.error, { roomCode, questionId });
       console.warn("Could not persist answer.", outcome.error);
-      alert(`Your answer was not submitted. Please try again.\n\n${outcome.error.message}`);
+      // A modal on a phone is dismissed and gone. The failure has to stay on
+      // screen next to the button the player has to tap again, and it has to
+      // survive the next redraw.
+      rememberSubmission("failed", questionId);
       button.disabled = false;
       button.textContent = "Submit";
     }
@@ -2711,7 +2929,7 @@ function attachEvents() {
   }
   document.querySelectorAll("[data-video-command]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "host" || !hostQuizDefinition || !hostQuestion.video) return;
-    state.mediaCommand = { id: crypto.randomUUID(), kind: "video", action: button.dataset.videoCommand, mediaScope: "question", questionId: hostQuestion.id };
+    setMediaCommand({ kind: "video", action: button.dataset.videoCommand, mediaScope: "question", questionId: hostQuestion.id });
     state.mediaPlayback = button.dataset.videoCommand === "pause" ? "paused" : "loading";
     await persistHostState();
     emit();
