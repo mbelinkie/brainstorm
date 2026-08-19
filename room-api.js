@@ -133,6 +133,23 @@ export function classifyChooseDoorError(error) {
   return (message && CHOOSE_DOOR_CONFLICT_REASONS[message]) || "unexpected";
 }
 
+// Connection/resource SQLSTATE classes, plus PostgREST's own connectivity
+// codes. Everything here fails differently on a second try; a logical
+// rejection does not.
+const TRANSIENT_SAVE_CODES = /^(08|53|57|58)|^PGRST(000|001|002|504)$/;
+
+// persistHostState() in app.js retries a failed host-state save with backoff,
+// but only for failures a second attempt could plausibly clear. Lives here,
+// beside the other rejection classifiers, so the retry rule is exercised
+// directly by test/answer-submission-recovery.test.js rather than only through
+// a source grep of app.js.
+export function isTransientSaveError(error) {
+  // A request that never reached the server rejects with TypeError.
+  if (error instanceof TypeError) return true;
+  const code = error?.code ? String(error.code) : "";
+  return !code || TRANSIENT_SAVE_CODES.test(code);
+}
+
 // submit_live_answer() checks the revision before the question ID, so a
 // merely-stale revision on the *same* still-open question and an answer that
 // arrived after the host already moved to a different question both surface

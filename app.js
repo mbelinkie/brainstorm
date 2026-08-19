@@ -1,4 +1,4 @@
-import { classifyChooseDoorError, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { classifyChooseDoorError, isTransientSaveError, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
 import { correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
@@ -796,23 +796,12 @@ function hostStatePayload() {
   };
 }
 
-// Connection/resource SQLSTATE classes, plus PostgREST's own connectivity
-// codes. Everything here fails differently on a second try; a logical
-// rejection does not.
-const TRANSIENT_SAVE_CODES = /^(08|53|57|58)|^PGRST(000|001|002|504)$/;
-
 // room-api.js copies Postgres/PostgREST code/details/hint onto the error it
 // throws, so anything the server actually reasoned about carries a code —
 // set_live_room_state()'s only rejection, "Host authorization failed", raises
 // P0001. A request that never reached PostgREST carries no code at all (fetch
 // rejects with a TypeError, and postgrest-js's fetch fallback leaves the code
 // empty), which is the transient case worth retrying.
-function isTransientSaveError(error) {
-  if (error instanceof TypeError) return true;
-  const code = error?.code ? String(error.code) : "";
-  return !code || TRANSIENT_SAVE_CODES.test(code);
-}
-
 async function persistHostState() {
   const hostSecret = getHostSecret();
   if (!hostSecret || !params.has("room")) return;

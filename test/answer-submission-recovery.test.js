@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 // the same way it runs in the browser, instead of only string-matching its
 // source (see test/reliability-contract.test.js for that older pattern).
 globalThis.window = globalThis.window || {};
-const { classifySubmitAnswerError, planStaleRevisionRecovery, submitLiveAnswerWithRecovery } = await import("../room-api.js");
+const { classifySubmitAnswerError, isTransientSaveError, planStaleRevisionRecovery, submitLiveAnswerWithRecovery } = await import("../room-api.js");
 
 test("classifySubmitAnswerError maps the exact submit_live_answer rejection text", () => {
   // These three strings must stay in sync with supabase/migrations/0002_live_room_rpc.sql.
@@ -107,4 +107,37 @@ test("submitLiveAnswerWithRecovery never reports success unless the retried RPC 
   assert.equal(result.status, "abandoned");
   // Exactly the initial attempt plus one retry — never an unbounded loop.
   assert.equal(submitCalls, 2);
+});
+
+// --- host-state save retry classification -----------------------------------
+
+// persistHostState() retries a failed host-state save with backoff, but only
+// for failures that can plausibly succeed on a second attempt. Retrying a
+// logical rejection just burns the backoff budget and delays the sync banner;
+// not retrying a dropped connection desyncs the room for the whole round.
+test("isTransientSaveError retries connectivity and resource failures", () => {
+  // A fetch that never reached the server rejects with TypeError.
+  assert.equal(isTransientSaveError(new TypeError("Failed to fetch")), true);
+  // No code at all: an unknown shape gets the benefit of the doubt.
+  assert.equal(isTransientSaveError(new Error("boom")), true);
+  assert.equal(isTransientSaveError(undefined), true);
+
+  // SQLSTATE classes 08/53/57/58 -- connection, resource, operator
+  // intervention, and system error. All differ on a second try.
+  for (const code of ["08006", "08003", "53300", "57014", "58030"]) {
+    assert.equal(isTransientSaveError(Object.assign(new Error("x"), { code })), true, `${code} should retry`);
+  }
+  // PostgREST's own connectivity codes.
+  for (const code of ["PGRST000", "PGRST001", "PGRST002", "PGRST504"]) {
+    assert.equal(isTransientSaveError(Object.assign(new Error("x"), { code })), true, `${code} should retry`);
+  }
+});
+
+test("isTransientSaveError does not retry logical rejections", () => {
+  // 42501 is the permission-denied failure a missing service_role grant
+  // produces (see test/migration-hygiene.test.js). Retrying it never helps --
+  // it needs a migration, so the host should see the sync banner promptly.
+  for (const code of ["42501", "23505", "22P02", "42P01", "PGRST116", "PGRST505"]) {
+    assert.equal(isTransientSaveError(Object.assign(new Error("x"), { code })), false, `${code} should not retry`);
+  }
 });
