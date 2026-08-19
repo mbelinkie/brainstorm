@@ -51,6 +51,19 @@ let realtimeClosestNumberGuesses = new Map();
 let realtimeClosestNumberGuessesQuestionId = "";
 let autoSubmitTimer = null;
 let submissionSequence = Promise.resolve();
+// Deployment allowlist for Prompt Battle's host-only model test panel
+// (design doc §7.5). Mirrored from the same list enforced server-side in
+// cloudflare-worker.js — the model menu must never be free text, and there
+// is no live "effective allowlist" endpoint yet in this slice; that arrives
+// with `set_battle_engine` in a later slice.
+const BATTLE_TEST_IMAGE_MODELS = [
+  { value: "google/gemini-3.1-flash-image", label: "Gemini 3.1 Flash Image" },
+  { value: "google/gemini-3.1-flash-lite-image", label: "Gemini 3.1 Flash Lite Image" },
+  { value: "black-forest-labs/flux.2-klein-4b", label: "FLUX.2 Klein (4B)" }
+];
+// idle -> pending -> success | blocked | error, never an implied success
+// before the Worker responds (see mistakes.md #4).
+let battleTestState = { model: BATTLE_TEST_IMAGE_MODELS[0].value, status: "idle", imageDataUrl: null, mimeType: null, costUsd: null, remaining: null, error: null };
 const quizWorkerOrigin = config.workerOrigin || location.origin;
 const ROUND_START_HOLD_MS = 2600;
 const FINAL_SCORE_PAGE_SIZE = 8;
@@ -1011,6 +1024,28 @@ function hostUtilityControls() {
   return `<div class="host-utilities"><button class="btn btn-secondary" data-previous>Previous <span class="keyhint">P / ←</span></button><button class="btn btn-secondary" data-next-screen>Next <span class="keyhint">N / →</span></button><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button></div>`;
 }
 
+// Host-only, title-screen-only panel for Prompt Battle (design doc §7.5):
+// test one real generation against the deployment's allowed models before
+// the round starts, and see the provider's actual reported cost. Never
+// touches player budgets, never persists, and the model choice is always a
+// menu — never free text — because a model name accepted from a client is
+// the Worker's allowlist defeated.
+function battleEnginePanel() {
+  if (view !== "host" || !isHostedRoom || state.presentationScreen !== "title") return "";
+  const options = BATTLE_TEST_IMAGE_MODELS.map((model) => `<option value="${escapeHtml(model.value)}" ${battleTestState.model === model.value ? "selected" : ""}>${escapeHtml(model.label)}</option>`).join("");
+  const pending = battleTestState.status === "pending";
+  const remainingNote = typeof battleTestState.remaining === "number" ? `<span>${battleTestState.remaining} test generation${battleTestState.remaining === 1 ? "" : "s"} left this session</span>` : "";
+  let resultMarkup = "";
+  if (battleTestState.status === "success") {
+    resultMarkup = `<div class="battle-test-result"><img src="${battleTestState.imageDataUrl}" alt="Test generation from ${escapeHtml(battleTestState.model)}" />${battleTestState.costUsd != null ? `<span>Cost: <strong>$${battleTestState.costUsd.toFixed(4)}</strong></span>` : ""}${remainingNote}</div>`;
+  } else if (battleTestState.status === "blocked") {
+    resultMarkup = `<p class="battle-test-error">Blocked by the provider's safety filter: ${escapeHtml(battleTestState.error || "no reason given")}.${remainingNote}</p>`;
+  } else if (battleTestState.status === "error") {
+    resultMarkup = `<p class="battle-test-error">${escapeHtml(battleTestState.error || "Test generation failed.")}${remainingNote}</p>`;
+  }
+  return `<div class="battle-engine-panel"><h3>Prompt Battle — test a model</h3><p>Host-only. Generates one real image so you can check quality and actual cost before the round starts.</p><label class="field"><span>Model</span><select data-battle-test-model>${options}</select></label><button class="btn btn-secondary" data-battle-test-image ${pending ? "disabled" : ""}>${pending ? "Generating…" : "Test image"}</button>${resultMarkup}</div>`;
+}
+
 function questionJumpControls() {
   if (view !== "host" || !hostQuizDefinition?.rounds?.length) return "";
   const currentValue = `${Math.max(0, Number(state.question?.round || 1) - 1)}:${Math.max(0, Number(state.question?.questionInRound || 1) - 1)}`;
@@ -1731,7 +1766,7 @@ function renderHost() {
   const demoNotice = !isHostedRoom ? '<div class="host-demo-notice"><strong>Local demo — not a published room.</strong><span>This screen uses sample questions and cannot load your uploaded assets.</span><a class="btn btn-secondary" href="./index.html">Create a hosted room</a></div>' : "";
   const openingTitle = hostQuizDefinition?.titlePage;
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
-  const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>` : "";
+  const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>${battleEnginePanel()}` : "";
   const intermissionAction = state.presentationScreen === "round_end"
     ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_scoreboard"
@@ -2193,6 +2228,35 @@ function attachEvents() {
   document.querySelector("[data-copy-link]")?.addEventListener("click", async () => {
     const input = document.querySelector('input[aria-label="Player join link"]');
     try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand("copy"); }
+  });
+  document.querySelector("[data-battle-test-model]")?.addEventListener("change", (event) => {
+    battleTestState = { ...battleTestState, model: event.currentTarget.value };
+  });
+  document.querySelector("[data-battle-test-image]")?.addEventListener("click", async () => {
+    if (battleTestState.status === "pending") return;
+    const hostSecret = getHostSecret();
+    if (!hostSecret) { alert("Host authorization is missing for this room."); return; }
+    battleTestState = { ...battleTestState, status: "pending", error: null };
+    render();
+    try {
+      const response = await fetch(`${quizWorkerOrigin}/battle/test-image`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret },
+        body: JSON.stringify({ model: battleTestState.model })
+      });
+      const result = await response.json().catch(() => ({}));
+      const remaining = typeof result.remaining === "number" ? result.remaining : battleTestState.remaining;
+      if (!response.ok) {
+        battleTestState = { ...battleTestState, status: "error", error: result.error || `Test generation failed (${response.status}).`, remaining };
+      } else if (result.blocked) {
+        battleTestState = { ...battleTestState, status: "blocked", error: result.blockReason || null, remaining };
+      } else {
+        battleTestState = { ...battleTestState, status: "success", imageDataUrl: `data:${result.mimeType};base64,${result.bytesBase64}`, mimeType: result.mimeType, costUsd: typeof result.costUsd === "number" ? result.costUsd : null, remaining, error: null };
+      }
+    } catch {
+      battleTestState = { ...battleTestState, status: "error", error: "Could not reach the image generator." };
+    }
+    render();
   });
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;

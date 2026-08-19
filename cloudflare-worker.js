@@ -1,3 +1,54 @@
+import { ENGINES } from "./image-engine.js";
+
+// Deployment allowlist for Prompt Battle image generation (design doc §7.5).
+// The Worker is the enforcement point: "the Worker reads the effective model
+// from session state, never from the request body" is the target design for
+// live rounds, but /battle/test-image runs outside any round and has no
+// session-state model to read, so this list is the sole gate for it. Keep it
+// in sync with the `permittedModels` example in
+// docs/superpowers/specs/2026-08-17-prompt-battle-design.md §4 until a later
+// slice adds `set_battle_engine` and the deployment-allowlist ∩ round
+// intersection described there.
+const BATTLE_IMAGE_MODEL_ALLOWLIST = [
+  "google/gemini-3.1-flash-image",
+  "google/gemini-3.1-flash-lite-image",
+  "black-forest-labs/flux.2-klein-4b"
+];
+
+// A fixed, harmless prompt for calibrating a model choice — deliberately not
+// one of the quiz's actual round prompts, and deliberately not a free-text
+// field the host can type into (host-only trust does not extend to arbitrary
+// unmoderated text going straight to a billed provider call from this repo's
+// UI).
+const BATTLE_TEST_IMAGE_PROMPT = "A cheerful test pattern for calibrating an AI image generator: a small robot painting a rainbow.";
+
+// Per-room cap on test generations (design doc §7.5: "a hard per-session cap
+// of 10 test generations... the button costs real money per press").
+// Tracked in-memory for this Worker instance only. This is a slice-1
+// stopgap: it is not durable across isolate restarts and is not shared
+// across concurrently-running isolates, so a determined host could exceed 10
+// by getting routed to a fresh isolate. Migration 0033 and session state are
+// out of scope for this slice; a later slice should move this counter into
+// `sessions.state` (or a dedicated column) behind a proper RPC so it is
+// durable and race-free. Until then this is still a meaningful backstop
+// against the ordinary case of a host repeatedly clicking one button.
+const BATTLE_TEST_IMAGE_SESSION_CAP = 10;
+const battleTestImageCounts = new Map();
+
+const battleTestImageCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type, x-quiz-room, x-quiz-host-secret",
+  "access-control-max-age": "86400"
+};
+
+function battleTestImageResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...battleTestImageCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
 function supabaseAdminHeaders(secret, { json = false } = {}) {
   // Modern Supabase server keys are opaque API keys, not user-session JWTs.
   // The hosted gateway translates those credentials to the service_role role.
@@ -84,6 +135,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
     // require a successful CORS preflight before the browser will issue GET.
     if (request.method === "OPTIONS" && url.pathname === "/host-text-answers") return new Response(null, { status: 204, headers: hostTextAnswersCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/host-closest-number-guesses") return new Response(null, { status: 204, headers: hostClosestNumberCorsHeaders });
+    if (request.method === "OPTIONS" && url.pathname === "/battle/test-image") return new Response(null, { status: 204, headers: battleTestImageCorsHeaders });
     if (request.method === "GET" && url.pathname === "/media-health") {
       if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ ok: false, stage: "configuration" }, { status: 503 });
       const check = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?select=id&limit=1`, { headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY) });
@@ -160,6 +212,76 @@ if (request.method === "GET" && url.pathname === "/__version") {
         })).filter((guess) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(guess.guess))
         : [];
       return hostClosestNumberResponse({ guesses }, { headers: { "cache-control": "private, no-store" } });
+    }
+    if (request.method === "POST" && url.pathname === "/battle/test-image") {
+      const roomCode = request.headers.get("x-quiz-room");
+      const hostSecret = request.headers.get("x-quiz-host-secret");
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return battleTestImageResponse({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
+
+      // Same authorization pattern as /host-text-answers and
+      // /host-closest-number-guesses: the RPC verifies the room code and
+      // host secret pair server-side before this request does anything
+      // that costs money. The room's live phase/state is not otherwise
+      // needed — a test generation happens outside any battle round.
+      const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+      const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
+      if (!stateResponse.ok) return battleTestImageResponse({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
+      await stateResponse.json().catch(() => null);
+
+      const normalizedRoom = roomCode.trim().toUpperCase();
+      const usedCount = battleTestImageCounts.get(normalizedRoom) || 0;
+      if (usedCount >= BATTLE_TEST_IMAGE_SESSION_CAP) return battleTestImageResponse({ error: `This room has used all ${BATTLE_TEST_IMAGE_SESSION_CAP} test generations for this session.` }, { status: 429, headers: { "cache-control": "no-store" } });
+
+      const body = await request.json().catch(() => ({}));
+      const model = String(body.model || "");
+      // The host picks from a menu; the client never sends free text here.
+      // A model name accepted from a client body is the allowlist defeated,
+      // so this check is not optional.
+      if (!BATTLE_IMAGE_MODEL_ALLOWLIST.includes(model)) return battleTestImageResponse({ error: "That model is not on the deployment allowlist." }, { status: 400, headers: { "cache-control": "no-store" } });
+      if (!env.OPENROUTER_API_KEY) return battleTestImageResponse({ error: "OpenRouter is not configured on this deployment." }, { status: 503, headers: { "cache-control": "no-store" } });
+
+      const engine = ENGINES.openrouter;
+      let auth;
+      try {
+        auth = await engine.resolveAuth(env);
+      } catch (error) {
+        console.error("Battle test-image auth failed", { message: error.message });
+        return battleTestImageResponse({ error: "Image provider is not configured." }, { status: 503, headers: { "cache-control": "no-store" } });
+      }
+
+      const providerRequest = engine.buildRequest({ model, prompt: BATTLE_TEST_IMAGE_PROMPT, variants: 1, resolution: "512", outputFormat: "webp" });
+      let providerResponse;
+      try {
+        providerResponse = await fetch(engine.endpoint(), { method: providerRequest.method, headers: { ...providerRequest.headers, ...auth.headers }, body: providerRequest.body });
+      } catch (error) {
+        console.error("Battle test-image provider fetch failed", { message: error.message });
+        return battleTestImageResponse({ error: "The image provider could not be reached." }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+
+      // The cap counts attempts that reached the provider, whether they
+      // succeed, fail, or are blocked — it exists to cap button presses
+      // against real spend, not to cap only successful generations.
+      battleTestImageCounts.set(normalizedRoom, usedCount + 1);
+      const remaining = BATTLE_TEST_IMAGE_SESSION_CAP - (usedCount + 1);
+
+      if (!providerResponse.ok) {
+        const failureText = await providerResponse.text().catch(() => "");
+        console.error("Battle test-image provider error", { upstreamStatus: providerResponse.status, body: failureText.slice(0, 500) });
+        return battleTestImageResponse({ error: "The image provider returned an error.", upstreamStatus: providerResponse.status, remaining }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
+
+      const json = await providerResponse.json().catch(() => ({}));
+      const parsed = engine.parseResponse(json);
+      if (parsed.blocked) return battleTestImageResponse({ blocked: true, blockReason: parsed.blockReason, costUsd: parsed.costUsd, remaining }, { headers: { "cache-control": "no-store" } });
+
+      const [image] = parsed.images;
+      if (!image) return battleTestImageResponse({ error: "The provider returned no image.", remaining }, { status: 502, headers: { "cache-control": "no-store" } });
+
+      // Inline base64 to the host only, and nothing is persisted — no
+      // storage upload, no media_assets row. This sidesteps the
+      // uploaded_by/ownership question for battle media entirely for the
+      // test path, per §7.5.
+      return battleTestImageResponse({ mimeType: image.mimeType, bytesBase64: image.bytesBase64, costUsd: parsed.costUsd, remaining }, { headers: { "cache-control": "no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/media-assistant/search") {
       const openAiKey = env.OPENAI_QUIZ || env.OPENAI_API_KEY;

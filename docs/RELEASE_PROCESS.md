@@ -259,15 +259,44 @@ last session to touch a file silently owns it.
 Two ways to fix it, in order of preference:
 
 **A. One worktree per session.** Real isolation — separate directory, separate
-checkout, no interleaving:
+checkout, no interleaving. This is cheap in this repo, because every test
+imports only `node:` builtins and `server.mjs` depends only on builtins too:
+**a worktree needs no `npm install` to run `npm test` or `npm run dev`.**
 
 ```bash
-git worktree add ../quiz-fix-<name> -b claude/<name> main
+cd "/Users/matthewbelinkie/Desktop/ONGOING/Quiz Platform"
+git worktree add ../quiz-<name> -b claude/<name> main
+cp .env.local ../quiz-<name>/.env.local
 ```
 
-Point the session at that directory. When it's done and green, commit there, then
-merge into `main` from the main checkout and `git worktree remove` it. Cost: each
-worktree needs its own `npm install` and its own `.env.local`.
+`.env.local` is git-ignored, so it does not travel with the checkout and must be
+copied. Give each session its own port, since `server.mjs` defaults to 4173:
+
+```bash
+cd ../quiz-<name> && PORT=4174 npm run dev
+```
+
+When the session is green and committed, merge from the main checkout and remove
+the worktree:
+
+```bash
+cd "/Users/matthewbelinkie/Desktop/ONGOING/Quiz Platform"
+git merge --no-ff claude/<name>
+git worktree remove ../quiz-<name>
+git branch -d claude/<name>
+```
+
+Two things worktrees do **not** solve:
+
+- **Migration numbering.** Two sessions each adding "the next" migration both
+  pick `0033` and collide at merge. Only one session at a time may add a
+  migration, or assign the number yourself before starting each one.
+- **Merge conflicts in the big files.** Any two features touching `app.js` or
+  `author.js` will conflict on merge. That is strictly better than today's
+  silent interleaving — a conflict is visible and resolvable, an interleave is
+  not — but it is not free. Keep concurrent sessions on different surfaces
+  (player vs. author vs. presentation) where you can, and merge often so
+  branches stay short-lived.
 
 **B. Serialize.** One session at a time in this directory. Each must end with
 either a commit or an explicit "not committed, here's the diff" note before you

@@ -4,6 +4,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-08-17
 
+- Added a host-only Prompt Battle model test panel to the title screen: pick an image-generation model from a menu, generate one real test image, and see its actual cost. This is a calibration tool only — no Prompt Battle round exists yet.
 - Fixed player logo choices overlapping into a mashed, fanned stack on the join screen at narrow (Android Chrome) viewports. The mobile logo picker's grid rows were collapsing under an unnecessary `min-height: 0` on the choice item.
 - Stopped reporting expected answer-submission races (a host closing or advancing a question while a player's auto-saved answer was still in flight) as production errors. Auto-submit now recognizes the server's stale-revision rejection, refetches room state, and retries once if the same question is still open; a genuinely closed or changed question is now a quiet, accurate status instead of a Sentry error. Unsaved answers are never marked as submitted, and unrelated auth/network/server failures are still reported.
 - Fixed the Host audio volume slider being available only on the title screen and being ignored everywhere else. It now appears on every screen with playable host audio (title, questions, finale) and the host's last-set level carries forward to every future cue — including automatic between-round and finale audio — until they change it again.

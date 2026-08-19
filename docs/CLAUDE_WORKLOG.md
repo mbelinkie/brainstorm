@@ -2,6 +2,133 @@
 
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
+## 2026-08-17 — Prompt Battle slice 1: image-engine adapter, host test endpoint, title-screen test panel
+
+**Branch:** `claude/prompt-battle-image-test-panel` (branched from `main` after a
+same-day merge — see note below).
+**Files touched:** `image-engine.js` (new), `test/image-engine.test.js` (new),
+`cloudflare-worker.js`, `app.js`, `styles.css`, this file, `CHANGELOG.md`.
+
+### Slice
+
+Implemented exactly the three pieces the user scoped from
+`docs/superpowers/specs/2026-08-17-prompt-battle-design.md` §7.3, §7.4, §7.5 —
+no migration, no RPCs, no round lifecycle. Nothing here is wired into an actual
+Prompt Battle round; the round itself (phases, pairing, generation budget,
+voting, scoring) is still entirely unbuilt.
+
+1. **`image-engine.js`** — pure adapter module, no fetching or side effects.
+   `ENGINES.openrouter` implements `resolveAuth` (async, reads
+   `env.OPENROUTER_API_KEY`), `endpoint`, `buildRequest` (clamps `n` to 1–10,
+   builds the `{model, prompt, n, resolution, aspect_ratio, output_format,
+   output_compression}` body), and `parseResponse` (reads `data[].b64_json` /
+   `usage.cost`, and treats a top-level `error` mentioning safety/policy/
+   moderation as a block rather than a crash — this heuristic is a documented
+   assumption, not verified against a live response). `ENGINES.vertex` is
+   present with the same four methods, each throwing "not implemented yet" —
+   deliberately stubbed rather than omitted, per the task's instruction to
+   design the shape so Vertex drops in later without an interface change.
+2. **`POST /battle/test-image`** in `cloudflare-worker.js` — authorizes with
+   the same `get_host_live_room_state` RPC pattern already used by
+   `/host-text-answers` and `/host-closest-number-guesses` (room code + host
+   secret). Validates `model` against a hardcoded
+   `BATTLE_IMAGE_MODEL_ALLOWLIST` (the three models from the spec's §4
+   example), generates one image against a fixed, non-gameplay calibration
+   prompt (never a client-supplied prompt), returns it inline as
+   `{mimeType, bytesBase64, costUsd, remaining}`, and persists nothing —
+   no storage upload, no `media_assets` row.
+3. **Host-only title-screen panel** in `app.js` — a model `<select>` (never
+   free text), a "Test image" button, the returned image, and the actual
+   `costUsd` from the response. Gated on `view === "host" && isHostedRoom &&
+   state.presentationScreen === "title"`, appended into the existing
+   `hostedLobby` block so it shares that block's exact gating. State machine
+   is `idle → pending → success | blocked | error`, following the "never
+   imply success before server confirmation" invariant (mistakes.md #4).
+
+### Judgment calls the spec didn't resolve, made explicit here
+
+- **The 10-generations-per-session cap is in-memory only** (`Map` keyed by
+  room code inside the Worker). The design doc's migration `0033` (which
+  would hold this durably in `sessions.state` or a dedicated column) is
+  explicitly out of scope for this slice. This cap does not survive a Worker
+  isolate restart and is not shared across concurrently-running isolates —
+  it stops the ordinary case of a host repeatedly clicking one button, not a
+  determined attempt to exceed it. Flagged as unproven below.
+- **The model allowlist is hardcoded and duplicated** in both
+  `cloudflare-worker.js` (enforcement) and `app.js` (the menu), rather than
+  fetched from a server-reported effective allowlist. `set_battle_engine` and
+  the deployment-allowlist ∩ round `permittedModels` intersection (§7.5) are
+  a later slice; both copies carry a comment pointing at that.
+- **Test-image uses a fixed calibration prompt**, not one of the quiz's
+  actual round prompts and not a host-typed field — the task listed only a
+  model menu, Test button, image, and cost for this panel; adding a prompt
+  textarea would have been scope creep beyond what was asked, and would also
+  have meant a free-text field feeding a billed provider call.
+- **`ENGINES.openai` was not added**, even though the spec's §7.3 sample
+  object includes it alongside `vertex`. The task's scope note said "leave
+  vertex unimplemented" and did not mention OpenAI at all, so it was left out
+  entirely rather than guessed at.
+- Required new Worker secret: `OPENROUTER_API_KEY` (not yet set in any
+  environment this session touched). Without it the endpoint fails closed
+  with a 503, which was verified by code inspection, not a live call.
+
+### An unrelated branch/history anomaly discovered mid-session
+
+Between this session's initial `git status` (which reported branch
+`claude/prompt-battle-spec`) and resuming after a user interruption, the
+working tree had moved to `main`, with reflog showing the user directly
+committed `6d9d7fa` (the design doc) on `claude/prompt-battle-spec`, checked
+out `main`, and merged it there as `b85a1fd` — a merge commit whose message is
+the raw, unedited git template text ("Please enter a commit message...").
+This was surfaced to the user; no action was taken on it (never rewrite shared
+history). This session's own uncommitted edits were carried onto a fresh
+`claude/prompt-battle-image-test-panel` branch off the resulting `main` via
+`git checkout -b`, rather than left uncommitted on `main`.
+
+### Commands run
+
+```
+$ git status --short --branch
+## claude/prompt-battle-spec
+ M docs/RELEASE_PROCESS.md
+[... session interrupted, resumed later ...]
+$ git status --short --branch
+## main...origin/main [ahead 2]
+ M app.js
+ M cloudflare-worker.js
+ M docs/RELEASE_PROCESS.md
+ M styles.css
+?? image-engine.js
+?? test/image-engine.test.js
+$ git checkout -b claude/prompt-battle-image-test-panel
+Switched to a new branch 'claude/prompt-battle-image-test-panel'
+$ node --check cloudflare-worker.js && node --check app.js
+syntax OK (both)
+$ npm test
+# 149 pass, 0 fail (includes 9 new tests in test/image-engine.test.js)
+```
+
+`docs/RELEASE_PROCESS.md` was left untouched — it was already modified before
+this session started and does not belong to this slice.
+
+### Unproven / open
+
+- **No live provider call was made against OpenRouter.** `image-engine.js` is
+  covered only by fixture-based tests; the `/battle/test-image` endpoint has
+  not been exercised end-to-end against a real room, a real host secret, or a
+  real `OPENROUTER_API_KEY` (none of which are available to this session per
+  `CLAUDE.md`'s "no live external calls" rule, which also applies to manual
+  verification here — this was code-reviewed, not click-tested).
+- **The moderation/safety-block response shape in `parseResponse` is a
+  documented guess**, not verified against a real OpenRouter error payload.
+- **The per-session generation cap is not durable**, as noted above.
+- **No migration, RPC, round lifecycle, pairing, voting, or scoring exists
+  yet.** This slice only covers the host-side model calibration tool; the
+  actual Prompt Battle round (spec §5–§12) is entirely unbuilt.
+- The user has not yet confirmed the branch/merge situation above was
+  intentional, or whether the `b85a1fd` merge commit message should be
+  amended.
+
 ## 2026-08-17 — Android join-screen logo picker overlap
 
 - **Branch:** `claude/fix-android-logo-picker-overlap`
