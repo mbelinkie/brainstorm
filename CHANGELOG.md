@@ -4,6 +4,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-08-18
 
+- Categorize questions can now award partial credit per correctly sorted item instead of all-or-nothing. A ten-item sort with `pointsPerCorrectItem` set scores one point per item placed in the right category, matching what the host script promises; a categorize question without that field still scores full credit only when every item is right. This was applied directly to the production database on 2026-08-18 ahead of a live game and is now recorded as migration `0034_categorize_partial_credit.sql`, so a rebuilt database keeps it.
 - Fixed the Presentation question timer appearing tucked under the corner join QR badge, where it could be partly hidden. The countdown now renders as its own fixed badge pinned to the top-center of the shared screen, clear of both the corner QR (top-right) and the round title.
 - Fixed the author editor discarding an in-progress draft when the bundled question bank failed to load. A single failed fetch of `music-trivia.question-bank.json` — a static file a saved draft does not depend on — used to throw away every unpublished edit and leave the editor broken. The saved draft is now restored first, and a failed bank load keeps that draft open and editable.
 - Fixed importing a quiz JSON file not saving the imported quiz as the browser draft. An author could import a quiz, refresh without touching a field, and get the previous draft back; the Publish button also still reflected the pre-import quiz.

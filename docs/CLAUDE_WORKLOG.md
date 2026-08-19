@@ -903,3 +903,30 @@ The fourth error in the shipped validator — `Round 5, question 1 needs complet
   - a tied final scoreboard on the shared screen next to the exported CSV (C9).
 - The closest-number "could not be loaded" state is unproven against a real failing Worker;
   it is proven only against a simulated failed fetch in the unit test.
+
+## 2026-08-18 — Migrations 0034 (close the categorize drift) and 0035 (C4 / MIG F5)
+- **Branch:** `claude/scoring-migrations`, worktree `../quiz-scoring-migrations`, based on `eba7276`. Numbers 0034 and 0035 assigned by Matthew; no other file created in `supabase/migrations/`.
+- **Files:** `supabase/migrations/0034_categorize_partial_credit.sql` (new), `supabase/migrations/0035_prevent_double_scoring.sql` (new), `test/scoring-contract.test.js`, `CHANGELOG.md`, this file. Nothing else — `app.js` is held by a parallel worker gating the jump control that triggers C4, and no existing migration was edited.
+- **0034 — closes the repo/production drift.** The live `lock_and_score_live_question` is not the one in `0030`: a `create or replace` was applied by hand in the SQL editor on 2026-08-18 before a live game, changing only the `categorize` branch to per-item partial credit (`docs/2026-08-18-live-fix-state.md` §1.2), and no migration was ever written. 0034 was generated mechanically from `0030` — a script asserts the exact old header and the exact old three-line categorize branch are present, then replaces them — so `diff -u 0030 0034` yields exactly two hunks: the header comment and the categorize branch. **Applying it is a no-op in production**, which already runs this body; that is stated in the file's header along with the `pg_proc` re-check query.
+- **0035 — finding C4 / MIG F5, three parts.** Generated from `0034` (never from `0030`, which would have silently reverted partial credit), from `0025`'s `reveal_live_door_rewards`, and from `0002`'s `submit_live_answer`, each by a single asserted string substitution so the rest of every body is byte-identical to its source.
+  1. `lock_and_score_live_question` now runs `delete from public.score_events where session_id = … and question_id = … and created_by = 'system'` immediately after locking submissions and before the scoring loop, and returns `replacedEvents` alongside `scoredResponses`. Re-locking a scored question replaces its automatic verdict instead of adding a second award. Only `system` events are cleared; `adjust_live_score` writes `host`, so manual adjustments survive.
+  2. `reveal_live_door_rewards` now selects only choices `where revealed_at is null` for re-rolling. `choose_live_door` (0025) already clears `revealed_at` when a player changes door, so a new or changed choice still rolls while an already-revealed reward cannot be re-randomized by a host resetting the phase.
+  3. `submit_live_answer` now raises `'Your answer to this question is already locked'` if the player's row for that question is `is_locked`. The phase check still fires first, so this only triggers after a reopen.
+- **Delete over unique index, deliberately.** A partial unique index on `(session_id, player_id, question_id) where created_by = 'system'` fails to create if any existing session already carries duplicate system events from a past re-lock — the migration would be unrunnable against the live database with no way to know in advance short of a query — and it would turn a re-lock into a mid-show duplicate-key exception rather than an idempotent re-score. The delete has neither failure mode. Cost: the first scoring pass's events are not retained for audit. Mitigated, not solved, by returning `replacedEvents` so a re-score is visible rather than silent.
+- **Tests.** Added five "effective definition" tests to `test/scoring-contract.test.js`. They read the whole `supabase/migrations/` chain and keep the *last* `create or replace function public.<name>` — what a full replay leaves in the database — rather than grepping one named file. That is the only shape of test that can catch the actual hazard here: a future migration rebuilt from an older copy of the function reverts partial credit or drops a guard with no conflict and no symptom. Four of the five fail with 0034/0035 removed; the fifth (`adjust_live_score` still writes `host`) is a coupling guard for the delete's `created_by` filter and correctly passes either way. Verified the silent-revert case directly by dropping a copy of `0030` in as a hypothetical `0036`: the partial-credit test fails and names `0036_hypothetical_revert.sql`.
+- **Commands run and actual output:**
+  ```
+  $ npm test            # baseline at eba7276, before any change
+  ℹ tests 255
+  ℹ pass 255
+  ℹ fail 0
+
+  $ npm test            # after 0034, 0035, and the five new tests
+  ℹ tests 260
+  ℹ pass 260
+  ℹ fail 0
+  ```
+  Also ran a stack-based `if`/`loop`/`case`/`begin` balance check over both new files, validated first against `0030`, `0025`, and `0002` as known-good controls: all bodies balanced.
+- **Not verified, and cannot be from here.** There is no database in this environment and the repo's scoring tests only read SQL as text, so **nothing below is behaviorally proven**: that the delete makes a re-lock idempotent, that door rewards survive a phase reset, that a locked submission is refused, or that categorize partial credit still scores correctly after 0034/0035 land. Neither migration has been applied to any database. The manual steps Matthew must run in a throwaway room are in the session report.
+- **Known follow-up left undone (not my file):** `submit_live_answer`'s new rejection string is not in `room-api.js`'s `SUBMIT_ANSWER_CONFLICT_REASONS`, so it classifies as `"unexpected"` and a blocked edit shows a save-failed state rather than the quiet abandoned state. It does not retry-loop and does not claim success, so it is truthful, but whoever owns `room-api.js` should add the mapping. Noted in 0035's header comment too.
+- **Also still owed, unchanged by this session:** `0033_closest_number_player_names.sql` has still never been applied to the database (`docs/2026-08-18-pause-handoff.md` §1). 0034 and 0035 queue behind it.
