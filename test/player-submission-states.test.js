@@ -96,3 +96,31 @@ test("wiring: a confirmed submission records which answer was confirmed", () => 
   assert.match(reader, /sameSubmittedAnswer/, "a confirmation must be checked against the answer on screen");
   assert.match(reader, /record\.legacy/, "phones mid-show still hold the old \"true\" flag");
 });
+
+// C12 — the manual Submit path used to call roomApi.submitAnswer directly and
+// turn a benign host-initiated revision bump into a modal on the player's
+// phone plus a Sentry issue, while the identical race on a single_choice
+// question recovered silently. It was routed through the recovery wrapper on
+// 2026-08-17; nothing pinned it there, so this is the guard.
+test("both submit paths go through the one recovery-aware client", () => {
+  const handlerStart = app.indexOf('document.querySelector("[data-submit]")?.addEventListener("click"');
+  assert.ok(handlerStart > -1, "expected a [data-submit] click handler in app.js");
+  const manual = app.slice(handlerStart, app.indexOf('document.querySelector("[data-player]")'));
+
+  const autoStart = app.indexOf("function queueAutoSubmission");
+  assert.ok(autoStart > -1, "expected app.js to define queueAutoSubmission");
+  const auto = app.slice(autoStart, app.indexOf("function updateMatchingSelectAvailability"));
+
+  for (const [name, source] of [["manual submit", manual], ["auto-submit", auto]]) {
+    assert.match(source, /await submitLiveAnswerWithRecovery\(\{ roomCode, playerToken: playerId, questionId, answer, serverRevision \}\)/, `${name} must use the recovery wrapper`);
+    assert.doesNotMatch(source, /roomApi\.submitAnswer/, `${name} must not call the raw RPC`);
+    // A stale revision on a still-open question is recovered inside the
+    // wrapper; neither path may report it to the player or to Sentry.
+    assert.doesNotMatch(source, /stale-revision/, `${name} must not re-classify rejections itself`);
+  }
+
+  // Both paths record the roster identity the host counts by, not the local
+  // auth token — the identity confusion the 2026-08-17 roster fix removed.
+  assert.match(manual, /state\.submitted\[doorPlayerRecordId \|\| playerId\]/);
+  assert.match(auto, /state\.submitted\[doorPlayerRecordId \|\| playerId\]/);
+});
