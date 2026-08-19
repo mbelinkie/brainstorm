@@ -26,14 +26,33 @@ Three merges needed real judgment rather than mechanical conflict resolution:
 
 ## The three things only a human can do
 
-### 1. Apply migration 0033 — DO THIS BEFORE DEPLOYING
+### 1. Apply migrations 0033, 0034, 0035 — DO THIS BEFORE DEPLOYING
 
-`0033_closest_number_player_names.sql` is committed but **has never been run
-against the database**. It grants the Worker permission to read `session_players`.
+**Corrected 2026-08-18 (later the same day).** The original text below said 0033
+had never been run against the database. That was wrong, and the correction
+matters because it changes what is actually risky here.
 
-The new code reads that table. If you deploy the new code without applying the
-migration first, the closest-number guess board fails mid-show with a 502 —
-exactly the failure mode in `mistakes.md #9`, which has now happened four times.
+Current status of each:
+
+| Migration | In the repo | Applied to production | Effect of applying |
+|---|---|---|---|
+| `0033_closest_number_player_names.sql` | yes | **yes — applied by hand** in the SQL editor on 2026-08-18, before a live game, and verified | no-op; `grant` is idempotent |
+| `0034_categorize_partial_credit.sql` | yes | **yes — applied by hand** the same morning, and verified live | no-op; byte-identical function body already live |
+| `0035_prevent_double_scoring.sql` | yes | **NO — applied nowhere** | **real behavioural change.** This is the one to be careful with |
+
+So the deploy hazard the original text warned about — the closest-number board
+failing mid-show with a 502 — **is already closed.** The grant is live.
+
+0034 exists to close a drift, not to change behaviour: a `create or replace` of
+`lock_and_score_live_question` was applied by hand and no migration was written
+for it, so the chain stopped describing the live database. Its function body was
+diffed against the exact SQL that was pasted into production: identical. Applying
+it changes nothing; **not** having it meant the next scoring migration built on
+`0030` would have silently reverted categorize partial credit.
+
+0035 is the only one that alters live behaviour. It stops a re-locked question
+from double-awarding, stops a door reward from being re-randomised by a phase
+reset, and refuses edits to already-locked submissions. Verify it (section 4).
 
 ```bash
 npx supabase migration list --linked
@@ -71,6 +90,56 @@ The banner that appears when a host-state save fails has **never been seen in a
 live room**. It has no automated coverage of its appearance — only its retry
 rule is unit-tested. Trigger a save failure with a host open and confirm the
 banner appears, is readable, and its retry button works.
+
+### 4. Verify the migrations and the host-recovery work in a real room
+
+None of this is behaviourally verified. There is no database in the dev
+environment and the scoring tests only read migration SQL text, so a green suite
+says the SQL *says* the right thing, not that it *does* it. Everything below
+needs a throwaway room.
+
+**Scoring (0035):**
+
+- **Re-lock no longer double-awards.** One player, one scorable question. Answer
+  correctly, Reveal, note the score. Apply a manual host adjustment. Jump back to
+  the same question (`?testing=1`), Start, Reveal again. The manual adjustment
+  must survive and the automatic points must not double. The RPC returns
+  `replacedEvents: 1`.
+- **Door rewards survive a phase reset.** Reach `door_choice`, players pick, host
+  reveals, record the multipliers. Set the phase back and reveal again — every
+  multiplier must be identical. Negative control: one player picks a *different*
+  door and reveals; only that player re-rolls.
+- **Categorize partial credit still works.** Place 7 of 10 items correctly on a
+  question with `pointsPerCorrectItem`. Expect 7, not 0 and not 10.
+- **Locked submissions refuse edits.** Answer, Reveal, reopen to `question_open`,
+  try to change the answer on the phone. It must fail, and read as "answers
+  closed" rather than as an error.
+
+**Host recovery:**
+
+- **Timer vs Reveal.** Start a 15s timer, press **R** in the last second. The
+  reveal must complete with no modal alert.
+- **Stale cue.** Cue a clip, let it finish, reveal, reload Presentation, click
+  *Enable presentation media*. The old clip must **not** play. Then cue a new one
+  and confirm it does.
+- **Failed submission.** A manual-submit question with wifi off. Status must read
+  "Not submitted", must survive another player's answer arriving, and must not
+  turn green.
+- **Empty round.** A quiz with an empty middle round — **N** must land on the
+  next round that has questions.
+- **Host refresh.** Reload the host tab mid-question; the answer count and the
+  "Who got it right" summary must come back. **Needs the Worker deployed** — the
+  `/host-submissions` route is new.
+
+### 5. One known cosmetic gap
+
+`styles.css` was outside the host-recovery worker's ownership, so the new
+`submission-pending` / `-confirmed` / `-failed` / `-abandoned` classes have no
+rules yet. Nothing is unstyled — the legacy `submitted` (green) and `locked`
+(red) classes still carry the colour — but **a failed submission and a locked
+question still look alike**. The states are now distinct in the DOM and in
+behaviour; only the colour is not yet distinct. Worth closing before relying on
+the failure state visually in a live room.
 
 ## What is parked
 
