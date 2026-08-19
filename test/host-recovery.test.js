@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { autoLockDecision, mergeRecoveredSubmissions, tallyQuestionResults } from "../quiz-core.js";
+import { autoLockDecision, firstPlayableRound, mergeRecoveredSubmissions, nextPlayablePosition, tallyQuestionResults } from "../quiz-core.js";
 
 // room-api.js reads window.QUIZ_PLATFORM_CONFIG at module load (it is a
 // browser-only wrapper), so give it a window the way
@@ -335,4 +335,54 @@ test("wiring: the host restores its received answers on reconnect and patches ra
 
   const connect = body("async function connectHostedRoom(");
   assert.match(connect, /restoreHostSubmissions\(\)/, "the reload path must actually call it");
+});
+
+// ---------------------------------------------------------------------------
+// C18 (host half) — an empty round dead-ended the host state machine.
+// ---------------------------------------------------------------------------
+
+const withQuestions = (count) => ({ questions: Array.from({ length: count }, (unused, index) => ({ id: `q${index}` })) });
+const EMPTY_ROUND = { questions: [] };
+
+test("firstPlayableRound skips rounds the author left empty", () => {
+  const rounds = [withQuestions(2), EMPTY_ROUND, EMPTY_ROUND, withQuestions(1)];
+  assert.equal(firstPlayableRound(rounds, 0), 0);
+  assert.equal(firstPlayableRound(rounds, 1), 3, "must skip both empty rounds");
+  assert.equal(firstPlayableRound(rounds, 3), 3);
+  assert.equal(firstPlayableRound(rounds, 4), -1, "nothing left to play");
+  assert.equal(firstPlayableRound([EMPTY_ROUND], 0), -1);
+  assert.equal(firstPlayableRound([], 0), -1);
+  assert.equal(firstPlayableRound(), -1);
+  assert.equal(firstPlayableRound([{ }, withQuestions(1)], 0), 1, "a round with no questions array at all");
+});
+
+test("nextPlayablePosition walks past empty rounds instead of stopping at one", () => {
+  // quiz.sample.json's exact shape: three of five rounds have "questions": [].
+  const rounds = [withQuestions(2), EMPTY_ROUND, EMPTY_ROUND, withQuestions(1), EMPTY_ROUND];
+
+  assert.deepEqual(nextPlayablePosition(rounds), { roundIndex: 0, questionIndex: 0, roundChanged: true });
+  assert.deepEqual(nextPlayablePosition(rounds, { roundIndex: 0, questionIndex: 0 }), { roundIndex: 0, questionIndex: 1, roundChanged: false });
+
+  // The dead end: the last question of round 1, with two empty rounds next.
+  // This used to hand startRoundEnd() an unplayable round, and the host's next
+  // press did nothing at all.
+  assert.deepEqual(nextPlayablePosition(rounds, { roundIndex: 0, questionIndex: 1 }), { roundIndex: 3, questionIndex: 0, roundChanged: true });
+
+  // And past the last playable question there is only the finale.
+  assert.equal(nextPlayablePosition(rounds, { roundIndex: 3, questionIndex: 0 }), null);
+  assert.equal(nextPlayablePosition([], { roundIndex: 0, questionIndex: 0 }), null);
+  assert.equal(nextPlayablePosition(), null);
+});
+
+test("wiring: host navigation uses the shared walk and cannot stop on an empty round", () => {
+  const advance = body("async function advanceQuestion(");
+  assert.match(advance, /nextPlayablePosition\(hostQuizDefinition\?\.rounds, current\)/);
+  assert.match(advance, /if \(!next\) \{/, "no next question means the finale");
+  assert.match(advance, /if \(next\.roundChanged\)/);
+
+  const startRound = body("async function startRound(");
+  assert.match(startRound, /firstPlayableRound\(hostQuizDefinition\.rounds, targetRoundIndex\)/);
+  assert.match(startRound, /roundToStart === -1/, "an unplayable tail must be handled explicitly");
+  assert.match(startRound, /recordDiagnostic\("start-round-empty"/, "the old failure was invisible; this one is recorded");
+  assert.match(startRound, /state\.targetRoundIndex = roundToStart/, "the round actually started is the one recorded");
 });

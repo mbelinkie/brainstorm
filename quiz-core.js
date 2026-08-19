@@ -370,6 +370,39 @@ export function presentationCueDecision(command, { lastApplied = null, roomCode 
   return { accepted: true, reason: "accepted" };
 }
 
+// An authored round can be empty, and an empty round used to be an
+// unrecoverable host state: setHostQuestion(n, 0) returned false, startRound()
+// returned, and there was no state change, no error and nothing in the
+// console -- the Next button and the arrow key simply appeared dead. These two
+// walks are the whole "where does the host go next" question, kept pure so
+// every navigation path can share one answer.
+
+// The first round at or after `startIndex` that actually has questions, or -1.
+export function firstPlayableRound(rounds = [], startIndex = 0) {
+  const list = Array.isArray(rounds) ? rounds : [];
+  for (let index = Math.max(0, Number(startIndex) || 0); index < list.length; index += 1) {
+    if ((list[index]?.questions || []).length) return index;
+  }
+  return -1;
+}
+
+// The question after `position`, skipping empty rounds. `position` omitted
+// means "the first playable question anywhere". Returns null when the quiz has
+// nothing left to play, which is the finale. `roundChanged` tells the caller
+// to show the round-end card rather than moving straight on.
+export function nextPlayablePosition(rounds = [], position = null) {
+  const list = Array.isArray(rounds) ? rounds : [];
+  let roundIndex = position ? Math.max(0, Number(position.roundIndex) || 0) : 0;
+  let questionIndex = position ? Math.max(0, Number(position.questionIndex) || 0) + 1 : 0;
+  for (; roundIndex < list.length; roundIndex += 1) {
+    if (questionIndex < (list[roundIndex]?.questions || []).length) {
+      return { roundIndex, questionIndex, roundChanged: !position || roundIndex !== position.roundIndex };
+    }
+    questionIndex = 0;
+  }
+  return null;
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker

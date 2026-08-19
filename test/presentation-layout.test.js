@@ -71,7 +71,9 @@ test("answer reveal keeps the shared-screen answer grid anchored", () => {
 test("next-question navigation follows the authored question ID, not a restored display count", () => {
   assert.match(app, /function questionPosition\(questionId = hostQuestion\?\.id\)/);
   assert.match(app, /const current = questionPosition\(\) \|\|/);
-  assert.match(app, /hostQuizDefinition\?\.rounds\?\.\[roundIndex\]\?\.questions\?\.length/);
+  // The walk itself moved to quiz-core.js; it must still be fed the position
+  // resolved from the authored question ID rather than a restored count.
+  assert.match(app, /nextPlayablePosition\(hostQuizDefinition\?\.rounds, current\)/);
 });
 
 test("presenter timer is a prominent shared-screen control", () => {

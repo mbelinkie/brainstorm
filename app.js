@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -298,21 +298,23 @@ async function advanceQuestion() {
     roundIndex: Math.max(0, (state.question?.round || 1) - 1),
     questionIndex: Math.max(0, (state.question?.questionInRound || 1) - 1)
   };
-  const roundIndex = current.roundIndex;
-  const questionIndex = current.questionIndex;
-  const nextInRound = questionIndex + 1;
-  const nextRound = nextInRound >= (hostQuizDefinition?.rounds?.[roundIndex]?.questions?.length || 0) ? roundIndex + 1 : roundIndex;
-  const nextIndex = nextRound === roundIndex ? nextInRound : 0;
   if (state.phase === "door_reveal") {
     const targetRound = Number(state.targetRoundIndex);
     await startRound(targetRound);
     return;
   }
-  if (nextRound !== roundIndex && nextRound < (hostQuizDefinition?.rounds?.length || 0)) {
-    await startRoundEnd(nextRound);
+  // One shared walk over the author's rounds. An empty round between here and
+  // the next question is skipped rather than dead-ending the host.
+  const next = nextPlayablePosition(hostQuizDefinition?.rounds, current);
+  if (!next) {
+    await startFinale();
     return;
   }
-  if (!setHostQuestion(nextRound, nextIndex)) {
+  if (next.roundChanged) {
+    await startRoundEnd(next.roundIndex);
+    return;
+  }
+  if (!setHostQuestion(next.roundIndex, next.questionIndex)) {
     await startFinale();
     return;
   }
@@ -424,8 +426,23 @@ async function startRound(targetRoundIndex = state.targetRoundIndex) {
   rememberCurrentScreen();
   // The local demo retains its sample question instead of an authored rounds
   // array, but it should still take the same Round 1 cue as a hosted quiz.
-  if (hostQuizDefinition?.rounds?.length && !setHostQuestion(targetRoundIndex, 0)) return;
-  state.targetRoundIndex = targetRoundIndex;
+  let roundToStart = targetRoundIndex;
+  if (hostQuizDefinition?.rounds?.length) {
+    // Skip forward over rounds the author left empty. This used to return
+    // here with no state change, no error and nothing in the console, so the
+    // Next button and the arrow key appeared dead with no way out.
+    roundToStart = firstPlayableRound(hostQuizDefinition.rounds, targetRoundIndex);
+    if (roundToStart === -1) {
+      // Nothing after this point has any questions, so the quiz is over. That
+      // is a content problem worth recording, not a reason to strand the host.
+      recordDiagnostic("start-round-empty", new Error(`No round from ${targetRoundIndex + 1} onward has any questions`), { roomCode, targetRoundIndex });
+      await startFinale();
+      return;
+    }
+    if (roundToStart !== targetRoundIndex) console.warn(`Round ${targetRoundIndex + 1} has no questions; starting round ${roundToStart + 1} instead.`);
+    if (!setHostQuestion(roundToStart, 0)) return;
+  }
+  state.targetRoundIndex = roundToStart;
   state.presentationScreen = "round_start";
   state.intermissionStage = "round_start";
   cueBetweenRoundAudio("roundStart");
