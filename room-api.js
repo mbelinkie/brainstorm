@@ -119,6 +119,23 @@ export function classifySubmitAnswerError(error) {
   return (message && SUBMIT_ANSWER_CONFLICT_REASONS[message]) || "unexpected";
 }
 
+// Exact rejection message raised by lock_and_score_live_question() in
+// supabase/migrations/0030_multi_fill_in_the_blank_scoring.sql (unchanged
+// since 0003_server_scoring.sql). The row is taken `for update`, so when the
+// question timer's auto-lock and the host pressing R race each other, the
+// loser blocks on the row lock and then sees this message. It means the
+// question is already locked and already scored -- exactly once -- not that
+// anything failed.
+const LOCK_AND_SCORE_CONFLICT_REASONS = {
+  "The active question is not open": "already-locked"
+};
+
+// Classifies a lockAndScore() rejection, mirroring classifySubmitAnswerError above.
+export function classifyLockAndScoreError(error) {
+  const message = error instanceof Error ? error.message : undefined;
+  return (message && LOCK_AND_SCORE_CONFLICT_REASONS[message]) || "unexpected";
+}
+
 // Exact rejection message raised by choose_live_door() in
 // supabase/migrations/0025_between_round_door_bonus.sql. The host may close
 // the door-choice phase while a tap is in flight — an expected concurrency
@@ -194,5 +211,49 @@ export async function submitLiveAnswerWithRecovery({ roomCode, playerToken, ques
       if (retryReason !== "unexpected") return { status: "abandoned", reason: retryReason };
       return { status: "failed", error: retryError };
     }
+  }
+}
+
+// Locks and scores the active question for the host, treating the
+// "already locked" rejection as a benign outcome rather than an error: the
+// host's expiry timer and the host's own Reveal keypress both reach this RPC,
+// and the loser of that race must still be able to continue to the reveal.
+// On that path the authoritative phase and leaderboard are re-read from the
+// server instead of being assumed.
+//
+// Returns one of:
+//   { status: "locked",        revision, players, error? }
+//   { status: "already-locked", revision, players, error? }
+//   { status: "failed",        error }
+// A present `error` alongside "locked"/"already-locked" means the question is
+// safely locked and scored but the leaderboard refresh failed -- worth
+// reporting, never worth blocking the reveal.
+export async function lockAndScoreWithRecovery({ roomCode, hostSecret, client = roomApi }) {
+  let status = "locked";
+  let revision = null;
+  try {
+    const result = await client.lockAndScore({ roomCode, hostSecret });
+    revision = result?.revision ?? null;
+  } catch (error) {
+    if (classifyLockAndScoreError(error) !== "already-locked") return { status: "failed", error };
+    let room;
+    try {
+      room = await client.getHostRoomState({ roomCode, hostSecret });
+    } catch (stateError) {
+      return { status: "failed", error: stateError };
+    }
+    // Only believe the benign reading if the server really has moved past
+    // question_open. Anything else means the rejection did not mean what this
+    // classifier assumed, and pretending the question is locked would strand
+    // the host in a phase the server does not agree with.
+    if (!room || room.phase === "question_open") return { status: "failed", error };
+    status = "already-locked";
+    revision = room.revision ?? null;
+  }
+  try {
+    const players = await client.getLeaderboard({ roomCode, accessToken: hostSecret });
+    return { status, revision, players };
+  } catch (error) {
+    return { status, revision, players: null, error };
   }
 }

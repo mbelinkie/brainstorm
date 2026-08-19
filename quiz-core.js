@@ -251,6 +251,19 @@ export function tallyQuestionResults(question = {}, submissions = {}) {
 // This is a denylist, not an allowlist, so a newly added state field defaults
 // to remounting the Host. A stale host screen is worse than a flickery one
 // during a live show; add a field here only once something patches it.
+// The question timer's auto-lock must fire exactly once per expiry, must not
+// start a second lock while one is already in flight, and must not stay dead
+// for the rest of the show because a single RPC failed. Those rules are a pure
+// decision over timer/lock state, so they live here and are tested without a
+// browser. `retryAt` is how a failed attempt backs off instead of retrying on
+// every 250 ms tick.
+export function autoLockDecision({ remaining, view, phase, locking = false, now = 0, retryAt = 0 } = {}) {
+  if (remaining !== 0) return false;
+  if (view !== "host" || phase !== "open") return false;
+  if (locking) return false;
+  return now >= retryAt;
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker

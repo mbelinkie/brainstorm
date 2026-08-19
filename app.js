@@ -1,5 +1,5 @@
-import { classifyChooseDoorError, isTransientSaveError, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -20,6 +20,11 @@ let hostMediaObjectUrl = null;
 let imageMediaObjectUrls = [];
 let timerInterval = null;
 let timerExpiryLocking = false;
+// A failed auto-lock is retried, but never at the 250 ms tick rate.
+let timerExpiryLockRetryAt = 0;
+// One shared in-flight lock RPC for the timer and the host's own Reveal.
+let lockQuestionInFlight = null;
+let lockQuestionInFlightIsAuto = false;
 let activeDrag = null;
 let scoreNotificationTimer = null;
 let handledPresentationAudioCommand = null;
@@ -62,6 +67,7 @@ const quizWorkerOrigin = config.workerOrigin || location.origin;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
+const TIMER_AUTO_LOCK_RETRY_MS = 2000;
 const ROUND_START_HOLD_MS = 2600;
 const FINAL_SCORE_PAGE_SIZE = 8;
 const FINAL_SCORE_PAGE_HOLD_MS = 6000;
@@ -1031,7 +1037,29 @@ async function setPhase(phase) {
   emit();
   render();
 }
-async function lockQuestion({ renderAfter = true } = {}) {
+// Two callers reach lock_and_score_live_question(): the 250 ms timer tick's
+// auto-lock and the host pressing R (or Next). They used to be able to be in
+// flight at the same time, and the loser of that race raised "The active
+// question is not open" -> a modal alert on the shared laptop mid-show, with
+// state.phase left at "open" so revealQuestion() aborted. Share a single
+// in-flight promise the way submissionSequence serializes player answers.
+async function lockQuestion({ renderAfter = true, auto = false } = {}) {
+  if (lockQuestionInFlight) {
+    const joinedAuto = lockQuestionInFlightIsAuto;
+    await lockQuestionInFlight;
+    // A failing auto-lock stays quiet on purpose -- the clock fired, the host
+    // did not click. But a host who pressed R and merely joined that failure
+    // IS asking, so fall through to one foreground attempt that surfaces its
+    // own failure. Every other joiner is done here.
+    if (auto || !joinedAuto || state.phase !== "open" || lockQuestionInFlight) return;
+  }
+  lockQuestionInFlight = lockQuestionOnce({ renderAfter, auto });
+  lockQuestionInFlightIsAuto = auto;
+  try { await lockQuestionInFlight; }
+  finally { lockQuestionInFlight = null; lockQuestionInFlightIsAuto = false; }
+}
+
+async function lockQuestionOnce({ renderAfter = true, auto = false } = {}) {
   if (state.phase === "open") rememberCurrentScreen();
   const hostSecret = getHostSecret();
   if (!params.has("room") || !hostSecret) {
@@ -1039,19 +1067,27 @@ async function lockQuestion({ renderAfter = true } = {}) {
     if (renderAfter) await setPhase("locked");
     return;
   }
-  try {
-    const result = await roomApi.lockAndScore({ roomCode, hostSecret });
-    state.phase = "locked";
-    state.revision = result.revision;
-    state.players = await roomApi.getLeaderboard({ roomCode, accessToken: hostSecret });
-    if (renderAfter) {
-      await persistHostState();
-      emit();
-      render();
-    }
-  } catch (error) {
-    recordDiagnostic("lock-and-score", error, { roomCode, questionId: state.questionId });
-    alert(`Could not lock and score this question: ${error.message}`);
+  const outcome = await lockAndScoreWithRecovery({ roomCode, hostSecret });
+  if (outcome.status === "failed") {
+    recordDiagnostic("lock-and-score", outcome.error, { roomCode, questionId: state.questionId });
+    // The auto-lock is the timer firing. A blocking modal on the shared screen
+    // is the wrong answer to a failure nobody asked for; the next tick retries.
+    if (!auto) alert(`Could not lock and score this question: ${outcome.error.message}`);
+    return;
+  }
+  // "already-locked" means the other side of the race got there first and the
+  // server scored this question exactly once. Adopt the authoritative result
+  // it re-read, and let the reveal continue.
+  state.phase = "locked";
+  if (outcome.revision !== null && outcome.revision !== undefined) state.revision = outcome.revision;
+  if (outcome.players) state.players = outcome.players;
+  // The question is locked and scored on both of those paths, so a failed
+  // leaderboard refresh is worth reporting and never worth blocking on.
+  if (outcome.error) recordDiagnostic("lock-and-score-leaderboard", outcome.error, { roomCode, questionId: state.questionId });
+  if (renderAfter) {
+    await persistHostState();
+    emit();
+    render();
   }
 }
 async function revealQuestion() {
@@ -1112,6 +1148,7 @@ async function startTimer(seconds) {
   state.timerDurationSeconds = seconds;
   state.timerEndsAt = new Date(Date.now() + seconds * 1000).toISOString();
   timerExpiryLocking = false;
+  timerExpiryLockRetryAt = 0;
   await persistHostState();
   emit();
   render();
@@ -1131,9 +1168,16 @@ function updateTimer() {
     node.textContent = remaining === null ? "" : remaining === 0 ? "Time elapsed" : formatTimer(remaining);
     node.classList.toggle("is-expired", remaining === 0);
   });
-  if (remaining === 0 && view === "host" && state.phase === "open" && !timerExpiryLocking) {
+  if (autoLockDecision({ remaining, view, phase: state.phase, locking: timerExpiryLocking, now: Date.now(), retryAt: timerExpiryLockRetryAt })) {
     timerExpiryLocking = true;
-    lockQuestion();
+    lockQuestion({ auto: true }).catch(() => {}).finally(() => {
+      // Clearing the latch here is the repair. It used to be cleared only by
+      // startTimer(), so one transient RPC failure left it stuck true and the
+      // auto-lock was silently dead for the rest of the show. Back off so a
+      // persistent failure cannot re-attempt on every 250 ms tick.
+      timerExpiryLocking = false;
+      if (state.phase === "open") timerExpiryLockRetryAt = Date.now() + TIMER_AUTO_LOCK_RETRY_MS;
+    });
   }
 }
 
