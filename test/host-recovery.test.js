@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { autoLockDecision } from "../quiz-core.js";
+import { autoLockDecision, mergeRecoveredSubmissions, tallyQuestionResults } from "../quiz-core.js";
 
 // room-api.js reads window.QUIZ_PLATFORM_CONFIG at module load (it is a
 // browser-only wrapper), so give it a window the way
@@ -278,4 +278,61 @@ test("/host-submissions answers the cross-origin preflight the custom headers re
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("mergeRecoveredSubmissions fills the gaps a host reload left, without overwriting live answers", () => {
+  // "b" arrived by broadcast after the recovery request was sent, so it is
+  // newer than the row that request read and must survive the merge.
+  const merged = mergeRecoveredSubmissions(
+    { "pl-1": "b" },
+    [{ playerId: "pl-1", answer: "a" }, { playerId: "pl-2", answer: "c" }, { playerId: "pl-3", answer: { "1": "clocks" } }]
+  );
+  assert.deepEqual(merged, { "pl-1": "b", "pl-2": "c", "pl-3": { "1": "clocks" } });
+});
+
+test("mergeRecoveredSubmissions ignores malformed rows and never mutates its input", () => {
+  const current = { "pl-1": "a" };
+  const merged = mergeRecoveredSubmissions(current, [
+    { playerId: "", answer: "x" },
+    { playerId: "pl-2" },
+    { playerId: "pl-3", answer: null },
+    null,
+    { answer: "y" },
+    { playerId: "pl-4", answer: 0 }
+  ]);
+  assert.deepEqual(merged, { "pl-1": "a", "pl-4": 0 });
+  assert.deepEqual(current, { "pl-1": "a" }, "the caller's object must not be mutated");
+  assert.deepEqual(mergeRecoveredSubmissions(), {});
+  assert.deepEqual(mergeRecoveredSubmissions({ "pl-1": "a" }, "not an array"), { "pl-1": "a" });
+});
+
+test("recovered submissions restore the reveal summary a host reload had emptied", () => {
+  // The end-to-end shape of C13: this is exactly what answerResultsPanel()
+  // computes, and with the empty `submitted` a reload used to leave, it
+  // returns totalSubmitted 0 and the panel renders nothing at all.
+  const question = { id: "q7", type: "single_choice", correctOptionIds: ["a"] };
+  assert.equal(tallyQuestionResults(question, {}).totalSubmitted, 0, "the bug: nothing to show after a reload");
+
+  const recovered = mergeRecoveredSubmissions({}, [
+    { playerId: "pl-1", answer: "a" },
+    { playerId: "pl-2", answer: "b" },
+    { playerId: "pl-3", answer: "a" }
+  ]);
+  const results = tallyQuestionResults(question, recovered);
+  assert.equal(results.totalSubmitted, 3);
+  assert.equal(results.correctCount, 2);
+});
+
+test("wiring: the host restores its received answers on reconnect and patches rather than remounts", () => {
+  const restore = body("async function restoreHostSubmissions(");
+  assert.match(restore, /view !== "host"/, "recovery is host-only");
+  assert.match(restore, /\/host-submissions/);
+  assert.match(restore, /"x-quiz-host-secret": hostSecret/);
+  assert.match(restore, /result\?\.questionId !== questionId/, "a late reply for an old question must be discarded");
+  assert.match(restore, /mergeRecoveredSubmissions\(state\.submitted, result\.submissions\)/);
+  assert.match(restore, /patchHostLiveRegions\(\)/);
+  assert.doesNotMatch(restore, /\brender\(\)/, "a counter update must not remount the operator console");
+
+  const connect = body("async function connectHostedRoom(");
+  assert.match(connect, /restoreHostSubmissions\(\)/, "the reload path must actually call it");
 });

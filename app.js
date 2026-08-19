@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -1007,6 +1007,9 @@ async function connectHostedRoom() {
         }
         emit();
         render();
+        // Un-awaited on purpose: the host screen must paint immediately, and
+        // this patches the two live readouts in place when it lands.
+        restoreHostSubmissions();
       }
     }
     if (view === "player" && params.has("room") && playerName) {
@@ -1624,6 +1627,37 @@ async function refreshAnonymousTextAnswers() {
     }
   } finally {
     if (anonymousTextAnswersPendingKey === key) anonymousTextAnswersPendingKey = "";
+  }
+}
+
+// A Host reload loses every received answer: publicRoomState() publishes
+// `submitted: {}` so a phone can never see another player's answer, and
+// get_host_live_room_state returns that same public state. The counter read
+// "0 / 12" while all twelve answers sat safely in the database, and
+// answerResultsPanel() saw totalSubmitted === 0 and rendered nothing at all,
+// so the "Who got it right" summary silently disappeared. PRODUCT_SPEC §3
+// promises the session recovers after a host refresh; this is what recovers
+// it. Host only, and read back through the host-authorized Worker route.
+async function restoreHostSubmissions() {
+  if (view !== "host" || !params.has("room")) return;
+  const hostSecret = getHostSecret();
+  const questionId = state.questionId || state.question?.id;
+  if (!hostSecret || !questionId) return;
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/host-submissions`, { headers: { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret } });
+    if (!response.ok) throw new Error(`Submission recovery failed (${response.status})`);
+    const result = await response.json();
+    // The host may have advanced while this was in flight, and the room may
+    // have moved on between the request and the reply. Recover only answers
+    // that still belong to the question on screen.
+    if ((state.questionId || state.question?.id) !== questionId || result?.questionId !== questionId) return;
+    state.submitted = mergeRecoveredSubmissions(state.submitted, result.submissions);
+    // Both readouts this restores are patched in place; a full render here
+    // would remount the operator console for a counter update (mistakes.md #15).
+    patchHostLiveRegions();
+  } catch (error) {
+    recordDiagnostic("host-submission-recovery", error, { roomCode, questionId });
+    console.warn("Could not restore the received-answer count.", error);
   }
 }
 

@@ -264,6 +264,21 @@ export function autoLockDecision({ remaining, view, phase, locking = false, now 
   return now >= retryAt;
 }
 
+// A reloaded Host rebuilds state.submitted from the server (see the
+// /host-submissions Worker route). Merging, not replacing, is the point: a
+// live broadcast that lands while the recovery request is in flight is newer
+// than the row that request read, and must win. Recovered rows only fill gaps.
+export function mergeRecoveredSubmissions(current = {}, recovered = []) {
+  const merged = { ...(current || {}) };
+  for (const entry of Array.isArray(recovered) ? recovered : []) {
+    if (!entry || typeof entry.playerId !== "string" || !entry.playerId) continue;
+    if (entry.answer === null || entry.answer === undefined) continue;
+    if (Object.prototype.hasOwnProperty.call(merged, entry.playerId)) continue;
+    merged[entry.playerId] = entry.answer;
+  }
+  return merged;
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker
