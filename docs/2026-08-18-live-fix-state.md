@@ -1,8 +1,15 @@
 # Live-fix state — 2026-08-18
 
+> **RESOLVED — see the status table in `docs/2026-08-18-pause-handoff.md` section 1.**
+> The drift this file was written to record is closed. The `session_players` grant is
+> migration `0033`; the categorize partial-credit function is migration `0034`, whose
+> function body was diffed against the exact SQL applied to production and found
+> identical. Both are no-ops to apply. This file is kept as the record of how the drift
+> happened and what was verified at the time.
+
 **Why this file exists:** two changes were applied directly to the production database
-this morning, ahead of a live game. Neither is in `supabase/migrations/` yet, so
-**production and the migration chain have diverged.** A fresh replay of
+this morning, ahead of a live game. Neither was in `supabase/migrations/` at the time, so
+**production and the migration chain had diverged.** A fresh replay of
 `supabase/migrations/` would rebuild a database missing both. This file records what was
 applied, how it was verified, and what the repo still owes.
 
