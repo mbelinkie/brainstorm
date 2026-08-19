@@ -70,3 +70,51 @@ test("effective definition: the migration chain keeps categorize partial credit"
   // must still fall back to all-or-nothing exactly as 0030 scored it.
   assert.match(sql, /elsif correct_pair_count = jsonb_object_length\(coalesce\(active_question -> 'correctCategories', '\{\}'::jsonb\)\)/);
 });
+
+test("effective definition: re-locking a question replaces its automatic score events", () => {
+  // Finding C4. Two client paths reach this RPC twice for one question (the
+  // host jump control and the set_live_room_state reopen override), and every
+  // correct player kept both awards.
+  const { migration, sql } = effectiveDefinition("lock_and_score_live_question");
+  const deleteMatch = /delete from public\.score_events where ([^;]+);/.exec(sql);
+  assert.ok(deleteMatch, `${migration} never clears prior score events, so a re-lock double-awards`);
+  const predicate = deleteMatch[1];
+  assert.match(predicate, /session_id = active_session\.id/);
+  assert.match(predicate, /question_id = active_session\.state ->> 'questionId'/);
+  // Manual host adjustments (adjust_live_score writes 'host') must survive.
+  assert.match(predicate, /created_by = 'system'/, "the re-lock delete is not scoped to system events and would eat manual host adjustments");
+  // It has to run before the scoring loop, or it deletes what it just wrote.
+  assert.ok(
+    sql.indexOf(deleteMatch[0]) < sql.indexOf("for answer_row in"),
+    "the score-event delete runs after the scoring loop, which would erase the new awards"
+  );
+});
+
+test("effective definition: adjust_live_score still writes host events, not system ones", () => {
+  // The re-lock delete above is only safe while manual adjustments are tagged
+  // 'host'. If that ever changes, the delete starts destroying host decisions.
+  const { migration, sql } = effectiveDefinition("adjust_live_score");
+  assert.match(sql, /'host'\)/, `${migration} no longer tags manual adjustments as host events`);
+  assert.doesNotMatch(sql, /, 'system'\)/, `${migration} tags a manual adjustment as a system event; the re-lock delete in lock_and_score_live_question would destroy it`);
+});
+
+test("effective definition: door rewards resolve once and stay resolved", () => {
+  // PRODUCT_SPEC promises randomized outcomes are persisted so refreshes cannot
+  // reroll. The phase guard alone did not deliver that: a host setting the
+  // phase back to door_choice re-randomized every already-revealed reward.
+  const { migration, sql } = effectiveDefinition("reveal_live_door_rewards");
+  assert.match(sql, /revealed_at is null/, `${migration} re-rolls resolved_multiplier for choices that were already revealed`);
+  const loopStart = sql.indexOf("for choice_row in");
+  const guard = sql.indexOf("revealed_at is null");
+  assert.ok(loopStart !== -1 && guard > loopStart && guard < sql.indexOf("loop\n", loopStart), "the revealed_at guard is not on the choice-selection query");
+  assert.match(sql, /revealed_at = now\(\)/, "resolved choices are never stamped, so the guard would never fire");
+});
+
+test("effective definition: a locked submission cannot be edited", () => {
+  // A reopened question is `question_open` again while its rows are still
+  // locked, so gating on phase alone let an answer that had already been scored
+  // be rewritten.
+  const { migration, sql } = effectiveDefinition("submit_live_answer");
+  assert.match(sql, /is_locked/, `${migration} gates submissions on phase alone and accepts edits to locked rows`);
+  assert.match(sql, /raise exception 'Your answer to this question is already locked'/);
+});
