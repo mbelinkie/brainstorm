@@ -279,6 +279,51 @@ export function mergeRecoveredSubmissions(current = {}, recovered = []) {
   return merged;
 }
 
+// PRODUCT_SPEC and mistakes.md #4 both require pending, confirmed, rejected
+// and retryable to be four distinct visible states. They were two: a failed
+// submission borrowed the confirmed/locked treatment ("submitted locked"),
+// and its message lived only in the DOM, so the next redraw replaced it with
+// "Answers saved" from a sessionStorage flag that was set on the first
+// success for a question and never cleared. The mapping lives here so every
+// state is enumerable in a test rather than reconstructed from a template.
+//
+// The legacy class names are kept alongside the new ones: `submitted` is the
+// green confirmation and `locked` the red warning that styles.css already
+// ships. The `submission-*` names are what a stylesheet should target to
+// finally tell a failure apart from a safely-locked question.
+export function submissionStatusView({ outcome = "idle", phase = "open", questionType = "", manualSubmit = false } = {}) {
+  const autoSaving = questionType === "multi_fill_in_the_blank";
+  const confirmed = outcome === "confirmed";
+  if (phase === "complete") return { state: "complete", className: confirmed ? "submitted submission-confirmed" : "", message: "Thanks for playing—the final leaderboard is on the shared screen." };
+  if (phase === "reveal") return { state: "revealed", className: confirmed ? "submitted submission-confirmed" : "", message: "Answer revealed." };
+  if (phase === "locked") return { state: "locked", className: "submitted locked submission-locked", message: "Answers are locked." };
+  switch (outcome) {
+    case "sending":
+      return { state: "sending", className: "submission-pending", message: autoSaving ? "Saving answers…" : "Saving selection…" };
+    case "confirmed":
+      return { state: "confirmed", className: "submitted submission-confirmed", message: autoSaving ? "Answers saved. You can keep editing until the host closes the question." : manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal." };
+    case "failed":
+      return { state: "failed", className: "locked submission-failed", message: autoSaving ? "Answers were not saved. Edit a field to retry." : manualSubmit ? "Not submitted. Tap Submit to try again." : "Selection was not saved. Tap it again to retry." };
+    case "abandoned":
+      return { state: "abandoned", className: "submission-abandoned", message: autoSaving ? "The question moved on before these answers were needed." : "The question moved on before this answer was needed." };
+    default:
+      return { state: "idle", className: "", message: autoSaving ? "Answers save automatically as you type." : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically." };
+  }
+}
+
+// A confirmation belongs to the answer that was confirmed, not to the
+// question. Answers are strings, numbers, or plain keyed objects (a blank per
+// index, an item per slot), so a key-order-independent deep compare is what
+// decides whether what the phone is showing is what the server accepted.
+export function sameSubmittedAnswer(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => rightKeys[index] === key && sameSubmittedAnswer(left[key], right[key]));
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker

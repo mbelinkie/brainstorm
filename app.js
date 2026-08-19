@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -56,6 +56,11 @@ let realtimeClosestNumberGuesses = new Map();
 let realtimeClosestNumberGuessesQuestionId = "";
 let autoSubmitTimer = null;
 let submissionSequence = Promise.resolve();
+// The outcome of this phone's last submission for the question on screen.
+// Held in module state so a redraw reconstructs it instead of erasing it.
+let submissionOutcome = "idle";
+let submissionOutcomeQuestionId = "";
+let submissionOutcomeAnswer = null;
 // A host state save that fails leaves the server on the previous screen while
 // the host UI moves on, so every player who refreshes or reconnects gets the
 // stale round. These track the save queue and the unresolved-failure banner.
@@ -67,6 +72,9 @@ const quizWorkerOrigin = config.workerOrigin || location.origin;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
+// The question types whose answer is sent by a deliberate Submit tap rather
+// than saved as the player selects.
+const MANUAL_SUBMIT_TYPES = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"];
 const TIMER_AUTO_LOCK_RETRY_MS = 2000;
 const ROUND_START_HOLD_MS = 2600;
 const FINAL_SCORE_PAGE_SIZE = 8;
@@ -2402,13 +2410,14 @@ function renderPlayer() {
     app.innerHTML = shell(`<main class="player-main player-main--intermission">${brandTopbar()}<section class="player-card player-card--intermission player-holding-card"><header class="player-round"><p class="eyebrow">Get ready</p><h1>Next question coming up</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}</header><section class="player-question"><p class="eyebrow">Between questions</p><h2>Stay on this screen.</h2><p>The next question will appear here when the host starts it.</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section></section></main>`, true);
     return;
   }
-  const submissionKey = `quiz-submitted:${roomCode}:${state.questionId || state.question?.id}`;
-  const isSubmitted = sessionStorage.getItem(submissionKey) === "true";
-  const manualSubmit = ["short_answer", "fill_in_the_blank", "numeric_estimate", "closest_number"].includes(state.question?.type);
-  const autoSavingMultiBlank = state.question?.type === "multi_fill_in_the_blank";
-  const phaseMessage = state.phase === "locked" ? "Answers are locked." : state.phase === "reveal" ? "Answer revealed." : state.phase === "complete" ? "Thanks for playing—the final leaderboard is on the shared screen." : autoSavingMultiBlank ? (isSubmitted ? "Answers saved. You can keep editing until the host closes the question." : "Answers save automatically as you type.") : isSubmitted ? (manualSubmit ? "Answer submitted. You can still change it until reveal." : "Selection saved. You can change it until reveal.") : manualSubmit ? "Type your answer, then submit." : "Make your selection. It saves automatically.";
+  const manualSubmit = MANUAL_SUBMIT_TYPES.includes(state.question?.type);
+  // Rebuilt from the recorded outcome, never from "something was once saved
+  // for this question". A failed save used to be replaced by "Answers saved"
+  // on the next redraw, because the sessionStorage flag it read was set on
+  // the first success and never cleared.
+  const submissionStatus = submissionStatusView(submissionStatusInputs());
   const playerType = escapeHtml(state.question?.type || "question");
-  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : ""}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}<div class="submit-bar"><span data-submission-status class="${isSubmitted ? "submitted" : state.phase === "locked" ? "submitted locked" : ""}">${phaseMessage}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
+  app.innerHTML = shell(`<main class="player-main player-main--question"><div class="player-question-frame">${brandTopbar()}<section class="player-card player-card--question player-card--${escapeHtml(state.phase || "open")} player-card--${playerType}"><header class="player-round"><p class="eyebrow">${state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${state.question.totalRounds || 1}`}</p><h1>${state.phase === "complete" ? "Quiz Complete" : state.question.roundTitle}</h1>${playerIdentityBadge()}${activeMultiplierBadge()}${lateJoinBonusBadge()}${timerDisplay()}</header><section class="player-question player-question--${playerType}"><div class="player-prompt-card"><p class="eyebrow">${state.phase === "open" ? "Question" : state.phase === "reveal" ? "Answer reveal" : state.phase === "complete" ? "Finished" : "Locked"}</p><h2>${state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? playerScoreCards(state.players, 8) : ""}</div><div class="player-response-panel">${state.phase === "complete" ? "" : answerControl({player:true})}<div class="submit-bar"><span data-submission-status class="${submissionStatus.className}">${escapeHtml(submissionStatus.message)}</span>${state.phase === "open" && manualSubmit ? '<button class="btn btn-primary" data-submit ' + (!answerReady() ? 'disabled' : '') + '>Submit</button>' : ''}</div></div></section></section></div></main>`, true);
 }
 
 function render() {
@@ -2473,18 +2482,71 @@ function startDrag(event) {
   window.addEventListener("pointercancel", finish, { once: true });
 }
 
-function setSubmissionStatus(message, className = "") {
+const submissionRecordKey = (questionId) => `quiz-submitted:${roomCode}:${questionId}`;
+
+// Records WHICH answer the server confirmed, not merely that something was
+// once confirmed for this question. Phones that are mid-show still hold the
+// old value, the string "true", so that shape is still understood.
+function confirmedSubmission(questionId) {
+  const raw = sessionStorage.getItem(submissionRecordKey(questionId));
+  if (!raw) return null;
+  if (raw === "true") return { legacy: true };
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+// The live outcome for the question on screen. Module state wins while this
+// page is alive; sessionStorage is what a reloaded phone recovers from.
+function submissionOutcomeNow(questionId) {
+  if (submissionOutcomeQuestionId === questionId && submissionOutcome !== "idle") {
+    // A confirmation belongs to the answer that was confirmed. Typing past a
+    // saved answer must not keep reading "saved" for text the server has
+    // never seen.
+    if (submissionOutcome !== "confirmed" || sameSubmittedAnswer(submissionOutcomeAnswer, selected)) return submissionOutcome;
+    return "idle";
+  }
+  const record = confirmedSubmission(questionId);
+  if (!record) return "idle";
+  // A reloaded phone has no module state and nothing has been typed since, so
+  // what the server confirmed is still what this phone is showing.
+  if (selected === null || record.legacy || sameSubmittedAnswer(record.answer, selected)) return "confirmed";
+  return "idle";
+}
+
+function submissionStatusInputs() {
+  return {
+    outcome: submissionOutcomeNow(state.questionId || state.question?.id || "sample-question"),
+    phase: state.phase,
+    questionType: state.question?.type,
+    manualSubmit: MANUAL_SUBMIT_TYPES.includes(state.question?.type)
+  };
+}
+
+function refreshSubmissionStatus() {
   const status = document.querySelector("[data-submission-status]");
   if (!status) return;
-  status.textContent = message;
-  status.className = className;
+  const view = submissionStatusView(submissionStatusInputs());
+  status.textContent = view.message;
+  status.className = view.className;
+}
+
+// The single place a submission outcome is recorded. Every one of the four
+// states goes through here, so none of them can be a message written straight
+// to the DOM that the next render() quietly replaces.
+function rememberSubmission(outcome, questionId, answer = null) {
+  submissionOutcome = outcome;
+  submissionOutcomeQuestionId = questionId;
+  submissionOutcomeAnswer = outcome === "confirmed" ? answer : null;
+  if (outcome === "confirmed") {
+    try { sessionStorage.setItem(submissionRecordKey(questionId), JSON.stringify({ answer })); }
+    catch { /* A full storage quota must never interrupt a quiz. */ }
+  }
+  refreshSubmissionStatus();
 }
 
 function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
   if (view !== "player" || state.phase !== "open" || (!allowEmpty && !answerReady())) return;
-  const isMultiBlank = state.question?.type === "multi_fill_in_the_blank";
   clearTimeout(autoSubmitTimer);
-  setSubmissionStatus(isMultiBlank ? "Saving answers…" : "Saving selection…");
+  rememberSubmission("sending", state.questionId || state.question?.id || "sample-question");
   autoSubmitTimer = setTimeout(() => {
     const answer = structuredClone(selected);
     const questionId = state.questionId || state.question?.id || "sample-question";
@@ -2495,10 +2557,11 @@ function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
       // expected race into a rejected RPC (and a Sentry error).
       if (view !== "player" || state.phase !== "open" || (state.questionId || state.question?.id || "sample-question") !== questionId || (state.revision || 0) !== serverRevision) return;
       const markSubmitted = () => {
-        state.submitted[playerId] = answer;
-        sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
+        // Keyed by the server's roster id, the same identity sendSubmission()
+        // broadcasts, rather than by this phone's local auth token.
+        state.submitted[doorPlayerRecordId || playerId] = answer;
         sendSubmission(answer);
-        setSubmissionStatus(isMultiBlank ? "Answers saved. You can keep editing until the host closes the question." : "Selection saved. You can change it until reveal.", "submitted");
+        rememberSubmission("confirmed", questionId, answer);
       };
       if (!params.has("room")) { markSubmitted(); return; }
       const outcome = await submitLiveAnswerWithRecovery({ roomCode, playerToken: playerId, questionId, answer, serverRevision });
@@ -2508,10 +2571,10 @@ function queueAutoSubmission({ allowEmpty = false, delay = 40 } = {}) {
         // The host closed or advanced the question before this answer made
         // it through. That's an expected concurrency outcome, not a bug: no
         // retry, no diagnostics/Sentry report, just an accurate status.
-        setSubmissionStatus(isMultiBlank ? "The question moved on before these answers were needed." : "The question moved on before this answer was needed.");
+        rememberSubmission("abandoned", questionId);
       } else {
         recordDiagnostic("auto-submit-answer", outcome.error, { roomCode, questionId });
-        setSubmissionStatus(isMultiBlank ? "Answers were not saved. Edit a field to retry." : "Selection was not saved. Tap it again to retry.", "submitted locked");
+        rememberSubmission("failed", questionId);
       }
     });
   }, delay);
@@ -2705,7 +2768,7 @@ function attachEvents() {
     // auto-submission, this is a deliberate tap, so report the outcome rather
     // than no-oping silently.
     if (view !== "player" || state.phase !== "open") {
-      setSubmissionStatus("The question moved on before this answer was needed.");
+      rememberSubmission("abandoned", state.questionId || state.question?.id || "sample-question");
       return;
     }
     const button = event.currentTarget;
@@ -2714,10 +2777,11 @@ function attachEvents() {
     const serverRevision = state.revision || 0;
     button.disabled = true;
     button.textContent = "Submitting…";
+    rememberSubmission("sending", questionId);
     const markSubmitted = () => {
-      state.submitted[playerId] = answer;
-      sessionStorage.setItem(`quiz-submitted:${roomCode}:${questionId}`, "true");
+      state.submitted[doorPlayerRecordId || playerId] = answer;
       sendSubmission(answer);
+      rememberSubmission("confirmed", questionId, answer);
       render();
     };
     if (!params.has("room")) { markSubmitted(); return; }
@@ -2728,13 +2792,16 @@ function attachEvents() {
       // The host closed or advanced the question before this tap made it
       // through. That's an expected concurrency outcome, not a bug: no
       // retry, no diagnostics/Sentry report, just an accurate status.
-      setSubmissionStatus("The question moved on before this answer was needed.");
+      rememberSubmission("abandoned", questionId);
       button.disabled = false;
       button.textContent = "Submit";
     } else {
       recordDiagnostic("submit-answer", outcome.error, { roomCode, questionId });
       console.warn("Could not persist answer.", outcome.error);
-      alert(`Your answer was not submitted. Please try again.\n\n${outcome.error.message}`);
+      // A modal on a phone is dismissed and gone. The failure has to stay on
+      // screen next to the button the player has to tap again, and it has to
+      // survive the next redraw.
+      rememberSubmission("failed", questionId);
       button.disabled = false;
       button.textContent = "Submit";
     }
