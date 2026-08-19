@@ -100,17 +100,25 @@ export const roomApi = {
   }
 };
 
-// Exact rejection messages raised by submit_live_answer() in
-// supabase/migrations/0002_live_room_rpc.sql. Keep this in sync with that
-// migration. All three mean the host closed, locked, or advanced the
-// question out from under an in-flight submission — an expected concurrency
-// outcome, not a bug. Anything else (auth, network, server, data errors) is
-// unexpected and still worth reporting to diagnostics/Sentry.
+// Exact rejection messages raised by submit_live_answer(). The first three
+// come from supabase/migrations/0002_live_room_rpc.sql; the fourth is added by
+// 0035_prevent_double_scoring.sql, which stops a reopened question from
+// accepting edits to rows that were already locked and scored. Keep this in
+// sync with those migrations. All four mean the host closed, locked, or
+// advanced the question out from under an in-flight submission — an expected
+// concurrency outcome, not a bug. Anything else (auth, network, server, data
+// errors) is unexpected and still worth reporting to diagnostics/Sentry.
 const SUBMIT_ANSWER_CONFLICT_REASONS = {
   "This question has changed; refresh and try again": "stale-revision",
   "Answers are not open": "question-closed",
-  "That is not the active question": "question-changed"
+  "That is not the active question": "question-changed",
+  "Your answer to this question is already locked": "answer-locked"
 };
+
+// Conflict reasons a retry cannot fix: the answer will not be accepted however
+// many times it is sent. Only "stale-revision" is ambiguous enough to be worth
+// re-reading room state for.
+const ABANDONED_SUBMIT_REASONS = new Set(["question-closed", "question-changed", "answer-locked"]);
 
 // Classifies a submitAnswer() rejection instead of scattering raw message
 // comparisons through app.js.
@@ -191,7 +199,7 @@ export async function submitLiveAnswerWithRecovery({ roomCode, playerToken, ques
     return { status: "submitted", result };
   } catch (error) {
     const reason = classifySubmitAnswerError(error);
-    if (reason === "question-closed" || reason === "question-changed") return { status: "abandoned", reason };
+    if (ABANDONED_SUBMIT_REASONS.has(reason)) return { status: "abandoned", reason };
     if (reason !== "stale-revision") return { status: "failed", error };
 
     let freshRoomState;

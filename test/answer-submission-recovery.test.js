@@ -14,6 +14,10 @@ test("classifySubmitAnswerError maps the exact submit_live_answer rejection text
   assert.equal(classifySubmitAnswerError(new Error("This question has changed; refresh and try again")), "stale-revision");
   assert.equal(classifySubmitAnswerError(new Error("Answers are not open")), "question-closed");
   assert.equal(classifySubmitAnswerError(new Error("That is not the active question")), "question-changed");
+  // Added by 0035_prevent_double_scoring.sql: a question that was locked and
+  // scored, then reopened, refuses edits to the rows it already locked. That
+  // is a benign refusal — the player's answer is in and closed — not a failure.
+  assert.equal(classifySubmitAnswerError(new Error("Your answer to this question is already locked")), "answer-locked");
   assert.equal(classifySubmitAnswerError(new Error("Player is not in this room")), "unexpected");
   assert.equal(classifySubmitAnswerError(new Error("Failed to fetch")), "unexpected");
   assert.equal(classifySubmitAnswerError("not an Error instance"), "unexpected");
@@ -52,6 +56,19 @@ test("submitLiveAnswerWithRecovery retries once when the same question has a new
   assert.equal(result.status, "submitted");
   assert.equal(result.retried, true);
   assert.equal(submitCalls, 2);
+});
+
+test("submitLiveAnswerWithRecovery abandons an already-locked answer instead of reporting a failure", async () => {
+  // A retry cannot clear this one: the row is locked. Reporting it as "failed"
+  // put an error in front of a player whose answer was safely recorded.
+  let submitCalls = 0;
+  const client = {
+    submitAnswer: async () => { submitCalls += 1; throw new Error("Your answer to this question is already locked"); },
+    getRoomState: async () => assert.fail("a locked answer is not a stale revision")
+  };
+  const result = await submitLiveAnswerWithRecovery({ roomCode: "F7M6VD", playerToken: "p1", questionId: "q2", answer: "42", serverRevision: 3, client });
+  assert.deepEqual(result, { status: "abandoned", reason: "answer-locked" });
+  assert.equal(submitCalls, 1);
 });
 
 test("submitLiveAnswerWithRecovery quietly abandons when the question closed or changed, without retrying", async () => {
