@@ -6,6 +6,9 @@ import { visibleCaptionAt } from "./subtitle-core.js";
 const params = new URLSearchParams(location.search);
 const view = params.get("view") || "landing";
 const isHostedRoom = params.has("room");
+// Opt-in for controls that are safe on a rehearsal room and dangerous in a
+// live one. Off unless the host URL carries ?testing=1.
+const testingControlsEnabled = params.get("testing") === "1";
 const roomCode = params.get("room") || "local-demo";
 document.body.classList.toggle("is-presentation", view === "presenter");
 document.addEventListener("visibilitychange", () => {
@@ -464,6 +467,9 @@ async function acceptDoorChoice(payload) {
 }
 
 async function jumpToQuestion() {
+  // Belt and braces: the control is not rendered without the opt-in, and the
+  // handler refuses to act without it either.
+  if (!testingControlsEnabled) return;
   const value = document.querySelector("[data-jump-question]")?.value;
   const [roundIndex, questionIndex] = String(value || "").split(":").map(Number);
   if (!Number.isInteger(roundIndex) || !Number.isInteger(questionIndex) || !setHostQuestion(roundIndex, questionIndex)) return;
@@ -1319,11 +1325,18 @@ function presenterOverrideControl() {
   return `<div class="host-presenter-override"><label for="presenter-override-input">Presented by <span>this show only</span></label><input id="presenter-override-input" data-presenter-override type="text" maxlength="120" autocomplete="off" value="${escapeHtml(state.presenterOverride || "")}" placeholder="${escapeHtml(authoredCredit || "No credit line")}" /><small>Shows above the quiz title on the opening and closing screens. Clear it to ${restoreHint}. Never saved into the quiz file.</small></div>`;
 }
 
+// Jumping to a question resets it to its ready state, and re-opening a
+// question that has already been scored awards its points a second time:
+// lock_and_score_live_question() inserts a fresh score_events row per correct
+// submission and deletes nothing, and no unique index stops it. The durable
+// fix is a server-side constraint. Until then this labelled "Testing
+// shortcut" does not belong in every live hosted room -- it shipped in all of
+// them, one click away from silently double-scoring a round.
 function questionJumpControls() {
-  if (view !== "host" || !hostQuizDefinition?.rounds?.length) return "";
+  if (view !== "host" || !testingControlsEnabled || !hostQuizDefinition?.rounds?.length) return "";
   const currentValue = `${Math.max(0, Number(state.question?.round || 1) - 1)}:${Math.max(0, Number(state.question?.questionInRound || 1) - 1)}`;
   const choices = hostQuizDefinition.rounds.map((round, roundIndex) => `<optgroup label="${escapeHtml(round.title || `Round ${roundIndex + 1}`)}">${(round.questions || []).map((question, questionIndex) => `<option value="${roundIndex}:${questionIndex}" ${currentValue === `${roundIndex}:${questionIndex}` ? "selected" : ""}>${questionIndex + 1}. ${escapeHtml(question.prompt || question.id || "Untitled question")}</option>`).join("")}</optgroup>`).join("");
-  return `<div class="question-jump"><strong>Testing shortcut</strong><span>Jump to any question. This resets that question to its ready/intermission state.</span><select data-jump-question aria-label="Jump to question">${choices}</select><button class="btn btn-secondary" data-jump-question-button>Jump to question</button></div>`;
+  return `<div class="question-jump"><strong>Testing shortcut</strong><span>Jump to any question. This resets that question to its ready/intermission state. Do not jump back to a question that has already been scored — re-opening it awards its points again.</span><select data-jump-question aria-label="Jump to question">${choices}</select><button class="btn btn-secondary" data-jump-question-button>Jump to question</button></div>`;
 }
 
 function shortcutGuide() {

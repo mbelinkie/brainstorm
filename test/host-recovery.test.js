@@ -386,3 +386,26 @@ test("wiring: host navigation uses the shared walk and cannot stop on an empty r
   assert.match(startRound, /recordDiagnostic\("start-round-empty"/, "the old failure was invisible; this one is recorded");
   assert.match(startRound, /state\.targetRoundIndex = roundToStart/, "the round actually started is the one recorded");
 });
+
+// ---------------------------------------------------------------------------
+// C4 (client half) — the "Testing shortcut" that ships in every live room.
+// The durable fix is a server-side constraint on re-scoring; this is the
+// reminder that the control should not be one click away during a show.
+// ---------------------------------------------------------------------------
+
+test("the question-jump shortcut is off unless the host opted into testing controls", () => {
+  const gate = app.match(/const testingControlsEnabled = .*/)?.[0];
+  assert.ok(gate, "expected app.js to define testingControlsEnabled");
+  assert.match(gate, /params\.get\("testing"\) === "1"/, "the opt-in must be explicit, not inferred");
+
+  const controls = body("function questionJumpControls(");
+  assert.match(controls, /if \(view !== "host" \|\| !testingControlsEnabled/, "the control must be gated before anything is rendered");
+  // The gate has to come before the markup, or it gates nothing.
+  assert.ok(controls.indexOf("testingControlsEnabled") < controls.indexOf("question-jump"));
+  assert.match(controls, /awards its points again/, "the remaining copy must say what a backwards jump costs");
+
+  // The handler refuses too, so a stale or hand-crafted DOM cannot reach it.
+  const handler = body("async function jumpToQuestion(");
+  assert.match(handler, /if \(!testingControlsEnabled\) return;/);
+  assert.ok(handler.indexOf("testingControlsEnabled") < handler.indexOf("setHostQuestion"));
+});
