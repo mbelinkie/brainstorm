@@ -324,6 +324,52 @@ export function sameSubmittedAnswer(left, right) {
   return leftKeys.every((key, index) => rightKeys[index] === key && sameSubmittedAnswer(left[key], right[key]));
 }
 
+// Cross-client cue identity. mistakes.md #3 records this bug class already:
+// a command that says only "play" cannot be told apart from a command issued
+// twenty minutes ago. The command is part of publicRoomState() and is
+// persisted by set_live_room_state, so a Presentation that reconnects is
+// handed the last cue ever issued with nothing to date it by.
+//
+// Deliberately absent: the resolved media asset id. The same command object
+// is broadcast to every player phone, and an asset reference reaching a
+// player breaks the payload allowlist (see PRODUCT_SPEC and
+// test/video-clips.test.js). Presentation resolves the asset itself from the
+// authored definition it is already entitled to read; questionId, clipId,
+// audioScope and audioKey identify the cue precisely enough for that.
+export const PRESENTATION_CUE_FRESHNESS_MS = 20000;
+
+// Actions that would put sound or video on the shared screen. A pause or a
+// volume change is harmless to re-apply; these are not.
+const CUE_ACTIONS_THAT_START_PLAYBACK = new Set(["play", "restart"]);
+
+// Decides whether Presentation should act on a cue. `freshMount` means this
+// tab has not applied any cue yet in this page's life -- the state in which a
+// persisted command is of completely unknown age.
+//
+// Host and Presentation are documented as two tabs on one machine (RUNBOOK),
+// so `issuedAt` is compared against a clock they share. A cue that appears to
+// come from the future is treated as fresh rather than rejected, so a skewed
+// clock can never silence the shared screen.
+export function presentationCueDecision(command, { lastApplied = null, roomCode = "", quizVersionId = "", now = 0, freshMount = false, freshnessMs = PRESENTATION_CUE_FRESHNESS_MS } = {}) {
+  if (!command || !command.id) return { accepted: false, reason: "no-command" };
+  if (command.roomCode && roomCode && command.roomCode !== roomCode) return { accepted: false, reason: "other-room" };
+  if (command.quizVersionId && quizVersionId && command.quizVersionId !== quizVersionId) return { accepted: false, reason: "other-quiz" };
+  if (lastApplied && command.id === lastApplied.id) return { accepted: false, reason: "duplicate" };
+
+  const issuedAt = Number(command.issuedAt) || 0;
+  const lastIssuedAt = Number(lastApplied?.issuedAt) || 0;
+  if (issuedAt && lastIssuedAt && issuedAt <= lastIssuedAt) return { accepted: false, reason: "out-of-order" };
+
+  if (freshMount && CUE_ACTIONS_THAT_START_PLAYBACK.has(command.action)) {
+    // A command issued by a client old enough not to date its cues cannot be
+    // shown to be recent, and this is the one moment that matters: arming, or
+    // a reload, replaying a cue the room finished with long ago.
+    if (!issuedAt) return { accepted: false, reason: "unknown-age" };
+    if (now - issuedAt > freshnessMs) return { accepted: false, reason: "stale-cue" };
+  }
+  return { accepted: true, reason: "accepted" };
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker

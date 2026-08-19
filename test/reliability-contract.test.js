@@ -167,7 +167,10 @@ test("Host can adjust audio volume on any screen without interrupting playback, 
   assert.match(app, /const volumeControl = playable \? `<label class="host-audio-volume"/);
   // setAudioCommand always stamps the host's persisted volume, regardless of
   // which scope the command targets.
-  assert.match(app, /state\.audioCommand = \{ id: crypto\.randomUUID\(\), volume: currentAudioVolume\(\), \.\.\.command \};/);
+  assert.match(app, /state\.audioCommand = \{ \.\.\.cueIdentity\(\), volume: currentAudioVolume\(\), \.\.\.command \};/);
+  // cueIdentity() supplies the command id; it also dates and room-scopes it
+  // so a reconnecting Presentation can reject a cue the room has finished with.
+  assert.match(app, /id: crypto\.randomUUID\(\),\s*\n\s*issuedAt: Date\.now\(\),\s*\n\s*roomCode,/);
   const command = app.slice(app.indexOf("async function applyPresentationAudioCommand"), app.indexOf("async function clearActiveClip"));
   assert.match(command, /presentationAudioPlayer\.volume = normalizedAudioVolume\(command\.volume\)/);
   // A volume-only command must return before preparePresentationAudio runs,

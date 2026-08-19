@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, correctOptionId, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -27,14 +27,17 @@ let lockQuestionInFlight = null;
 let lockQuestionInFlightIsAuto = false;
 let activeDrag = null;
 let scoreNotificationTimer = null;
-let handledPresentationAudioCommand = null;
+// The last cue this Presentation actually acted on, for this page's life.
+// `null` means "nothing applied yet", which is exactly the state in which a
+// persisted command's age cannot be assumed (see presentationCueDecision).
+let lastAppliedAudioCommand = null;
 const presentationAudioPlayer = view === "presenter" ? new Audio() : null;
 const presentationVideoPlayer = view === "presenter" ? document.createElement("video") : null;
 if (presentationVideoPlayer) { presentationVideoPlayer.playsInline = true; presentationVideoPlayer.preload = "auto"; presentationVideoPlayer.controls = false; }
 let presentationAudioSourceKey = null;
 let presentationVideoSourceKey = null;
 let presentationVideoObjectUrl = null;
-let handledPresentationMediaCommand = null;
+let lastAppliedMediaCommand = null;
 let presentationMediaArmed = false;
 let loadedPrivateAudioAssetId = null;
 let presentationAudioArmed = false;
@@ -92,8 +95,26 @@ function currentAudioVolume() {
   // between-round, finale) until they move the slider again.
   return normalizedAudioVolume(state.audioVolume ?? state.audioCommand?.volume);
 }
+// Every cross-client cue carries who issued it, for which room and quiz, and
+// when. Without a date, a Presentation that reconnects cannot tell a cue
+// issued two seconds ago from one issued twenty minutes ago, and replays it
+// over the answer reveal (mistakes.md #3).
+function cueIdentity() {
+  return {
+    id: crypto.randomUUID(),
+    issuedAt: Date.now(),
+    roomCode,
+    // The browser holds the authored definition, not the quiz_versions row
+    // id, so this is the quiz's own id. Together with the room code it is
+    // enough to reject a cue that belongs somewhere else.
+    quizVersionId: hostQuizDefinition?.id || ""
+  };
+}
 function setAudioCommand(command) {
-  state.audioCommand = { id: crypto.randomUUID(), volume: currentAudioVolume(), ...command };
+  state.audioCommand = { ...cueIdentity(), volume: currentAudioVolume(), ...command };
+}
+function setMediaCommand(command) {
+  state.mediaCommand = { ...cueIdentity(), ...command };
 }
 function questionPresentationMedia(question) {
   if (question?.video?.mediaAssetId || question?.video?.url) return { kind: "video", ...question.video };
@@ -204,7 +225,7 @@ function publicRoomState() {
     activeClipId: state.activeClipId || null,
     audioCommand: state.audioCommand || null,
     audioVolume: currentAudioVolume(),
-    mediaCommand: state.mediaCommand ? { id: state.mediaCommand.id, kind: state.mediaCommand.kind, action: state.mediaCommand.action, mediaScope: state.mediaCommand.mediaScope, questionId: state.mediaCommand.questionId } : null,
+    mediaCommand: state.mediaCommand ? { id: state.mediaCommand.id, kind: state.mediaCommand.kind, action: state.mediaCommand.action, mediaScope: state.mediaCommand.mediaScope, questionId: state.mediaCommand.questionId, issuedAt: state.mediaCommand.issuedAt || null, roomCode: state.mediaCommand.roomCode || "", quizVersionId: state.mediaCommand.quizVersionId || "" } : null,
     scoreNotification: state.scoreNotification?.expiresAt && new Date(state.scoreNotification.expiresAt).getTime() > Date.now() ? state.scoreNotification : null,
     doorBonus: publicDoorBonus(),
     doorPicks: state.doorPicks || [],
@@ -1798,12 +1819,16 @@ async function loadPrivatePresentationVideo(assetId) {
   presentationVideoSourceKey = assetId;
 }
 
+// Resolves true only when the commanded video is loaded and ready. An
+// unresolved source must never fall through to playback -- that is how an
+// unavailable clip ends up playing the previously loaded one.
 async function preparePresentationVideo(command = state.mediaCommand) {
-  if (view !== "presenter" || !presentationVideoPlayer) return;
+  if (view !== "presenter" || !presentationVideoPlayer) return false;
   const authoredQuestion = questionDefinitionById(command?.questionId || state.questionId || state.question?.id) || presenterQuestionDefinition();
   const video = questionPresentationMedia(authoredQuestion);
-  if (video?.kind !== "video" || !video.mediaAssetId) return;
+  if (video?.kind !== "video" || !video.mediaAssetId) return false;
   await loadPrivatePresentationVideo(video.mediaAssetId);
+  return presentationVideoSourceKey === video.mediaAssetId;
 }
 
 async function startPresentationVideo() {
@@ -1817,10 +1842,13 @@ async function startPresentationVideo() {
 
 async function applyPresentationMediaCommand() {
   const command = state.mediaCommand;
-  if (view !== "presenter" || !presentationVideoPlayer || !presentationMediaArmed || command?.kind !== "video" || !command.id || command.id === handledPresentationMediaCommand) return;
-  handledPresentationMediaCommand = command.id;
-  await preparePresentationVideo(command);
+  if (view !== "presenter" || !presentationVideoPlayer || !presentationMediaArmed || command?.kind !== "video") return;
+  const decision = presentationCueDecision(command, { lastApplied: lastAppliedMediaCommand, roomCode, quizVersionId: hostQuizDefinition?.id || "", now: Date.now(), freshMount: lastAppliedMediaCommand === null });
+  if (!decision.accepted) return;
+  lastAppliedMediaCommand = { id: command.id, issuedAt: command.issuedAt || null };
+  const prepared = await preparePresentationVideo(command);
   if (command.action === "pause") { presentationVideoPlayer.pause(); return; }
+  if (!prepared) { console.warn("Presentation video is unavailable for this cue; not starting playback."); return; }
   if (command.action === "restart") presentationVideoPlayer.currentTime = 0;
   await startPresentationVideo();
 }
@@ -1834,19 +1862,27 @@ function questionDefinitionById(questionId) {
   return null;
 }
 
-async function preparePresentationAudio(command = state.audioCommand) {
-  if (view !== "presenter" || !presentationAudioPlayer) return;
+// Resolves which authored clip a cue means. The host and Presentation use the
+// same resolution, so the cue does not have to carry an asset id that a player
+// phone must never receive.
+function cueAudioSource(command) {
   const commandedQuestion = questionDefinitionById(command?.questionId);
   const commandedIntro = command?.clipId ? commandedQuestion?.clips?.find((clip) => clip.id === command.clipId) : null;
-  const audio = command?.audioScope === "between_round"
-    ? betweenRoundAudio(command.audioKey)
-    : command?.audioScope === "finale"
-    ? finaleAudio(command.audioKey)
-    : command?.audioScope === "title"
-    ? hostQuizDefinition?.titlePage?.audio
-    : commandedIntro || commandedQuestion?.audio || (state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio : hostQuestion.audio);
+  if (command?.audioScope === "between_round") return betweenRoundAudio(command.audioKey);
+  if (command?.audioScope === "finale") return finaleAudio(command.audioKey);
+  if (command?.audioScope === "title") return hostQuizDefinition?.titlePage?.audio || null;
+  return commandedIntro || commandedQuestion?.audio || (state.presentationScreen === "title" ? hostQuizDefinition?.titlePage?.audio : hostQuestion.audio) || null;
+}
+
+// Resolves true only when the commanded clip is the one now loaded. Returning
+// early without saying so is what let an unavailable clip play the previously
+// loaded one instead (mistakes.md #3, one level deeper).
+async function preparePresentationAudio(command = state.audioCommand) {
+  if (view !== "presenter" || !presentationAudioPlayer) return false;
+  const audio = cueAudioSource(command);
   const sourceKey = audio?.mediaAssetId || audio?.url || null;
-  if (!sourceKey || sourceKey === presentationAudioSourceKey) return;
+  if (!sourceKey) return false;
+  if (sourceKey === presentationAudioSourceKey) return true;
   stopTitleCaptionClock();
   document.querySelector("[data-title-caption-overlay]")?.classList.remove("is-visible");
   const captionText = document.querySelector("[data-title-caption-text]");
@@ -1859,10 +1895,11 @@ async function preparePresentationAudio(command = state.audioCommand) {
     presentationAudioPlayer.src = audio.url;
     presentationAudioPlayer.load();
     presentationAudioSourceKey = sourceKey;
-    return;
+    return true;
   }
   await loadPrivateHostAudio(presentationAudioPlayer, audio.mediaAssetId);
   if (presentationAudioPlayer.src) presentationAudioSourceKey = sourceKey;
+  return presentationAudioSourceKey === sourceKey;
 }
 
 async function armPresentationAudio() {
@@ -1881,9 +1918,11 @@ async function armPresentationAudio() {
   presentationAudioPlayer.load();
   presentationAudioSourceKey = null;
   presentationAudioArmed = true;
-  // If a play command arrived before the one-time browser gesture, apply it
-  // immediately after arming instead of making the host click Play again.
-  handledPresentationAudioCommand = null;
+  // A cue that arrived before the one-time browser gesture is applied right
+  // after arming instead of making the host click Play again -- but only if
+  // it is recent. This used to clear the handled marker unconditionally,
+  // which is precisely how a cue the room finished with twenty minutes ago
+  // played over the answer reveal. Freshness now decides, not this line.
   render();
 }
 
@@ -1899,7 +1938,6 @@ async function armPresentationMedia() {
     presentationVideoPlayer.muted = wasMuted;
   }
   presentationMediaArmed = true;
-  handledPresentationMediaCommand = null;
   await preparePresentationVideo();
   render();
 }
@@ -1922,15 +1960,20 @@ async function startPresentationPlayback() {
 
 async function applyPresentationAudioCommand() {
   const command = state.audioCommand;
-  if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed || !command?.id || command.id === handledPresentationAudioCommand) return;
-  handledPresentationAudioCommand = command.id;
+  if (view !== "presenter" || !presentationAudioPlayer || !presentationAudioArmed) return;
+  const decision = presentationCueDecision(command, { lastApplied: lastAppliedAudioCommand, roomCode, quizVersionId: hostQuizDefinition?.id || "", now: Date.now(), freshMount: lastAppliedAudioCommand === null });
+  if (!decision.accepted) return;
+  lastAppliedAudioCommand = { id: command.id, issuedAt: command.issuedAt || null };
   presentationAudioPlayer.volume = normalizedAudioVolume(command.volume);
   // A volume-only command carries no clip identity (see the host-side
   // listener) and must never touch which clip is loaded — otherwise dragging
   // the slider mid-question could yank playback back to an unrelated scope.
   if (command.action === "volume") return;
-  await preparePresentationAudio(command);
+  const prepared = await preparePresentationAudio(command);
   if (command.action === "pause") { presentationAudioPlayer.pause(); return; }
+  // Never fall through to playback with an unresolved source: that plays
+  // whatever clip happened to be loaded last.
+  if (!prepared) { console.warn("Presentation audio is unavailable for this cue; not starting playback."); return; }
   if (command.action === "restart") presentationAudioPlayer.currentTime = 0;
   try { await startPresentationPlayback(); } catch (error) { console.warn("Presentation audio needs to be enabled once in the presentation tab.", error); }
 }
@@ -2856,7 +2899,7 @@ function attachEvents() {
   }
   document.querySelectorAll("[data-video-command]").forEach((button) => button.addEventListener("click", async () => {
     if (view !== "host" || !hostQuizDefinition || !hostQuestion.video) return;
-    state.mediaCommand = { id: crypto.randomUUID(), kind: "video", action: button.dataset.videoCommand, mediaScope: "question", questionId: hostQuestion.id };
+    setMediaCommand({ kind: "video", action: button.dataset.videoCommand, mediaScope: "question", questionId: hostQuestion.id });
     state.mediaPlayback = button.dataset.videoCommand === "pause" ? "paused" : "loading";
     await persistHostState();
     emit();
