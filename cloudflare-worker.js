@@ -1,3 +1,5 @@
+import { ENGINES } from "./image-engine.js";
+
 function supabaseAdminHeaders(secret, { json = false } = {}) {
   // Modern Supabase server keys are opaque API keys, not user-session JWTs.
   // The hosted gateway translates those credentials to the service_role role.
@@ -67,6 +69,84 @@ function hostSubmissionsResponse(body, init = {}) {
   });
 }
 
+// --- Prompt Battle: host model test route -----------------------------
+//
+// POST /battle/test-image (base spec section 7.5; dispatch corrected by
+// docs/superpowers/specs/2026-08-24-prompt-battle-free-engine-addendum.md
+// section 2.3). Lets the host preview the effective model from the title
+// screen before a round starts. Runs one generation outside any battle
+// round: it never touches player budgets, never creates matchup entries,
+// and never persists -- images return inline as base64 to the host, who is
+// already trusted with all quiz media.
+//
+// This route is the single dispatch path the addendum requires: it builds
+// descriptors via the pure image-engine.js adapter, executes every one of
+// them through runBattleDescriptor() with Promise.allSettled (never
+// Promise.all -- one flaky variant must not discard the others), and folds
+// the results back through the adapter's parseResponses(). image-engine.js
+// itself performs no I/O, which is what lets it be tested from fixtures.
+const BATTLE_TEST_IMAGE_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
+const BATTLE_TEST_IMAGE_VARIANTS = 2;
+const BATTLE_TEST_IMAGE_STEPS = 4;
+const BATTLE_TEST_IMAGE_MAX_PER_SESSION = 10;
+
+// Deployment allowlist (base spec section 7.5): the host's model menu is
+// validated against this on the Worker, never against a model string taken
+// from the request body -- a client-supplied model name is the allowlist
+// defeated. In a later slice this is intersected with the quiz's own
+// `permittedModels`. Only workers_ai is implemented this slice (see
+// image-engine.js), so this deliberately has one entry rather than stub
+// entries for openrouter/vertex/the Kaplan proxy.
+const BATTLE_MODEL_ALLOWLIST = {
+  "@cf/black-forest-labs/flux-1-schnell": "workers_ai"
+};
+
+// Best-effort only, not durable: an in-memory Map does not survive an
+// isolate restart or redeploy, and is not shared between concurrently
+// running isolates, so a determined host could exceed 10 across isolates.
+// A durable per-session cap needs the session_battle_generations table from
+// a later slice's migration -- out of scope here (no migrations this
+// slice). This is the honest interim version rather than a pretended-
+// durable one. Keyed by room code.
+const battleTestImageCounts = new Map();
+
+const battleTestImageCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-host-secret, content-type",
+  "access-control-max-age": "86400"
+};
+
+function battleTestImageResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...battleTestImageCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
+// The one dispatch path every adapter's descriptors run through, per
+// addendum section 2.3. A "binding" descriptor calls the named Workers
+// binding directly; an "http" descriptor (openrouter, openai, the Kaplan
+// proxy -- none implemented yet) would fetch a provider URL. Errors carry a
+// status where one is known so parseResponses can distinguish provider
+// failure shapes later.
+async function runBattleDescriptor(descriptor, auth) {
+  if (descriptor.kind === "binding") {
+    return auth.binding.run(descriptor.model, descriptor.payload);
+  }
+  const response = await fetch(descriptor.url, {
+    method: "POST",
+    headers: { ...descriptor.headers, ...(auth.headers || {}) },
+    body: JSON.stringify(descriptor.body)
+  });
+  if (!response.ok) {
+    const error = new Error(`${descriptor.url} returned ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
 async function verifyQuizAuthor(env, token) {
   const headers = { ...supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true }), Authorization: `Bearer ${token}` };
   const response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/is_quiz_author`, { method: "POST", headers, body: "{}" });
@@ -99,6 +179,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
     if (request.method === "OPTIONS" && url.pathname === "/host-text-answers") return new Response(null, { status: 204, headers: hostTextAnswersCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/host-closest-number-guesses") return new Response(null, { status: 204, headers: hostClosestNumberCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/host-submissions") return new Response(null, { status: 204, headers: hostSubmissionsCorsHeaders });
+    if (request.method === "OPTIONS" && url.pathname === "/battle/test-image") return new Response(null, { status: 204, headers: battleTestImageCorsHeaders });
     if (request.method === "GET" && url.pathname === "/media-health") {
       if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ ok: false, stage: "configuration" }, { status: 503 });
       const check = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?select=id&limit=1`, { headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY) });
@@ -216,6 +297,55 @@ if (request.method === "GET" && url.pathname === "/__version") {
         ? submissionData.filter((row) => typeof row?.player_id === "string" && row.answer !== null && row.answer !== undefined).map((row) => ({ playerId: row.player_id, answer: row.answer }))
         : [];
       return hostSubmissionsResponse({ questionId, submissions }, { headers: { "cache-control": "private, no-store" } });
+    }
+    if (request.method === "POST" && url.pathname === "/battle/test-image") {
+      const roomCode = request.headers.get("x-quiz-room");
+      const hostSecret = request.headers.get("x-quiz-host-secret");
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return battleTestImageResponse({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
+      const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+      const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
+      if (!stateResponse.ok) return battleTestImageResponse({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
+
+      let payload;
+      try { payload = await request.json(); } catch { payload = null; }
+      const model = typeof payload?.model === "string" ? payload.model : "";
+      const provider = BATTLE_MODEL_ALLOWLIST[model];
+      // The host picks from a menu; the host never types a model string. A
+      // model this Worker does not recognize is refused here regardless of
+      // what the client believes it offered, which is what makes the
+      // allowlist a Worker-side guarantee rather than a UI courtesy.
+      if (!provider) return battleTestImageResponse({ error: "Unknown or disallowed model." }, { status: 400, headers: { "cache-control": "no-store" } });
+
+      const sessionKey = roomCode.trim().toUpperCase();
+      const usedCount = battleTestImageCounts.get(sessionKey) || 0;
+      if (usedCount >= BATTLE_TEST_IMAGE_MAX_PER_SESSION) return battleTestImageResponse({ error: "Test-generation limit reached for this session." }, { status: 429, headers: { "cache-control": "no-store" } });
+      // Consumed synchronously, before any await, so two requests racing
+      // within the same isolate cannot both read the same usedCount.
+      battleTestImageCounts.set(sessionKey, usedCount + 1);
+
+      const adapter = ENGINES[provider];
+      let auth;
+      try {
+        auth = await adapter.resolveAuth(env);
+      } catch (error) {
+        console.error("Battle test-image auth resolution failed", { provider, message: error?.message });
+        return battleTestImageResponse({ error: "Image generation is not configured." }, { status: 503, headers: { "cache-control": "no-store" } });
+      }
+
+      // Seeds are generated here, never inside image-engine.js, so
+      // buildRequests() stays deterministic and testable with fixed seeds.
+      const seeds = Array.from({ length: BATTLE_TEST_IMAGE_VARIANTS }, () => crypto.getRandomValues(new Uint32Array(1))[0]);
+      const descriptors = adapter.buildRequests({ model, prompt: BATTLE_TEST_IMAGE_PROMPT, variants: BATTLE_TEST_IMAGE_VARIANTS, steps: BATTLE_TEST_IMAGE_STEPS, seeds });
+
+      const settled = await Promise.allSettled(descriptors.map((descriptor) => runBattleDescriptor(descriptor, auth)));
+      const results = settled.map((entry) =>
+        entry.status === "fulfilled"
+          ? { ok: true, body: entry.value }
+          : { ok: false, status: entry.reason?.status ?? 0, error: entry.reason }
+      );
+      const parsed = adapter.parseResponses({ results, expectedVariants: BATTLE_TEST_IMAGE_VARIANTS });
+
+      return battleTestImageResponse({ model, ...parsed }, { headers: { "cache-control": "no-store" } });
     }
     if (request.method === "GET" && url.pathname.startsWith("/author-media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/author-media/".length));

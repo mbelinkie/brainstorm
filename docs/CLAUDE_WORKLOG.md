@@ -1134,3 +1134,124 @@ validate encoding explicitly after byte-level edits.
   neuron usage before anyone plans an event around the 230/day estimate.
 - Whether flux-1-schnell's fixed output size is acceptable on the presentation
   screen has not been looked at. No image has been generated.
+
+## 2026-08-24 — Prompt Battle slice 1: image-engine.js, the Worker test route, and the host test panel
+
+**Branch:** `claude/prompt-battle-engine`, created from `claude/prompt-battle-free-engine`'s
+tip (`28fa0e4`, main + the addendum doc), not from bare `main` — see "Judgment calls" below.
+**Files touched:** `image-engine.js` (new), `test/image-engine.test.js` (new),
+`test/battle-test-image-route.test.js` (new), `test/battle-test-panel.test.js` (new),
+`cloudflare-worker.js`, `wrangler.jsonc`, `app.js`, `styles.css`, `CHANGELOG.md`, this file.
+No migrations, no dependency changes, no player/presentation-view changes.
+
+### Slice
+
+Implemented exactly the scope given: the pure `image-engine.js` adapter layer
+(`workers_ai` only, per the 2026-08-24 addendum's corrected plural
+`buildRequests`/`parseResponses` contract), the `ai: { binding: "AI" }`
+wrangler config, an authenticated `POST /battle/test-image` Worker route, and
+a host-only title-screen test panel in `app.js`. openrouter, vertex, and the
+Kaplan proxy remain unimplemented. No migrations, phases, pairing,
+submission, voting, or scoring — as instructed.
+
+### TDD
+
+`test/image-engine.test.js` and `test/battle-test-image-route.test.js` were
+both written first and watched to fail for the expected reason (missing
+module; then a `TypeError` on `env.ASSETS.fetch` because the route did not
+exist and every request fell through to the static-asset handler) before any
+production code existed, then implemented to green. `test/battle-test-panel.test.js`
+(the app.js source-grep regression tests) was written **after** the app.js
+change, not before — disclosing this because the task's TDD instruction was
+explicit and I don't want an undisclosed exception. It's a supplementary
+contract test (host/title-screen gating, select-not-input, no `state.battleTest*`
+leak path), not the mandated deliverable.
+
+### Judgment calls
+
+- **Branch base.** The task said "branch `claude/prompt-battle-engine` from
+  main," but the addendum doc — marked REQUIRED reading — only exists on
+  `claude/prompt-battle-free-engine`, one commit ahead of `main`. Flagged this
+  to the user before branching; they chose branching from the current tip
+  (main + the addendum commit) over bare `main`.
+- **Deferred the OpenRouter bullet in addendum §11.** The addendum's test list
+  includes "OpenRouter's adapter returns a single descriptor with `n:
+  variants`..." but the task's own SCOPE section says to leave openrouter
+  unimplemented this slice. Implemented every `workers_ai`-specific case in
+  §11 and skipped that one bullet rather than build an adapter out of scope.
+- **Fixed test-panel prompt/variant count.** The panel spec (base spec §7.5)
+  lists a model menu, Test button, images, and cost — no prompt field. Used a
+  fixed server-side test prompt and `variants: 2` (the addendum's schema
+  default) rather than invent a free-text prompt field nothing asked for.
+- **The 10-per-session cap is an in-memory `Map` keyed by room code** —
+  explicitly non-durable (documented in a code comment): it does not survive
+  an isolate restart/redeploy and is not shared across concurrently running
+  isolates. A durable version needs the `session_battle_generations` table,
+  which is a migration and out of scope this slice. This is the same
+  limitation the parked `claude/prompt-battle-slice-1` WIP flagged; not
+  fixed here for the same reason (no migrations this slice).
+- **Found and did not touch `claude/prompt-battle-slice-1`.** A separate,
+  explicitly `PARKED, UNFINISHED` branch from 2026-08-18 with the exact bugs
+  the addendum's §4.1 catalogs (wrong output shape, wrong mimetype, `width`/
+  `height` params the model doesn't accept). Left alone; nothing from it was
+  reused.
+
+### Commands run
+
+```
+$ git checkout -b claude/prompt-battle-engine
+Switched to a new branch 'claude/prompt-battle-engine'
+$ node --test test/image-engine.test.js        # RED: Cannot find module 'image-engine.js'
+$ node --test test/image-engine.test.js        # GREEN: 13 pass
+$ node --test test/battle-test-image-route.test.js   # RED: 8 fail (TypeError on env.ASSETS.fetch)
+$ node --test test/battle-test-image-route.test.js   # GREEN: 8 pass
+$ node --test test/battle-test-panel.test.js   # 5 pass (written after the app.js change)
+$ npm test
+ℹ tests 326
+ℹ pass 326
+ℹ fail 0
+```
+(300 pre-existing + 13 + 8 + 5 new. Full output pasted to the user in the
+session transcript.)
+
+### Unproven / open — the three things this slice was meant to check
+
+None of the three could be checked with real data. `npx wrangler whoami`
+succeeded once early in the session (reporting `Matthew.belinkie@kaplan.com's
+Account`), but every subsequent attempt — including inside `wrangler dev` —
+reported "You are not authenticated," and `CLOUDFLARE_API_TOKEN` is unset in
+this shell (`printenv` confirms it; no `~/.wrangler/config` exists either).
+Whatever supplied credentials for that one `whoami` call was not available
+again, including to a backgrounded `wrangler dev`. I did not go looking for
+a token to feed it — that would mean sourcing a credential from somewhere I
+haven't been shown or asking the user to paste one into chat, and I don't
+think either is the right move here. I built and left a throwaway probe
+Worker instead (`ai-probe-scratch`, AI binding only, no Supabase dependency)
+in the session scratchpad, and it's described to the user with copy-paste
+commands so they (or a future session with working `wrangler` auth) can get
+real numbers in under a minute:
+
+- flux-1-schnell's real output dimensions/aspect ratio — not observed, no
+  image has been generated by this session either.
+- The real shape of a Workers AI safety-filter rejection — not captured.
+  `isWorkersAiSafetyRejection` still returns `false` unconditionally, per the
+  addendum's own instruction, pinned by a test that checks it doesn't guess
+  at a shape from memory. This is now two sessions running into the same
+  missing fixture.
+- Real neuron cost per image — not measured. The ~43/image figure in the
+  spec is still unverified against metered usage.
+
+The host panel **was** exercised in a real browser this session (`npm run dev`
++ a browser tool, room code `zzverify` — never created, so no host secret was
+stored for it and no real Supabase call fired): confirmed the panel renders
+in the right spot on the host title screen with the model menu pre-selected,
+confirmed it is absent from `?view=player` and `?view=presenter` for the same
+room, and confirmed clicking Test with no host secret produces the inline
+"Host authorization is required." state instead of a network call or a
+crash. What this did **not** prove: a real generation round-trip.
+`server.mjs` (`npm run dev`) is a static file server with no `/battle/test-image`
+route — only `cloudflare-worker.js` has it — and `wrangler dev` needs the
+Cloudflare auth this session doesn't reliably have (see above). So the
+Worker route's actual behavior is proven by `test/battle-test-image-route.test.js`
+(stubbed Supabase + fake AI binding) and by reading the code, not by a live
+click-through.
