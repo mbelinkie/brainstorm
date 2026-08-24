@@ -84,7 +84,11 @@ const quizWorkerOrigin = config.workerOrigin || location.origin;
 const BATTLE_TEST_MODELS = [
   { value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" }
 ];
-let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, busy: false, error: "", result: null };
+// Mirrors the Worker's own default (cloudflare-worker.js, BATTLE_TEST_IMAGE_PROMPT)
+// only as a starting point the host can freely edit -- unlike the model
+// menu, the prompt is host-typed free text, sent to the Worker as-is.
+const BATTLE_TEST_DEFAULT_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
+let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null };
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -2184,7 +2188,13 @@ function battleTestImagePanel() {
   const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
   const costLine = result ? `<p class="battle-test-cost">Reported cost: ${result.costUsd ? `$${Number(result.costUsd).toFixed(4)}` : "$0 (Workers AI free tier)"}</p>` : "";
   const errorLine = battleTestPanel.error ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.error)}</p>` : "";
-  return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${gallery}</div>`;
+  // Diagnostic only: raw per-call failure reasons from the provider, so a
+  // zero-image response is legible without opening devtools. Host-only, by
+  // construction -- this whole panel only renders for the host.
+  const providerErrorsNotice = result?.providerErrors?.length
+    ? `<details class="battle-test-note battle-test-note--blocked" open><summary>${images.length === 0 ? "No images came back" : "Some calls failed"} — provider details</summary>${result.providerErrors.map((entry) => `<p>${entry.status ? `[${escapeHtml(String(entry.status))}] ` : ""}${escapeHtml(entry.message)}</p>`).join("")}</details>`
+    : "";
+  return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
 }
 
 function renderHost() {
@@ -2726,6 +2736,14 @@ function attachEvents() {
   document.querySelector("[data-battle-test-model]")?.addEventListener("change", (event) => {
     battleTestPanel.model = event.currentTarget.value;
   });
+  // "input", not "change", and no render() call: render() replaces the
+  // whole panel's innerHTML, which would drop focus and cursor position on
+  // every keystroke (mistakes.md #15). The textarea already shows what the
+  // host is typing; this only needs to keep state in sync for the next
+  // time something else triggers a render (e.g. clicking Test).
+  document.querySelector("[data-battle-test-prompt]")?.addEventListener("input", (event) => {
+    battleTestPanel.prompt = event.currentTarget.value;
+  });
   document.querySelector("[data-battle-test-generate]")?.addEventListener("click", async () => {
     if (battleTestPanel.busy) return;
     const hostSecret = getHostSecret();
@@ -2737,7 +2755,7 @@ function attachEvents() {
       const response = await fetch(`${quizWorkerOrigin}/battle/test-image`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret },
-        body: JSON.stringify({ model: battleTestPanel.model })
+        body: JSON.stringify({ model: battleTestPanel.model, prompt: battleTestPanel.prompt })
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {

@@ -315,6 +315,11 @@ if (request.method === "GET" && url.pathname === "/__version") {
       // what the client believes it offered, which is what makes the
       // allowlist a Worker-side guarantee rather than a UI courtesy.
       if (!provider) return battleTestImageResponse({ error: "Unknown or disallowed model." }, { status: 400, headers: { "cache-control": "no-store" } });
+      // Unlike the model, the prompt is host-typed free text -- that's the
+      // point of this panel, and image-engine.js's own truncation (2048
+      // chars for workers_ai) bounds what actually reaches the provider.
+      const requestedPrompt = typeof payload?.prompt === "string" ? payload.prompt.trim() : "";
+      const prompt = requestedPrompt || BATTLE_TEST_IMAGE_PROMPT;
 
       const sessionKey = roomCode.trim().toUpperCase();
       const usedCount = battleTestImageCounts.get(sessionKey) || 0;
@@ -335,7 +340,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
       // Seeds are generated here, never inside image-engine.js, so
       // buildRequests() stays deterministic and testable with fixed seeds.
       const seeds = Array.from({ length: BATTLE_TEST_IMAGE_VARIANTS }, () => crypto.getRandomValues(new Uint32Array(1))[0]);
-      const descriptors = adapter.buildRequests({ model, prompt: BATTLE_TEST_IMAGE_PROMPT, variants: BATTLE_TEST_IMAGE_VARIANTS, steps: BATTLE_TEST_IMAGE_STEPS, seeds });
+      const descriptors = adapter.buildRequests({ model, prompt, variants: BATTLE_TEST_IMAGE_VARIANTS, steps: BATTLE_TEST_IMAGE_STEPS, seeds });
 
       const settled = await Promise.allSettled(descriptors.map((descriptor) => runBattleDescriptor(descriptor, auth)));
       const results = settled.map((entry) =>
@@ -345,7 +350,17 @@ if (request.method === "GET" && url.pathname === "/__version") {
       );
       const parsed = adapter.parseResponses({ results, expectedVariants: BATTLE_TEST_IMAGE_VARIANTS });
 
-      return battleTestImageResponse({ model, ...parsed }, { headers: { "cache-control": "no-store" } });
+      // Diagnostic only, host-only: this route is explicitly for the host to
+      // learn what a model/provider actually does, so a zero-image response
+      // that would otherwise look like a silent no-op carries the raw
+      // per-descriptor failure reasons. Never sent to a player -- there is
+      // no player-facing caller of this route.
+      const providerErrors = results
+        .filter((result) => !result.ok)
+        .map((result) => ({ status: result.status || null, message: String(result.error?.message || result.error || "unknown error") }));
+      if (providerErrors.length) console.error("Battle test-image: provider call(s) failed", { provider, model, providerErrors });
+
+      return battleTestImageResponse({ model, prompt, ...parsed, ...(providerErrors.length ? { providerErrors } : {}) }, { headers: { "cache-control": "no-store" } });
     }
     if (request.method === "GET" && url.pathname.startsWith("/author-media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/author-media/".length));

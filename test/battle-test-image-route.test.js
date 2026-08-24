@@ -104,6 +104,34 @@ test("/battle/test-image rejects a model that is not on the deployment allowlist
   assert.equal(ai.calls.length, 0, "an unapproved model string must never reach the provider — this is the allowlist that a client-supplied model name would otherwise defeat");
 });
 
+test("/battle/test-image forwards a host-supplied prompt to the AI binding instead of the default", async () => {
+  const ai = fakeAiBinding([{ image: "A" }, { image: "B" }]);
+  const { response, body } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-custom-prompt-1"),
+    body: { model: ALLOWED_MODEL, prompt: "A raccoon wearing a tiny crown" },
+    routes: authorizedRoom,
+    ai
+  });
+  assert.equal(response.status, 200);
+  assert.equal(body.prompt, "A raccoon wearing a tiny crown");
+  assert.equal(ai.calls[0].payload.prompt, "A raccoon wearing a tiny crown");
+  assert.equal(ai.calls[1].payload.prompt, "A raccoon wearing a tiny crown");
+});
+
+test("/battle/test-image falls back to the default prompt when none is supplied or it is blank", async () => {
+  const ai = fakeAiBinding([{ image: "A" }, { image: "B" }]);
+  const { body } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-default-prompt-1"),
+    body: { model: ALLOWED_MODEL, prompt: "   " },
+    routes: authorizedRoom,
+    ai
+  });
+  assert.ok(body.prompt && body.prompt.length > 0);
+  assert.equal(ai.calls[0].payload.prompt, body.prompt);
+});
+
 test("/battle/test-image generates through the AI binding, returns images inline, and persists nothing", async () => {
   const ai = fakeAiBinding([{ image: "AAAA" }, { image: "BBBB" }]);
   const { response, body, requested } = await callWorker("/battle/test-image", {
@@ -125,10 +153,12 @@ test("/battle/test-image generates through the AI binding, returns images inline
   // Only the host-auth RPC talks to Supabase -- no media_assets insert, no
   // storage upload. The test path is documented as never persisting.
   assert.deepEqual(requested, requested.filter((url) => url.includes("/rpc/get_host_live_room_state")));
-  // Each call gets its own seed, which is what produces variety between
-  // variants of the same prompt.
+  // One AI-binding call per variant. No `seed` field -- the real API
+  // rejects it ("Additional or unevaluated properties '/seed' at '/' not
+  // allowed"), verified live on 2026-08-24. See image-engine.js.
   assert.equal(ai.calls.length, 2);
-  assert.notEqual(ai.calls[0].payload.seed, ai.calls[1].payload.seed);
+  assert.deepEqual(Object.keys(ai.calls[0].payload).sort(), ["prompt", "steps"]);
+  assert.equal(ai.calls[0].payload.steps, 4);
   assert.equal(ai.calls[0].model, ALLOWED_MODEL);
 });
 
@@ -145,6 +175,38 @@ test("/battle/test-image: a partial AI-binding failure still returns the success
   assert.deepEqual(body.images, [{ mimeType: "image/jpeg", bytesBase64: "GOOD" }]);
   assert.equal(body.partial, true);
   assert.equal(body.blocked, false);
+});
+
+test("/battle/test-image: an all-failed AI-binding batch still returns 200 with zero images and the raw provider errors", async () => {
+  // A zero-image, non-blocked, non-erroring 200 is otherwise indistinguishable
+  // from "nothing happened" -- providerErrors is what makes a real provider
+  // failure (as opposed to a safety block) legible to the host without
+  // opening devtools.
+  const ai = fakeAiBinding([Object.assign(new Error("binding rejected the request"), { status: 400 }), new Error("binding hiccup")]);
+  const { response, body } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-provider-errors-1"),
+    body: { model: ALLOWED_MODEL },
+    routes: authorizedRoom,
+    ai
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.images, []);
+  assert.equal(body.providerErrors.length, 2);
+  assert.deepEqual(body.providerErrors[0], { status: 400, message: "binding rejected the request" });
+  assert.equal(body.providerErrors[1].message, "binding hiccup");
+});
+
+test("/battle/test-image omits providerErrors entirely on full success", async () => {
+  const ai = fakeAiBinding([{ image: "A" }, { image: "B" }]);
+  const { body } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-no-provider-errors-1"),
+    body: { model: ALLOWED_MODEL },
+    routes: authorizedRoom,
+    ai
+  });
+  assert.equal("providerErrors" in body, false);
 });
 
 test("/battle/test-image enforces a hard cap of 10 test generations per session", async () => {
