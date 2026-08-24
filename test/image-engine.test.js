@@ -18,11 +18,18 @@ const workersAi = ENGINES.workers_ai;
 
 // --- buildRequests -----------------------------------------------------
 
-test("workers_ai.buildRequests returns one binding descriptor per variant, each with its own seed", () => {
+test("workers_ai.buildRequests returns one binding descriptor per variant, and never sends a seed field", () => {
+  // Verified live against the real API on 2026-08-24: it rejects the
+  // request outright with "Additional or unevaluated properties '/seed' at
+  // '/' not allowed", contradicting the addendum's documented input
+  // contract (section 4.1 lists `seed` as an accepted optional parameter).
+  // `seeds` stays a required buildRequests input -- it's still what
+  // guarantees one descriptor per variant and keeps the function
+  // deterministic for tests -- it's just no longer forwarded to the model.
   const descriptors = workersAi.buildRequests({ model: MODEL, prompt: "A cat in a hat", variants: 2, seeds: [111, 222] });
   assert.deepEqual(descriptors, [
-    { kind: "binding", binding: "AI", model: MODEL, payload: { prompt: "A cat in a hat", steps: 4, seed: 111 } },
-    { kind: "binding", binding: "AI", model: MODEL, payload: { prompt: "A cat in a hat", steps: 4, seed: 222 } }
+    { kind: "binding", binding: "AI", model: MODEL, payload: { prompt: "A cat in a hat", steps: 4 } },
+    { kind: "binding", binding: "AI", model: MODEL, payload: { prompt: "A cat in a hat", steps: 4 } }
   ]);
 });
 

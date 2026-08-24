@@ -54,11 +54,20 @@ export const ENGINES = {
         throw new Error("workers_ai.buildRequests requires exactly one seed per variant");
       }
       const text = String(prompt).slice(0, WORKERS_AI_MAX_PROMPT);
-      return seeds.map((seed) => ({
+      // `seeds` stays a required input -- it's still what pins the
+      // descriptor count to `variants` and keeps this function
+      // deterministic for tests -- but `seed` is never forwarded in the
+      // payload. Verified live against the real API on 2026-08-24: it
+      // rejects the call outright with "Additional or unevaluated
+      // properties '/seed' at '/' not allowed", contradicting the addendum
+      // spec's documented input contract (section 4.1). Whether repeated
+      // identical calls still produce visually distinct variants without a
+      // seed to vary is unverified; see the session handoff.
+      return seeds.map(() => ({
         kind: "binding",
         binding: "AI",
         model,
-        payload: { prompt: text, steps, seed }
+        payload: { prompt: text, steps }
       }));
     },
 
