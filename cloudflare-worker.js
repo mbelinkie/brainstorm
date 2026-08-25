@@ -13,6 +13,64 @@ function supabaseAdminHeaders(secret, { json = false } = {}) {
   return headers;
 }
 
+// Media bytes (audio clips, images) were being re-fetched from Supabase
+// Storage on every single request -- including every player in a live room
+// pulling the same clip within seconds of each other -- which is what blew
+// through the Supabase org's Cached Egress quota. The DB-backed authorization
+// check (can_access_live_media / author-token verification) must still run
+// on every request, but the actual object bytes for a given storage_path are
+// identical for anyone who's allowed to see them, so they're safe to cache at
+// Cloudflare's edge keyed by storage_path. One caveat: author.js can update a
+// clip in place (same storage_path, new bytes) when a host re-trims audio, so
+// this is a bounded-staleness cache, not an immutable one -- edits made less
+// than MEDIA_CACHE_TTL_SECONDS before a live session could still serve the
+// old clip for up to that long. Keep this TTL short enough that "edit, then
+// go live" workflows stay safe.
+const MEDIA_CACHE_TTL_SECONDS = 900; // 15 minutes
+
+function mediaCacheKey(storagePath) {
+  // Synthetic same-shape URL used only as a cache key -- never fetched.
+  // Keyed by storage_path (the actual object identity in the bucket), not by
+  // assetId or by anything request-specific like room/token, so every caller
+  // asking for the same bytes shares one cache entry.
+  return new Request(`https://media-cache.internal/quiz-media/${storagePath.split("/").map(encodeURIComponent).join("/")}`);
+}
+
+// Cloudflare's edge Cache API (caches.default) only stores responses it
+// considers cacheable, and "instructs not to cache" isn't fully spelled out
+// for every Cache-Control directive -- so the copy we hand to cache.put() is
+// always unambiguously `public`, guaranteeing it gets stored. The copy we
+// hand back to the actual browser is a separately-built `private` response,
+// so no shared/corporate proxy between the player and Cloudflare ever caches
+// it -- only that one browser's own local cache may. This split costs
+// nothing (both come from the same tee'd body) and keeps the access-control
+// story identical to before: the room/author authorization check above still
+// runs on every single request, cache hit or not, so a private copy sitting
+// in Cloudflare's edge is never handed out to anyone who fails that check.
+function toPrivateClientResponse(response, extraHeaders) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", `private, max-age=${MEDIA_CACHE_TTL_SECONDS}`);
+  for (const [key, value] of Object.entries(extraHeaders || {})) headers.set(key, value);
+  return new Response(response.body, { headers });
+}
+
+async function deliverMediaObject(env, storagePath, mimeType, headers, extraHeaders, ctx) {
+  const cacheKey = mediaCacheKey(storagePath);
+  const cache = caches.default;
+
+  const cached = await cache.match(cacheKey);
+  if (cached) return { ok: true, response: toPrivateClientResponse(cached, extraHeaders) };
+
+  const objectResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/authenticated/quiz-media/${storagePath.split("/").map(encodeURIComponent).join("/")}`, { headers });
+  if (!objectResponse.ok) return { ok: false, status: objectResponse.status };
+
+  const cacheableResponse = new Response(objectResponse.body, {
+    headers: { "content-type": mimeType, "cache-control": `public, max-age=${MEDIA_CACHE_TTL_SECONDS}` }
+  });
+  ctx.waitUntil(cache.put(cacheKey, cacheableResponse.clone()));
+  return { ok: true, response: toPrivateClientResponse(cacheableResponse, extraHeaders) };
+}
+
 function mediaFailure(stage, upstreamStatus = 0) {
   console.error("Private media delivery failed", { stage, upstreamStatus });
   return new Response("Not found", {
@@ -179,7 +237,7 @@ async function verifyQuizAuthor(env, token) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 if (request.method === "GET" && url.pathname === "/__version") {
       const metadata = env.CF_VERSION_METADATA || {};
@@ -401,9 +459,9 @@ if (request.method === "GET" && url.pathname === "/__version") {
       if (!assetResponse.ok) return mediaFailure("author-asset-record", assetResponse.status);
       const [asset] = await assetResponse.json();
       if (!asset?.storage_path) return mediaFailure("author-asset-missing");
-      const objectResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/authenticated/quiz-media/${asset.storage_path.split("/").map(encodeURIComponent).join("/")}`, { headers });
-      if (!objectResponse.ok) return mediaFailure("author-storage-download", objectResponse.status);
-      return new Response(objectResponse.body, { headers: { "content-type": asset.mime_type, "cache-control": "private, no-store", "x-content-type-options": "nosniff", "access-control-allow-origin": "*", "access-control-expose-headers": "x-quiz-media-stage,x-quiz-upstream-status" } });
+      const delivery = await deliverMediaObject(env, asset.storage_path, asset.mime_type, headers, { "x-content-type-options": "nosniff", "access-control-allow-origin": "*", "access-control-expose-headers": "x-quiz-media-stage,x-quiz-upstream-status" }, ctx);
+      if (!delivery.ok) return mediaFailure("author-storage-download", delivery.status);
+      return delivery.response;
     }
     if (request.method === "GET" && url.pathname.startsWith("/media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/media/".length));
@@ -423,9 +481,9 @@ if (request.method === "GET" && url.pathname === "/__version") {
       const [asset] = await assetResponse.json();
       if (!asset?.storage_path) return mediaFailure("asset-missing");
 
-      const objectResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/authenticated/quiz-media/${asset.storage_path.split("/").map(encodeURIComponent).join("/")}`, { headers });
-      if (!objectResponse.ok) return mediaFailure("storage-download", objectResponse.status);
-      return new Response(objectResponse.body, { headers: { "content-type": asset.mime_type, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
+      const delivery = await deliverMediaObject(env, asset.storage_path, asset.mime_type, headers, { "x-content-type-options": "nosniff" }, ctx);
+      if (!delivery.ok) return mediaFailure("storage-download", delivery.status);
+      return delivery.response;
     }
     return env.ASSETS.fetch(request);
   }
