@@ -82,7 +82,10 @@ const quizWorkerOrigin = config.workerOrigin || location.origin;
 // data -- generated image bytes -- must never reach one. See
 // docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 7.5.
 const BATTLE_TEST_MODELS = [
-  { value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" }
+  { value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" },
+  { value: "@cf/black-forest-labs/flux-2-klein-4b", label: "Flux 2 Klein 4B (Workers AI, free)" },
+  { value: "@cf/black-forest-labs/flux-2-klein-9b", label: "Flux 2 Klein 9B (Workers AI, free)" },
+  { value: "@cf/leonardo/lucid-origin", label: "Lucid Origin (Workers AI, paid)" }
 ];
 // Mirrors the Worker's own default (cloudflare-worker.js, BATTLE_TEST_IMAGE_PROMPT)
 // only as a starting point the host can freely edit -- unlike the model

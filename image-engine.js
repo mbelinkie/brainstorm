@@ -30,6 +30,42 @@
 
 const WORKERS_AI_MAX_PROMPT = 2048;
 
+// Per-model call profiles. These models do NOT share an input schema, and
+// they reject unrecognised properties outright rather than ignoring them, so
+// each payload has to be built to its own shape. Cloudflare's published
+// schemas have now disagreed with the live API three times, so every entry
+// here records what the API actually did.
+//
+//   flux-1-schnell  flat payload, `steps`; rejects `seed` outright
+//                   ("Additional or unevaluated properties '/seed'")
+//   lucid-origin    flat payload, `steps`; its two variants differ without a
+//                   seed, so model non-determinism already supplies the
+//                   diversity the game needs -- we never send `seed`
+//   flux-2-klein-*  will not accept a JSON payload at all. It requires
+//                   multipart/form-data: env.AI.run() is called with
+//                   { multipart: { body, contentType } } where body is a
+//                   form stream and contentType carries the MIME boundary.
+//                   A plain object can never satisfy that, which is why both
+//                   a flat payload and a { multipart: {...} } object were
+//                   rejected with the same "required properties at '/' are
+//                   'multipart'".
+//
+// `encoding` records that difference. This module still emits only inert
+// data -- the FormData and its stream are constructed by the Worker in
+// runBattleDescriptor(), because a ReadableStream is single-use and building
+// one here would put I/O back into the pure module that the addendum's whole
+// contract (section 2) exists to keep pure.
+export const WORKERS_AI_PROFILES = {
+  "@cf/black-forest-labs/flux-1-schnell": { stepsKey: "steps", steps: 4, encoding: "json" },
+  "@cf/leonardo/lucid-origin": { stepsKey: "steps", steps: 20, encoding: "json" },
+  "@cf/black-forest-labs/flux-2-klein-4b": { stepsKey: "num_steps", steps: 4, encoding: "multipart" },
+  "@cf/black-forest-labs/flux-2-klein-9b": { stepsKey: "num_steps", steps: 4, encoding: "multipart" }
+};
+
+// An unlisted model gets schnell's shape, which is the conservative choice:
+// a flat JSON payload with the most widely accepted parameter name.
+const WORKERS_AI_DEFAULT_PROFILE = { stepsKey: "steps", steps: 4, encoding: "json" };
+
 // Matched against a real captured Workers AI safety-rejection error. No such
 // fixture has been captured yet, so this deliberately returns false rather
 // than guess at a shape from memory (addendum section 4.2) -- a failure
@@ -49,10 +85,14 @@ export const ENGINES = {
       return { binding: env.AI };
     },
 
-    buildRequests({ model, prompt, variants, seeds, steps = 4 }) {
+    buildRequests({ model, prompt, variants, seeds, steps }) {
       if (!Array.isArray(seeds) || seeds.length !== variants) {
         throw new Error("workers_ai.buildRequests requires exactly one seed per variant");
       }
+      const profile = WORKERS_AI_PROFILES[model] || WORKERS_AI_DEFAULT_PROFILE;
+      // An omitted `steps` takes the model's profile default; an explicit
+      // null suppresses the field even when the profile names one.
+      const resolvedSteps = steps === undefined ? profile.steps : steps;
       const text = String(prompt).slice(0, WORKERS_AI_MAX_PROMPT);
       // `seeds` stays a required input -- it's still what pins the
       // descriptor count to `variants` and keeps this function
@@ -63,12 +103,21 @@ export const ENGINES = {
       // spec's documented input contract (section 4.1). Whether repeated
       // identical calls still produce visually distinct variants without a
       // seed to vary is unverified; see the session handoff.
-      return seeds.map(() => ({
-        kind: "binding",
-        binding: "AI",
-        model,
-        payload: { prompt: text, steps }
-      }));
+      // Built fresh per variant rather than shared by reference, so a
+      // caller mutating one descriptor cannot reach the others.
+      return seeds.map(() => {
+        const fields = { prompt: text };
+        if (profile.stepsKey && resolvedSteps !== null && resolvedSteps !== undefined) {
+          fields[profile.stepsKey] = resolvedSteps;
+        }
+        return {
+          kind: "binding",
+          binding: "AI",
+          model,
+          encoding: profile.encoding,
+          payload: fields
+        };
+      });
     },
 
     parseResponses({ results, expectedVariants }) {

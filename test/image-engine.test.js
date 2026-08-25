@@ -28,8 +28,8 @@ test("workers_ai.buildRequests returns one binding descriptor per variant, and n
   // deterministic for tests -- it's just no longer forwarded to the model.
   const descriptors = workersAi.buildRequests({ model: MODEL, prompt: "A cat in a hat", variants: 2, seeds: [111, 222] });
   assert.deepEqual(descriptors, [
-    { kind: "binding", binding: "AI", model: MODEL, payload: { prompt: "A cat in a hat", steps: 4 } },
-    { kind: "binding", binding: "AI", model: MODEL, payload: { prompt: "A cat in a hat", steps: 4 } }
+    { kind: "binding", binding: "AI", model: MODEL, encoding: "json", payload: { prompt: "A cat in a hat", steps: 4 } },
+    { kind: "binding", binding: "AI", model: MODEL, encoding: "json", payload: { prompt: "A cat in a hat", steps: 4 } }
   ]);
 });
 
@@ -56,6 +56,47 @@ test("workers_ai.buildRequests defaults steps to 4 and passes through a caller-s
   assert.equal(defaulted.payload.steps, 4);
   const [custom] = workersAi.buildRequests({ model: MODEL, prompt: "A cat", variants: 1, seeds: [1], steps: 2 });
   assert.equal(custom.payload.steps, 2);
+});
+
+// flux-2-klein-* will not accept a JSON payload at all -- they require
+// multipart/form-data. This module still emits plain fields plus an
+// `encoding` marker; the Worker's runBattleDescriptor() is what builds the
+// FormData and its single-use stream, so descriptors stay inert data and
+// this file stays free of I/O.
+test("workers_ai.buildRequests marks klein models as multipart and still emits plain fields", () => {
+  for (const model of ["@cf/black-forest-labs/flux-2-klein-4b", "@cf/black-forest-labs/flux-2-klein-9b"]) {
+    const [descriptor] = workersAi.buildRequests({ model, prompt: "A cat", variants: 1, seeds: [1] });
+    assert.equal(descriptor.encoding, "multipart");
+    assert.deepEqual(descriptor.payload, { prompt: "A cat", num_steps: 4 });
+  }
+});
+
+test("workers_ai.buildRequests marks json-encoded models as such", () => {
+  const [descriptor] = workersAi.buildRequests({ model: MODEL, prompt: "A cat", variants: 1, seeds: [1] });
+  assert.equal(descriptor.encoding, "json");
+});
+
+test("workers_ai.buildRequests uses each model's own step count and parameter shape", () => {
+  const [schnell] = workersAi.buildRequests({ model: MODEL, prompt: "A cat", variants: 1, seeds: [1] });
+  assert.deepEqual(schnell.payload, { prompt: "A cat", steps: 4 });
+  const [lucid] = workersAi.buildRequests({ model: "@cf/leonardo/lucid-origin", prompt: "A cat", variants: 1, seeds: [1] });
+  assert.deepEqual(lucid.payload, { prompt: "A cat", steps: 20 });
+});
+
+test("workers_ai.buildRequests builds a distinct payload object per variant", () => {
+  const [first, second] = workersAi.buildRequests({ model: MODEL, prompt: "A cat", variants: 2, seeds: [1, 2] });
+  assert.notEqual(first.payload, second.payload);
+});
+
+// An explicit null omits `steps` from the payload entirely, rather than
+// sending 4. Workers AI models reject unrecognised properties outright --
+// the same strictness that rejected `seed` -- so a model whose input schema
+// is unverified (flux-2-klein-*) must be called with the smallest payload
+// that can work, letting the model apply its own default.
+test("workers_ai.buildRequests omits steps entirely when passed null", () => {
+  const [descriptor] = workersAi.buildRequests({ model: MODEL, prompt: "A cat", variants: 1, seeds: [1], steps: null });
+  assert.deepEqual(descriptor.payload, { prompt: "A cat" });
+  assert.equal("steps" in descriptor.payload, false);
 });
 
 // --- parseResponses ------------------------------------------------------

@@ -87,7 +87,6 @@ function hostSubmissionsResponse(body, init = {}) {
 // itself performs no I/O, which is what lets it be tested from fixtures.
 const BATTLE_TEST_IMAGE_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
 const BATTLE_TEST_IMAGE_VARIANTS = 2;
-const BATTLE_TEST_IMAGE_STEPS = 4;
 const BATTLE_TEST_IMAGE_MAX_PER_SESSION = 10;
 
 // Deployment allowlist (base spec section 7.5): the host's model menu is
@@ -95,10 +94,20 @@ const BATTLE_TEST_IMAGE_MAX_PER_SESSION = 10;
 // from the request body -- a client-supplied model name is the allowlist
 // defeated. In a later slice this is intersected with the quiz's own
 // `permittedModels`. Only workers_ai is implemented this slice (see
-// image-engine.js), so this deliberately has one entry rather than stub
-// entries for openrouter/vertex/the Kaplan proxy.
+// image-engine.js), so every entry names that provider rather than stubbing
+// openrouter/vertex/the Kaplan proxy.
+//
+// This list is deployment POLICY -- which models a host may select. How to
+// actually call each one (payload shape, parameter names, step counts) lives
+// with the provider knowledge in image-engine.js's WORKERS_AI_PROFILES,
+// because these models do not share an input schema. Keeping the two
+// separate means adding a model here is a policy decision, not a protocol
+// change.
 const BATTLE_MODEL_ALLOWLIST = {
-  "@cf/black-forest-labs/flux-1-schnell": "workers_ai"
+  "@cf/black-forest-labs/flux-1-schnell": { provider: "workers_ai" },
+  "@cf/black-forest-labs/flux-2-klein-4b": { provider: "workers_ai" },
+  "@cf/black-forest-labs/flux-2-klein-9b": { provider: "workers_ai" },
+  "@cf/leonardo/lucid-origin": { provider: "workers_ai" }
 };
 
 // Best-effort only, not durable: an in-memory Map does not survive an
@@ -132,6 +141,22 @@ function battleTestImageResponse(body, init = {}) {
 // failure shapes later.
 async function runBattleDescriptor(descriptor, auth) {
   if (descriptor.kind === "binding") {
+    // image-engine.js emits inert data only, so the multipart encoding is
+    // assembled here: FormData -> Response gives both the body stream and a
+    // content-type header carrying the MIME boundary, which is what the
+    // model's validator requires and what no plain object can express. The
+    // stream is single-use, so it is built per descriptor rather than shared
+    // across variants.
+    if (descriptor.encoding === "multipart") {
+      const form = new FormData();
+      for (const [name, value] of Object.entries(descriptor.payload)) {
+        form.append(name, String(value));
+      }
+      const encoded = new Response(form);
+      return auth.binding.run(descriptor.model, {
+        multipart: { body: encoded.body, contentType: encoded.headers.get("content-type") }
+      });
+    }
     return auth.binding.run(descriptor.model, descriptor.payload);
   }
   const response = await fetch(descriptor.url, {
@@ -309,7 +334,8 @@ if (request.method === "GET" && url.pathname === "/__version") {
       let payload;
       try { payload = await request.json(); } catch { payload = null; }
       const model = typeof payload?.model === "string" ? payload.model : "";
-      const provider = BATTLE_MODEL_ALLOWLIST[model];
+      const allowed = BATTLE_MODEL_ALLOWLIST[model];
+      const provider = allowed?.provider;
       // The host picks from a menu; the host never types a model string. A
       // model this Worker does not recognize is refused here regardless of
       // what the client believes it offered, which is what makes the
@@ -340,7 +366,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
       // Seeds are generated here, never inside image-engine.js, so
       // buildRequests() stays deterministic and testable with fixed seeds.
       const seeds = Array.from({ length: BATTLE_TEST_IMAGE_VARIANTS }, () => crypto.getRandomValues(new Uint32Array(1))[0]);
-      const descriptors = adapter.buildRequests({ model, prompt, variants: BATTLE_TEST_IMAGE_VARIANTS, steps: BATTLE_TEST_IMAGE_STEPS, seeds });
+      const descriptors = adapter.buildRequests({ model, prompt, variants: BATTLE_TEST_IMAGE_VARIANTS, seeds });
 
       const settled = await Promise.allSettled(descriptors.map((descriptor) => runBattleDescriptor(descriptor, auth)));
       const results = settled.map((entry) =>

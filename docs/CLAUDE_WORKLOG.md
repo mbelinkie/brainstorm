@@ -1255,3 +1255,99 @@ Cloudflare auth this session doesn't reliably have (see above). So the
 Worker route's actual behavior is proven by `test/battle-test-image-route.test.js`
 (stubbed Supabase + fake AI binding) and by reading the code, not by a live
 click-through.
+
+## 2026-08-24 — Prompt Battle: multi-model Workers AI support
+
+**Branch:** `claude/prompt-battle-engine` (continuing Sonnet's slice 1)
+**Files touched:** `image-engine.js`, `cloudflare-worker.js`, `app.js`,
+`test/image-engine.test.js`, this file. No migrations, no dependency changes.
+
+### Slice
+
+flux-1-schnell handled simple prompts but not complex compositional ones, so
+the host test panel was extended to three more Workers AI models. Doing that
+surfaced that these models do not share an input schema at all.
+
+### The durable finding: Cloudflare's published schemas are wrong three times
+
+Every item here is what the live API actually did, not what the docs say.
+
+1. **`@cf/black-forest-labs/flux-1-schnell` rejects `seed`** with "Additional
+   or unevaluated properties '/seed' at '/' not allowed", though the model
+   page lists `seed` as an accepted optional parameter. (Found by the prior
+   session; recorded here because it is the first instance of the pattern.)
+2. **`@cf/black-forest-labs/flux-2-klein-4b` and `-9b` will not accept a JSON
+   payload in any shape.** They require multipart/form-data: `env.AI.run()`
+   must be called with `{ multipart: { body, contentType } }` where `body` is
+   a form stream and `contentType` carries the MIME boundary. Cloudflare's own
+   code example for these models shows a flat JSON payload and is simply
+   incorrect. Both a flat payload and a `{ multipart: {...} }` plain object
+   were rejected identically with "required properties at '/' are
+   'multipart'", because no plain object can express a boundary.
+3. **Step parameter names differ**: `steps` on flux-1-schnell and
+   lucid-origin, `num_steps` on the FLUX.2 klein models.
+
+These models also reject unrecognised properties outright rather than
+ignoring them, which means a payload built for one model hard-fails on
+another. That is why per-model profiles exist rather than one shared shape.
+
+### Design
+
+`WORKERS_AI_PROFILES` in `image-engine.js` owns protocol — payload shape,
+parameter names, step counts, encoding. `BATTLE_MODEL_ALLOWLIST` in the
+Worker is now purely deployment policy (may a host select this model). An
+earlier version of this change put `steps` in the allowlist; that was wrong
+once it emerged the models differ in parameter *names* too, and it was moved.
+
+Descriptors gained an `encoding: "json" | "multipart"` marker. `image-engine.js`
+still emits only inert data; the Worker's `runBattleDescriptor()` builds the
+FormData and its stream, because a ReadableStream is single-use and
+constructing one in the module would put I/O back into the pure layer that
+the addendum's contract (section 2) exists to keep out.
+
+### Findings that change the design
+
+- **Variant diversity does not need `seed`.** lucid-origin returns visibly
+  different variants from identical calls, so model non-determinism already
+  supplies it. `seed` is never sent to any model.
+- **lucid-origin is not materially better than flux-1-schnell** on complex
+  compositional prompts, per the user's own testing, despite Cloudflare
+  documenting it as having "exceptional prompt adherence" and exposing a
+  `guidance` dial. Two of three free models have now failed the same way.
+- **The free allocation cannot host an event.** 10,000 neurons/day, reset at
+  00:00 UTC. lucid-origin costs ~755 neurons/image, so ~7 two-variant presses
+  exhausted the day during testing. A 120-image round is ~90,600 neurons on
+  lucid-origin, ~3,840 on klein. On Workers Free this is a hard stop mid-round;
+  Workers Paid ($5/mo) turns the same moment into overflow billing at
+  ~$0.011/1,000 neurons.
+
+### Commands run
+
+```
+$ npm test
+ℹ tests 335
+ℹ pass 335
+ℹ fail 0
+```
+
+Multipart wire format was verified locally (correct boundary, correct
+Content-Disposition parts) rather than against the live API.
+
+### Unproven
+
+- **No klein image has ever been generated.** The multipart change moved the
+  error from schema rejection (5006) to quota exhaustion (4006), which proves
+  the request now passes validation. It does **not** prove the round trip
+  works.
+- **klein's output shape is unverified.** Cloudflare describes its output as a
+  "multipart object containing image". `parseResponses()` reads
+  `result.body?.image`, matching the other models. If klein returns a stream
+  or a differently nested structure, the panel will report "no images came
+  back" with no error at all. That is the next thing to check once quota
+  resets, and it should not be mistaken for a regression in the fix.
+- klein's output quality on a hard prompt — the only question that actually
+  matters — remains completely unmeasured.
+- `isWorkersAiSafetyRejection` still returns `false`; no real safety-rejection
+  error has been captured from any model.
+- Nothing here was verified against the deployed Worker by me; the user ran
+  the live tests.
