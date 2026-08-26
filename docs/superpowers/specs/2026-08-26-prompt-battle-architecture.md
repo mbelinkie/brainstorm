@@ -13,6 +13,54 @@ Those remain worth reading for rationale. Where a number or interface here
 differs from them, this document is correct — several things have changed
 under contact.
 
+## Approved approach — read this first
+
+**Decided and approved. Do not redesign around this.**
+
+Image generation for Kaplan events runs through a **thin proxy service on Cloud
+Run inside Kaplan's own GCP project**, which calls Vertex AI using the attached
+service account's ambient credentials. The Cloudflare Worker calls that proxy
+with a shared secret. **No Google credential of any kind exists outside Google's
+infrastructure.**
+
+Approved by Kaplan IT (David) on **2026-08-26**, in these words: "Option 2
+(deploying a thin proxy on Cloud Run) is the cleanest, most secure solution. It
+keeps credentials entirely within GCP's boundary and avoids the need to maintain
+an external OIDC issuer."
+
+**Ruled out, with reasons — these are closed questions:**
+
+| Option | Status |
+|---|---|
+| Downloadable service account key in a Worker secret | **Refused by Kaplan policy.** IT requires short-lived credentials. |
+| Workload Identity Federation direct from the Worker | **Not technically possible.** Cloudflare Workers has no native workload identity (open feature request, not shipped), and Cloudflare Access's OIDC issuer authenticates users, not Workers. |
+| Running our own OIDC issuer on the Worker to satisfy WIF | **Rejected on the merits.** It still requires a long-lived private signing key in a Worker secret — the same credential class, plus an identity provider to operate, plus Kaplan federating trust to a personally-operated IdP. |
+| Cloud Run proxy | **APPROVED.** No key leaves Google. A leaked shared secret buys image generation through one endpoint and nothing else. |
+
+**Granted on 2026-08-26** to `matthew.belinkie@kaplan.com` in project
+`quiz-platform-image-generation` (number `796189298588`):
+`roles/run.developer`, `roles/iam.serviceAccountUser`,
+`roles/artifactregistry.writer`. Service account
+`quiz-platform-image-gen-sa@quiz-platform-image-generation.iam.gserviceaccount.com`.
+APIs enabled: `aiplatform.googleapis.com`, `iamcredentials.googleapis.com`.
+Budget alert: $75/month.
+
+**Nothing further is pending from Kaplan IT.** The one possible follow-up ask is
+a Cloud Build role, and only if the local-build deployment route in section 5.5
+fails.
+
+### Which provider runs when
+
+| Context | Provider | Why |
+|---|---|---|
+| Development, smoke-testing, CI | `workers_ai` | Zero credentials, zero approval, runtime binding |
+| Kaplan events | `kaplan_proxy` | The approved path above |
+| Non-Kaplan events, or playtesting at quality | `openrouter` | Gemini 3.1 Flash Image, ~$0.045/image, no approval needed |
+
+All three sit behind one adapter contract (section 4.1), so switching is a
+configuration change, not a rewrite.
+
+
 ## 1. What Prompt Battle is
 
 A round type for the live quiz platform. Players are paired; each pair gets the
@@ -29,7 +77,7 @@ creativity game with no answer key.
 | Slice | State |
 |---|---|
 | **1 — adapter layer, Worker test route, host test panel** | Done, committed (`153bbda`, `d595a7b`) |
-| **2 — schema, pairing, engine selection** | Built, **uncommitted**, migration **unapplied** |
+| **2 — schema, pairing, engine selection** | Built, **uncommitted in git**; migration `0036` **is applied to production** |
 | 3 — player generation loop | Not started |
 | 4 — submit + host review/veto | Not started |
 | 5 — voting, scoring, presentation | Not started |
@@ -235,7 +283,7 @@ Option 2 first; only ask David if it fails.
 
 ## 6. Data model
 
-### 6.1 As built — migration `0036_prompt_battle_rounds.sql` (unapplied)
+### 6.1 As built — migration `0036_prompt_battle_rounds.sql` (applied)
 
 - Four `session_phase` values: `battle_prompt`, `battle_review`, `battle_vote`,
   `battle_result`.
@@ -247,6 +295,14 @@ Option 2 first; only ask David if it fails.
   choice survives a refresh.
 - Functions: `open_battle_round`, `set_battle_engine`, `get_host_battle_state`,
   and the shared `host_battle_state_payload` helper.
+
+**Migration `0036` is applied to production.** Verified 2026-08-26 with
+`npx supabase migration list --linked`: local and remote are paired for every
+migration 0001-0036 with no divergence. Note that it was applied while its
+source file was still untracked in git, so the ledger led the repository — the
+file must be committed to keep migration history and production state in
+agreement (`CLAUDE.md`). Applied enum values cannot be removed; PostgreSQL has
+no `DROP VALUE`.
 
 `open_battle_round` is **idempotent**: it returns an existing pairing rather
 than reshuffling, and leaves `phase` alone. A host refresh must never
