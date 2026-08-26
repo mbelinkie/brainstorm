@@ -4,6 +4,11 @@ Status: addendum to `2026-08-17-prompt-battle-design.md`.
 Date: 2026-08-24
 Branch: `claude/prompt-battle-free-engine`
 
+> **Superseded where they differ.** The current source of truth is
+> `2026-08-26-prompt-battle-architecture.md`. Migration numbering, the
+> Vertex/Kaplan credential path, and the adapter contract have all changed
+> since this was written. Read this for rationale, that for what is true.
+
 Supersedes an earlier draft addendum dated 2026-08-21 that proposed
 `cloudflare_ai` and `pollinations` adapters. That draft is not adopted. The
 reasons are recorded in §9 so the decision is not revisited from memory.

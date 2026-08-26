@@ -4,6 +4,11 @@ Status: approved design, not yet planned or implemented.
 Date: 2026-08-17
 Branch: `claude/prompt-battle-spec`
 
+> **Superseded where they differ.** The current source of truth is
+> `2026-08-26-prompt-battle-architecture.md`. Migration numbering, the
+> Vertex/Kaplan credential path, and the adapter contract have all changed
+> since this was written. Read this for rationale, that for what is true.
+
 Amended by `2026-08-24-prompt-battle-free-engine-addendum.md`, which adds a
 zero-credential Workers AI provider and corrects the adapter contract in §7.3.
 
