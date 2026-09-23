@@ -2685,7 +2685,7 @@ function renderPlayer() {
   // Prompt Battle slice 3a: a phone cannot read its own matchup's prompt until
   // slice 3b adds a player RPC, so every phone gets the same holding screen.
   if (state.phase === "battle_prompt") {
-    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>Get ready</h1></header><section class="player-question"><p>Your prompt is on its way.</p></section></section></main>`);
+    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>Get ready</h1>${playerIdentityBadge()}</header><section class="player-question"><p>Your prompt is on its way.</p></section></section></main>`, true);
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {

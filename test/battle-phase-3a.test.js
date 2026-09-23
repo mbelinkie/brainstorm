@@ -181,6 +181,7 @@ test("players see a holding screen in battle_prompt with no prompt, pairing or i
   const branch = body.slice(start, body.indexOf("return;", start));
   assert.match(branch, /Your prompt is on its way/);
   assert.doesNotMatch(branch, /<img|promptText|battleRoundPanel|matchups/);
+  assert.match(branch, /shell\(`[^`]*`, true\);/, "the holding screen is wrapped in the player shell");
 });
 
 test("Presentation shows the round and matchup count in battle_prompt, never images", () => {
