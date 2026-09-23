@@ -413,6 +413,18 @@ export function nextPlayablePosition(rounds = [], position = null) {
   return null;
 }
 
+// Which round/question a host save records in sessions.current_round_index /
+// current_question_index. open_battle_round() pairs the saved round, and
+// during a battle round state.question still describes the previous round's
+// last question, so the battle round index wins whenever it is set.
+export function hostSavedPosition(roomState = {}) {
+  if (Number.isInteger(roomState.battleRoundIndex)) return { roundIndex: roomState.battleRoundIndex, questionIndex: 0 };
+  const roundIndex = ["door_choice", "door_reveal"].includes(roomState.phase) && Number.isInteger(roomState.targetRoundIndex)
+    ? roomState.targetRoundIndex
+    : Math.max(0, (roomState.question?.round || 1) - 1);
+  return { roundIndex, questionIndex: Math.max(0, (roomState.question?.questionInRound || 1) - 1) };
+}
+
 export const HOST_LIVE_STATE_FIELDS = [
   "submitted",         // one entry per answered player -- the answers-received counter and the reveal results panel
   "players",           // roster and points -- the leaderboard, the counter's denominator, the manual-score picker

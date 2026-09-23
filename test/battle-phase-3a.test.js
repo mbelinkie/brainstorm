@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { firstPlayableRound, isBattleRound, nextPlayablePosition } from "../quiz-core.js";
+import { firstPlayableRound, hostSavedPosition, isBattleRound, nextPlayablePosition } from "../quiz-core.js";
 
 // Prompt Battle slice 3a. Spec:
 // docs/superpowers/specs/2026-09-23-prompt-battle-slice-3a-design.md
@@ -52,4 +52,29 @@ test("question rounds walk exactly as before, including over both compatibility 
     }
     assert.equal(visited, total, `${file}: every question is visited exactly once`);
   }
+});
+
+test("hostSavedPosition records the battle round while the host is on it", () => {
+  const stale = { round: 2, questionInRound: 5 }; // the previous round's last question
+  assert.deepEqual(hostSavedPosition({ phase: "lobby", battleRoundIndex: 2, question: stale }), { roundIndex: 2, questionIndex: 0 });
+  assert.deepEqual(hostSavedPosition({ phase: "battle_prompt", battleRoundIndex: 2, question: stale }), { roundIndex: 2, questionIndex: 0 });
+});
+
+test("hostSavedPosition keeps today's rule outside a battle round", () => {
+  assert.deepEqual(hostSavedPosition({ phase: "open", battleRoundIndex: null, question: { round: 3, questionInRound: 4 } }), { roundIndex: 2, questionIndex: 3 });
+  assert.deepEqual(hostSavedPosition({ phase: "door_choice", targetRoundIndex: 4, question: { round: 3, questionInRound: 4 } }), { roundIndex: 4, questionIndex: 3 });
+  assert.deepEqual(hostSavedPosition({}), { roundIndex: 0, questionIndex: 0 });
+});
+
+const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const fn = (name) => {
+  const start = app.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `app.js defines ${name}`);
+  return app.slice(start, app.indexOf("\n}\n", start) + 2);
+};
+
+test("hostStatePayload saves battle_prompt and the hostSavedPosition result", () => {
+  const body = fn("hostStatePayload");
+  assert.match(body, /battle_prompt: "battle_prompt"/);
+  assert.match(body, /hostSavedPosition\(state\)/);
 });

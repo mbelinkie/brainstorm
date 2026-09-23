@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -875,11 +875,12 @@ function emit() {
 // a queued retry re-sends the screen the host was on when the save was asked
 // for, never a half-updated mix of that and a later one.
 function hostStatePayload() {
-  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete" };
+  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" };
+  const position = hostSavedPosition(state);
   return {
     phase: phaseMap[state.phase] || "lobby",
-    roundIndex: ["door_choice", "door_reveal"].includes(state.phase) && Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : Math.max(0, (state.question?.round || 1) - 1),
-    questionIndex: Math.max(0, (state.question?.questionInRound || 1) - 1),
+    roundIndex: position.roundIndex,
+    questionIndex: position.questionIndex,
     publicState: publicRoomState()
   };
 }
