@@ -1351,3 +1351,114 @@ Content-Disposition parts) rather than against the live API.
   error has been captured from any model.
 - Nothing here was verified against the deployed Worker by me; the user ran
   the live tests.
+
+## 2026-08-25 — Prompt Battle slice 2: schema foundation and round pairing
+
+Branch: `claude/prompt-battle-engine`
+
+### Files touched
+
+- `supabase/migrations/0036_prompt_battle_rounds.sql` (new) — the four battle
+  phases, `session_battle_matchups`, `session_battle_entries`, and the three
+  host RPCs `open_battle_round`, `set_battle_engine`, `get_host_battle_state`,
+  plus the shared `host_battle_state_payload` projection helper.
+- `quiz-validation.js` — `prompt_battle` round rules; a round with no `type` is
+  still the ordinary question round, so both compatibility fixtures are
+  unaffected.
+- `room-api.js` — `openBattleRound`, `setBattleEngine`, `getHostBattleState`.
+- `app.js` — host-only pairing panel (`battlePairingPanel`) and its two
+  handlers; panel state is a module-level `battleRoundPanel`, never on `state`.
+- `styles.css` — one line of panel styling beside the slice-1 `.battle-test-*`
+  block.
+- `test/battle-pairing.test.js` (new), `test/quiz-validation.test.js` — 18 + 9
+  new tests.
+
+### The migration is 0036, not 0033
+
+The base spec numbers this migration `0033`. That number was taken by
+`0033_closest_number_player_names.sql` before this slice was written, and the
+chain now runs to `0035`. Migrations here are append-only and contiguous
+(`test/migration-hygiene.test.js` asserts both), so renumbering or colliding
+was not an option. Every spec reference to "migration 0033" for Prompt Battle
+means this file.
+
+### Judgment calls
+
+- **The shuffle seed and the effective engine are session columns, not
+  `sessions.state`.** `state` is returned verbatim to every player phone by
+  `get_live_room_state()`. Dedicated columns keep both out of that payload
+  without depending on a future editor of `publicRoomState()` remembering to
+  filter them.
+- **`open_battle_round` pairs `current_round_index` and does not go looking for
+  the battle round.** Inferring the round would invent semantics slice 3 might
+  have to undo. It raises `Round N is not a prompt battle round` instead. The
+  consequence is in "Unproven" below.
+- **`set_battle_engine` validates only the quiz's half of the allowlist
+  intersection.** `BATTLE_MODEL_ALLOWLIST` lives in `cloudflare-worker.js` and
+  SQL cannot see it; copying it into a migration would create the second
+  divergent copy `mistakes.md` #8 is about. The Worker still checks its own
+  allowlist against whatever it reads back, so the intersection holds end to
+  end.
+- **The model must be permitted by every `prompt_battle` round**, because there
+  is one effective engine per session. For a one-battle-round quiz that is
+  exactly "the round's `permittedModels`".
+
+### Commands run
+
+```
+$ npm test
+ℹ tests 362
+ℹ pass 362
+ℹ fail 0
+```
+
+### Applied and verified 2026-08-25 (same day)
+
+Matthew ran the push. Verified afterwards read-only against the linked project
+`jwrtxdmawjmkuvxgpmlq`, per mistakes.md #13 ("verify by querying the resulting
+live function or schema, not only by trusting a zero exit code"):
+
+- `supabase migration list --linked` — 0001..0036 all paired local/remote, no
+  gap and no divergence.
+- All four `battle_*` values present on `session_phase`; all three `battle_*`
+  columns present on `sessions`.
+- Both tables exist with `relrowsecurity = true` and **0 policies**, matching
+  0025's shape.
+- `service_role` has SELECT on both (the explicit grants) and **no**
+  INSERT/UPDATE/DELETE. `anon` and `authenticated` have no SELECT at all, so
+  the browser roles cannot read the pairing directly.
+- `open_battle_round`, `set_battle_engine`, `get_host_battle_state` are all
+  `prosecdef = true`; `host_battle_state_payload` is `prosecdef = false` with
+  EXECUTE held only by `postgres` — the `revoke ... from public` took.
+- `pg_get_functiondef` on the live definitions still contains the idempotency
+  guard, the `least(player_ordinal / 2, matchup_count - 1)` three-way clamp,
+  the `order by md5(shuffle_seed::text ...)` shuffle, the `phase::text`
+  comparison, and set_battle_engine's permittedModels check. No drift between
+  the migration file and what the database actually holds.
+- The pairing arithmetic was **evaluated in the deployed Postgres** over
+  `generate_series` for 2..9 players (a pure SELECT; nothing written). Result:
+  every player placed, exactly one three-way on odd counts, always the last
+  matchup, never a four-way. That table is now pinned in
+  `test/battle-pairing.test.js` as "pairing places every player, and only the
+  final matchup is ever a three-way".
+
+The `alter type ... add value` + same-file function bodies pattern is therefore
+no longer trusted on 0025's precedent alone — 0036 applied cleanly.
+
+### Still unproven
+
+- **No RPC has been called.** The verification above is schema and function
+  *definition*, plus the pairing arithmetic in isolation. `open_battle_round`
+  has never actually paired a real roster, because that needs a live room with
+  at least two joined players and would write rows.
+- **Idempotency is unproven as behavior.** The guard is present in the live
+  definition; nobody has yet opened a round twice and confirmed the second call
+  returns the first pairing.
+- **The host cannot yet navigate the room into a `prompt_battle` round.** The
+  phase machine for a question-less round is slice 3+; `startRound` cannot
+  enter a round with no questions. So the "Open battle round" button only
+  succeeds against a session whose `current_round_index` already points at the
+  battle round, which today means setting it by hand. This is the smallest
+  next step.
+- **`set_battle_engine` has no UI.** It was specified as an RPC for this slice;
+  the host engine menu is slice 3's work alongside `/battle/generate`.

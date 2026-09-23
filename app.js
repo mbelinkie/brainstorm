@@ -92,6 +92,12 @@ const BATTLE_TEST_MODELS = [
 // menu, the prompt is host-typed free text, sent to the Worker as-is.
 const BATTLE_TEST_DEFAULT_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
 let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null };
+// Prompt Battle pairing panel (host only). Local UI state for the same reason
+// battleTestPanel above is: the pairing maps player names to matchups, which is
+// exactly what a player must not hold during battle_prompt, so it must never be
+// assigned onto `state` where publicRoomState() could forward it.
+// See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
+let battleRoundPanel = { busy: false, error: "", state: null };
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -105,6 +111,13 @@ const FINAL_SCORE_PAGE_HOLD_MS = 6000;
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 const validNumericGuess = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
 const doorBonusDefinition = () => hostQuizDefinition?.betweenRoundBonus || state.doorBonus || null;
+// The authored prompt_battle round, if this quiz has one. Returns its index
+// too, because open_battle_round() pairs the session's *current* round and the
+// host needs to be told which round that has to be.
+const battleRoundDefinition = () => {
+  const index = (hostQuizDefinition?.rounds || []).findIndex((round) => round?.type === "prompt_battle");
+  return index < 0 ? null : { index, round: hostQuizDefinition.rounds[index] };
+};
 const doorBonusEnabled = () => Boolean(doorBonusDefinition()?.enabled && doorBonusDefinition()?.doors?.length === 3 && (hostQuizDefinition?.rounds?.length || state.question?.totalRounds || 1) > 1);
 const betweenRoundAudio = (key) => doorBonusDefinition()?.audio?.[key] || null;
 const finaleDefinition = () => hostQuizDefinition?.finale || state.finale || null;
@@ -2200,6 +2213,32 @@ function battleTestImagePanel() {
   return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
 }
 
+// Host-only Prompt Battle pairing panel: open the round, then read the pairing
+// back. Slice 2 has no phase machine that can navigate into a question-less
+// round, so this does not move the room -- open_battle_round() pairs whatever
+// round the session is currently on, and says so plainly when that is not the
+// battle round.
+function battlePairingPanel() {
+  const battle = battleRoundDefinition();
+  if (!isHostedRoom || !battle) return "";
+  const busy = battleRoundPanel.busy;
+  const pairing = battleRoundPanel.state;
+  const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
+  const roomRoundIndex = Math.max(0, (state.question?.round || 1) - 1);
+  const onBattleRound = roomRoundIndex === battle.index;
+  const whereNote = onBattleRound
+    ? ""
+    : `<p class="battle-round-note" role="status">The room is on round ${roomRoundIndex + 1}. Opening pairs round ${battle.index + 1}, so move the room there first.</p>`;
+  const matchups = Array.isArray(pairing?.matchups) ? pairing.matchups : [];
+  const pairingView = matchups.length
+    ? `<ol class="battle-pairing">${matchups.map((matchup) => `<li><p class="battle-pairing-prompt">${escapeHtml(matchup.promptText || "")}</p><ul class="battle-pairing-entrants">${(matchup.entrants || []).map((entrant) => `<li>${escapeHtml(entrant.playerName || "")}${entrant.submitted ? " <span>submitted</span>" : ""}${entrant.vetoed ? " <span>vetoed</span>" : ""}</li>`).join("")}</ul>${(matchup.entrants || []).length === 3 ? '<p class="battle-pairing-threeway">Three-way</p>' : ""}</li>`).join("")}</ol>`
+    : pairing
+    ? `<p class="battle-round-note" role="status">No pairing for round ${Number(pairing.roundIndex) + 1} yet.</p>`
+    : "";
+  const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
+  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${battle.index + 1}</h3><p class="battle-round-title">${escapeHtml(battle.round.title || "Prompt Battle")}</p>${whereNote}<div class="host-actions"><button class="btn btn-primary" data-battle-open-round ${busy ? "disabled" : ""}>${busy ? "Working…" : "Open battle round"}</button><button class="btn btn-secondary" data-battle-refresh-pairing ${busy ? "disabled" : ""}>Refresh pairing</button></div>${errorLine}${seedLine}${pairingView}</div>`;
+}
+
 function renderHost() {
   if (["door_choice", "door_reveal"].includes(state.phase)) { renderHostDoors(); return; }
   if (state.phase === "complete") { renderHostFinale(); return; }
@@ -2218,7 +2257,7 @@ function renderHost() {
     ? '<p class="host-auto-advance" role="status">Opening the first question…</p>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}${battlePairingPanel()}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -2775,6 +2814,30 @@ function attachEvents() {
       render();
     }
   });
+  // Prompt Battle pairing. Both calls go straight to the host RPCs; the
+  // pairing they return stays in battleRoundPanel and is never merged into
+  // `state`, so it cannot reach publicRoomState().
+  const runBattleRoundCall = async (operation) => {
+    if (battleRoundPanel.busy) return;
+    const hostSecret = getHostSecret();
+    if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
+    battleRoundPanel.busy = true;
+    battleRoundPanel.error = "";
+    render();
+    try {
+      battleRoundPanel.state = await operation({ roomCode, hostSecret });
+    } catch (error) {
+      // The RPC's own message is the useful one here ("Round 3 is not a prompt
+      // battle round", "A battle round needs at least two joined players"), so
+      // it is shown rather than replaced with a generic failure string.
+      battleRoundPanel.error = error?.message || "The battle round call failed.";
+    } finally {
+      battleRoundPanel.busy = false;
+      render();
+    }
+  };
+  document.querySelector("[data-battle-open-round]")?.addEventListener("click", () => runBattleRoundCall((args) => roomApi.openBattleRound(args)));
+  document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => runBattleRoundCall((args) => roomApi.getHostBattleState(args)));
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
     let completed = {};

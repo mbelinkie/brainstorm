@@ -28,3 +28,6 @@ local-reference/
 
 # Agent worktrees and local session state.
 .claude/
+
+# Supabase CLI local cache
+supabase/.temp/
