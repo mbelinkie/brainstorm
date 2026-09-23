@@ -33,7 +33,7 @@
 | `app.js` | Modify | Phase maps, `publicRoomState`, `playerRenderKey`, entering/opening/ending a battle round, the host battle screen, the player and Presentation battle views, keyboard guards, host refresh |
 | `styles.css` | Modify | One line for the Presentation battle card |
 | `test/battle-phase-3a.test.js` | Create | Pure-helper tests, plus source contracts for every `app.js` change |
-| `test/battle-pairing.test.js` | Modify | Narrow two slice-2 assertions that the approved design deliberately changes (Task 4) |
+| `test/battle-pairing.test.js` | Modify | Narrow two slice-2 assertions that the approved design deliberately changes (one in Task 3, one in Task 4) |
 | `CHANGELOG.md`, `docs/CLAUDE_WORKLOG.md` | Modify | Record the work (Task 7) |
 
 ## Known limits of 3a (deliberate; do not fix here)
@@ -335,6 +335,14 @@ In `playerRenderKey()`, directly after `targetRoundIndex: roomState?.targetRound
 
 On `app.js:1079`, change the inline reload map from `... door_reveal: "door_reveal", complete: "complete" })[savedRoom.phase]` to `... door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" })[savedRoom.phase]`. Change nothing else on that line.
 
+In `test/battle-pairing.test.js`, the slice-2 assertion `assert.doesNotMatch(app, /state\.battleRound/);` now fails, because `publicRoomState` legitimately reads `state.battleRoundIndex`. Narrow it to what it protects. Replace that line with:
+
+```js
+  // state.battleRoundIndex (slice 3a) is a public round position, not the
+  // pairing. What must never reach state is the panel or its matchups.
+  assert.doesNotMatch(app, /state\.battleRoundPanel|state\.battleRound\s*=|state\.(matchups|pairing)\b/);
+```
+
 - [ ] **Step 4: Run the tests and confirm they pass**
 
 Run: `node --test test/battle-phase-3a.test.js`, then `npm test`
@@ -343,7 +351,7 @@ Expected: PASS. 380 total, 0 fail.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app.js test/battle-phase-3a.test.js
+git add app.js test/battle-phase-3a.test.js test/battle-pairing.test.js
 git commit -m "feat: battle position in public state, player render key and host reload" -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
@@ -412,7 +420,7 @@ test("the host has a battle_prompt screen and re-fetches the pairing after a rel
 });
 ```
 
-Then edit `test/battle-pairing.test.js`. Two of its slice-2 assertions encode what slice 3a deliberately changes, and both are narrowed to what they actually protect.
+Then edit `test/battle-pairing.test.js`. Its call-site assertion encodes what slice 3a deliberately changes, and is narrowed to what it actually protects.
 
 Replace:
 
@@ -430,19 +438,7 @@ with:
   assert.equal(callSites.length, 2, "battlePairingPanel() should be called from renderHost and renderHostBattle only");
 ```
 
-Replace:
-
-```js
-  assert.doesNotMatch(app, /state\.battleRound/);
-```
-
-with:
-
-```js
-  // state.battleRoundIndex (slice 3a) is a public round position, not the
-  // pairing. What must never reach state is the panel or its matchups.
-  assert.doesNotMatch(app, /state\.battleRoundPanel|state\.battleRound\s*=|state\.(matchups|pairing)\b/);
-```
+(The other slice-2 assertion, `/state\.battleRound/`, was already narrowed in Task 3, because Task 3's `publicRoomState` change is the first to write `state.battleRoundIndex`.)
 
 - [ ] **Step 2: Run the tests and confirm they fail**
 
