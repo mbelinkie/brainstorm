@@ -2554,8 +2554,16 @@ function presentationTimerBadge() {
   return readout ? `<div class="presentation-timer-badge" data-presentation-timer-badge>${readout}</div>` : "";
 }
 
+// Presentation during battle_prompt (slice 3a): a strict projection of public
+// state. Never images in this phase (architecture spec section 7).
+function presenterBattlePrompt() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  const count = Number(state.battleMatchupCount) || 0;
+  return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${count} matchup${count === 1 ? "" : "s"} · check your phone for your prompt</p></section>`;
+}
+
 function renderPresenter() {
-  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : "Final standings";
+  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const quizHasVideo = Boolean(hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.video?.mediaAssetId || question.video?.url)));
@@ -2573,6 +2581,8 @@ function renderPresenter() {
     ? roundTransitionCard(state.presentationScreen)
     : ["door_choice", "door_reveal"].includes(state.phase)
     ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Feeling lucky?"}</h2>${state.phase === "door_reveal" ? "" : "<p>Choose your door.</p>"}</div>${doorChoiceCards()}</section>`
+    : state.phase === "battle_prompt"
+    ? presenterBattlePrompt()
     : state.phase === "complete"
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
@@ -2670,6 +2680,12 @@ function renderPlayer() {
     const selectedDoor = doorBonusDefinition()?.doors?.find((door) => door.id === (result?.doorId || selectedPick?.doorId));
     const revealCopy = result ? `<div class="personal-door-result ${Number(result.multiplier) < 1 ? "is-penalty" : "is-boost"}"><span>${doorIconSymbol(selectedDoor?.icon)}</span><div><small>${escapeHtml(selectedDoor?.name || "Your door")}</small><strong>${formatMultiplier(result.multiplier)}</strong><p>This multiplier applies to every automatic point you earn in the next round.</p></div></div>` : `<div class="personal-door-result is-neutral"><span>—</span><div><small>No door selected</small><strong>1×</strong><p>You’ll play the next round at the standard multiplier.</p></div></div>`;
     app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Feeling lucky?"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Choose your door. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
+    return;
+  }
+  // Prompt Battle slice 3a: a phone cannot read its own matchup's prompt until
+  // slice 3b adds a player RPC, so every phone gets the same holding screen.
+  if (state.phase === "battle_prompt") {
+    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>Get ready</h1></header><section class="player-question"><p>Your prompt is on its way.</p></section></section></main>`);
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {

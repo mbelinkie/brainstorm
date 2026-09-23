@@ -172,3 +172,22 @@ test("the battle screen keeps the host's session controls", () => {
   const body = fn("renderHostBattle");
   assert.match(body, /\$\{hostUtilityControls\(\)\}\$\{manualScoreControls\(\)\}\$\{leaderboard\(\)\}/);
 });
+
+test("players see a holding screen in battle_prompt with no prompt, pairing or image", () => {
+  const body = fn("renderPlayer");
+  const start = body.indexOf('if (state.phase === "battle_prompt")');
+  assert.ok(start >= 0, "renderPlayer has a battle_prompt branch");
+  assert.ok(start < body.indexOf("state.question.prompt") || body.indexOf("state.question.prompt") === -1, "the battle branch returns before any question rendering");
+  const branch = body.slice(start, body.indexOf("return;", start));
+  assert.match(branch, /Your prompt is on its way/);
+  assert.doesNotMatch(branch, /<img|promptText|battleRoundPanel|matchups/);
+});
+
+test("Presentation shows the round and matchup count in battle_prompt, never images", () => {
+  const presenter = fn("renderPresenter");
+  assert.match(presenter, /state\.phase === "battle_prompt" \? "Prompt Battle"/);
+  assert.match(presenter, /: state\.phase === "battle_prompt"\s*\? presenterBattlePrompt\(\)/);
+  const card = fn("presenterBattlePrompt");
+  assert.match(card, /battleMatchupCount/);
+  assert.doesNotMatch(card, /<img|promptText|matchups|imageAssetId/);
+});
