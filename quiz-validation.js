@@ -97,6 +97,17 @@ export function validateQuiz(candidate) {
   return errors;
 }
 
+// Rounds the author editor cannot yet edit. validateQuiz accepts a
+// prompt_battle round, but author.js assumes every round has a questions
+// array (renderNav, restoredDraft), so Apply raw JSON and Import check this
+// before replacing the open bank. Returns one message per unsupported round.
+export function editorUnsupportedRounds(candidate) {
+  const rounds = Array.isArray(candidate?.rounds) ? candidate.rounds : [];
+  return rounds.flatMap((round, roundIndex) => round?.type === "prompt_battle"
+    ? [`Round ${roundIndex + 1} is a Prompt Battle round, which this editor cannot edit yet. Remove it to edit the rest of this quiz here.`]
+    : []);
+}
+
 // Prompt Battle round rules — base spec section 4, as amended by the free-engine
 // addendum section 5. Two things that look like omissions are deliberate:
 // `resolution` and `outputFormat` are adapter-dependent and ignored entirely by

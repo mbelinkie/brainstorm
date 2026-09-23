@@ -1462,3 +1462,95 @@ no longer trusted on 0025's precedent alone — 0036 applied cleanly.
   next step.
 - **`set_battle_engine` has no UI.** It was specified as an RPC for this slice;
   the host engine menu is slice 3's work alongside `/battle/generate`.
+
+## 2026-09-23 — First session on the work PC: live-state check, slice 2 review, editor draft-loss fix
+
+Branch: `claude/battle-author-guard`, cut from `claude/prompt-battle-engine`
+at `ee7b481` rather than from `main`, because the code being fixed (the
+prompt_battle rules in `quiz-validation.js`) exists only on the battle branch.
+
+### Live-state check (read-only, no deploy)
+
+- `/__version` and `wrangler deployments list` agree: the live Worker is version
+  `aa730648`, deployed 2026-08-25 15:19:52 UTC, with no deploy since. That is 70 s
+  after `a6513bf` was committed.
+- Live `app.js` is byte-identical (git blob hash) to the battle branch from
+  `d595a7b` through `3618d9d`. Slice 2's panel (`battlePairingPanel`) and
+  `openBattleRound` are **not** live.
+- **The `/media` edge cache is live.** An authorized `GET /author-media/<id>`
+  against the live Worker returned `200` with `cache-control: private,
+  max-age=900`, which only `a6513bf`'s `toPrivateClientResponse` produces (the
+  old code sent `private, no-store`). A 5.19 MB clip took 290 ms, then 190 ms on
+  a repeat fetch. That fits a cache hit but does not prove one.
+- Supabase org usage: the 12 Sep – 12 Oct cycle is at 0 / 5 GB for both egress
+  and cached egress. The previous cycle's cached egress all fell on 13–18 Aug,
+  before the fix, so the fix has not yet run under a live game.
+- Author sign-in was broken ("Error sending magic link email", `POST /otp`
+  → 500). Auth mail goes through Resend SMTP. The Resend domain
+  `auth.matthewbelinkie.com` was **Failed** because its DNS records had gone
+  from Cloudflare. Matthew re-added them; I confirmed them on 1.1.1.1 and
+  8.8.8.8 and pressed Restart in Resend, after which sign-in worked. Session
+  storage is per origin, so signing in on `workers.dev` does not sign in the
+  custom domain.
+
+### Slice 2 review (`3aab152`)
+
+Two findings:
+
+1. **Fixed here:** `validateQuiz` accepts a question-less prompt_battle round,
+   but `author.js` assumes `round.questions` everywhere. Apply raw JSON / Import
+   set `bank`, saved the draft (overwriting the previous one), then `renderNav`
+   threw, the catch reported "Not applied", and `restoredDraft()` discarded the
+   draft on refresh.
+2. **Not fixed; slice 3 design input:** `open_battle_round` writes
+   `sessions.phase = 'battle_prompt'`, battle fields in `state`, and a revision
+   bump, but the host only stores the response in `battleRoundPanel`. The host's
+   next `set_live_room_state` (0002) overwrites phase and state wholesale with
+   no revision check, so the battle phase silently disappears. No surface
+   renders `battle_prompt` either, so a reload in between falls through to the
+   previous question's layout. Slice 3 must make the host adopt the returned
+   phase/state, or move battle transitions onto `set_live_room_state`.
+
+### Files touched
+
+- `quiz-validation.js`: new export `editorUnsupportedRounds(candidate)`, one
+  message per prompt_battle round.
+- `author.js`: import it; both `#apply-raw` and `#import-file` throw its first
+  message before `bank = candidate`, so neither the open bank nor the draft
+  changes.
+- `test/author-battle-round-guard.test.js` (new): 5 tests covering the helper
+  plus a source contract that each handler checks the guard before assigning
+  `bank`.
+- `test/reliability-contract.test.js`: the exact-import regex now allows
+  additional named imports from `quiz-validation.js`. Its intent (the shared
+  validator, not a private copy) is unchanged.
+- `CHANGELOG.md`: one line.
+
+### Commands run
+
+```
+$ npm test
+ℹ tests 368
+ℹ pass 368
+ℹ fail 0
+```
+
+The new test file failed before the change (missing export) and passes after.
+
+Manual check, local `npm run dev` on 127.0.0.1:4173 in the in-app browser: saved
+a draft, then pasted the bank plus a valid prompt_battle round into Apply raw
+JSON. Status read "Not applied: Round 6 is a Prompt Battle round, which this
+editor cannot edit yet…", the nav still showed 5 rounds, the saved draft was
+byte-identical, and there were no uncaught errors. I removed the test draft
+afterwards. The Import-file path was not exercised by hand; the source-contract
+test covers it.
+
+### Unproven / next
+
+- Authoring a battle round in the editor is still unsupported. That is a later
+  slice's UI.
+- Review finding 2 above is open and blocks a working slice 3 phase machine.
+- `HANDOFF.md` still says what is live is unknown and describes a local Docker
+  build for the Cloud Run proxy. Docker is not installed on the work PC, so that
+  route needs `roles/cloudbuild.builds.editor` from David. Not updated in this
+  commit.

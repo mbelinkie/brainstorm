@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-09-23
+
+- Fixed the question-bank editor losing a saved draft when given a quiz containing a Prompt Battle round. Applying or importing such a quiz overwrote the browser draft, then broke the editor, reported "Not applied", and discarded the draft on the next refresh. The editor cannot edit Prompt Battle rounds yet, so it now refuses the quiz up front with a message naming the round, and leaves the open quiz and the saved draft untouched.
+
 ## 2026-08-24
 
 - Added slice 1 of Prompt Battle, a new AI-image round type: a host-only panel on the title screen that picks a model from a menu, generates a couple of test images, and shows them inline along with the reported cost. Backed by a new pure adapter module (`image-engine.js`) and an authenticated `POST /battle/test-image` Worker route, using Cloudflare's free Workers AI binding (`@cf/black-forest-labs/flux-1-schnell`) so this works with no external credential and no spend. Rate limited to 10 test generations per room; nothing generated here is saved. This is model-testing only — pairing, prompt submission, voting, and scoring are not built yet. See `docs/superpowers/specs/2026-08-17-prompt-battle-design.md` and its 2026-08-24 addendum.

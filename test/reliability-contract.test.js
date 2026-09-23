@@ -38,7 +38,7 @@ test("temporarily invalid author drafts survive refresh", () => {
 });
 
 test("the editor validates with the shared quiz-validation module instead of a private copy", () => {
-  assert.match(author, /import \{ validateQuiz \} from "\.\/quiz-validation\.js";/);
+  assert.match(author, /import \{ validateQuiz(?:, [\w, ]+)? \} from "\.\/quiz-validation\.js";/);
   assert.doesNotMatch(author, /function validateQuiz/);
 });
 
