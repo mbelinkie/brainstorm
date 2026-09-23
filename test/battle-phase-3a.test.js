@@ -140,8 +140,19 @@ test("P does not rewind out of a battle round in 3a", () => {
 });
 
 test("the host has a battle_prompt screen and re-fetches the pairing after a reload", () => {
-  assert.match(fn("renderHost"), /if \(state\.phase === "battle_prompt"\) \{ renderHostBattle\(\); return; \}/);
-  assert.match(fn("renderHostBattle"), /data-battle-end-round/);
+  // The whole battle round, start card included, uses the battle screen, so
+  // the previous round's last question is never drawn on the host.
+  assert.match(fn("renderHost"), /if \(Number\.isInteger\(state\.battleRoundIndex\)\) \{ renderHostBattle\(\); return; \}/);
+  assert.doesNotMatch(fn("renderHost"), /battlePairingPanel\(\)/, "renderHost no longer renders the pairing panel");
+  const battle = fn("renderHostBattle");
+  assert.match(battle, /const opened = state\.phase === "battle_prompt";/);
+  assert.match(battle, /opened \? [^:]*data-battle-end-round/, "End battle round is shown only once the round is open");
+  assert.equal((battle.match(/data-battle-end-round/g) || []).length, 1);
+  assert.match(battle, /Open the round when everyone has joined\. Pairing locks the roster\./);
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
   assert.match(reload, /if \(view === "host" && state\.phase === "battle_prompt"\) refreshBattlePairing\(\);/);
+});
+
+test("P never rewinds into a battle_prompt screen", () => {
+  assert.match(fn("showPreviousScreen"), /if \(!previous \|\| previous\.phase === "battle_prompt"\) return;/);
 });

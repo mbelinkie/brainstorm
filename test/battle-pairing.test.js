@@ -190,10 +190,10 @@ test("source presence: room-api exposes the three host RPCs and no player battle
 test("source presence: the pairing panel is host-only and never touches broadcast state", () => {
   const definitions = app.match(/function battlePairingPanel\(/g) || [];
   assert.equal(definitions.length, 1, "battlePairingPanel should be defined exactly once");
-  // Slice 3a renders the panel on the round-start screen (renderHost) and in
-  // battle_prompt (renderHostBattle). Both are host renderers.
+  // Slice 3a renders the panel only in renderHostBattle, the host screen for
+  // the whole battle round (its start card and battle_prompt).
   const callSites = app.match(/\$\{battlePairingPanel\(\)\}/g) || [];
-  assert.equal(callSites.length, 2, "battlePairingPanel() should be called from renderHost and renderHostBattle only");
+  assert.equal(callSites.length, 1, "battlePairingPanel() should be called from renderHostBattle only");
 
   // Same guarantee test/battle-test-panel.test.js pins for the slice-1 panel:
   // the pairing maps player names to matchups and must never be assigned onto
