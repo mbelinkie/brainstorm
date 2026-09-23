@@ -156,3 +156,19 @@ test("the host has a battle_prompt screen and re-fetches the pairing after a rel
 test("P never rewinds into a battle_prompt screen", () => {
   assert.match(fn("showPreviousScreen"), /if \(!previous \|\| previous\.phase === "battle_prompt"\) return;/);
 });
+
+test("Open refuses a pairing for a different round than the host is on", () => {
+  // Two adjacent battle rounds: a second N while startRound(B) is still saving
+  // gets round A's existing pairing back from the idempotency guard.
+  const body = fn("openBattleRoundFromHost");
+  const guard = body.search(/if \(Number\(pairing\?\.roundIndex\) !== state\.battleRoundIndex\)/);
+  assert.ok(guard >= 0, "openBattleRoundFromHost checks the pairing's roundIndex");
+  assert.ok(guard < body.indexOf("battleRoundPanel.state = pairing;"), "the check comes before the pairing is adopted");
+  assert.ok(guard < body.indexOf('state.phase = "battle_prompt";'), "the check comes before battle_prompt is set");
+  assert.match(body, /The room was still saving the new round\. Press Open battle round again\./);
+});
+
+test("the battle screen keeps the host's session controls", () => {
+  const body = fn("renderHostBattle");
+  assert.match(body, /\$\{hostUtilityControls\(\)\}\$\{manualScoreControls\(\)\}\$\{leaderboard\(\)\}/);
+});

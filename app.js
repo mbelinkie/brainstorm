@@ -490,13 +490,21 @@ async function openBattleRoundFromHost() {
   let opened = false;
   try {
     const pairing = await roomApi.openBattleRound({ roomCode, hostSecret });
-    battleRoundPanel.state = pairing;
-    state.phase = "battle_prompt";
-    state.presentationScreen = "battle_prompt";
-    state.intermissionStage = null;
-    state.battleMatchupIndex = 0;
-    state.battleMatchupCount = Array.isArray(pairing?.matchups) ? pairing.matchups.length : 0;
-    opened = true;
+    // open_battle_round pairs the server's current_round_index. If the save
+    // that moved the room onto this round has not landed (two adjacent battle
+    // rounds, a fast second N), its idempotency guard returns the previous
+    // round's pairing. Adopting that would label round A's matchups as B.
+    if (Number(pairing?.roundIndex) !== state.battleRoundIndex) {
+      battleRoundPanel.error = "The room was still saving the new round. Press Open battle round again.";
+    } else {
+      battleRoundPanel.state = pairing;
+      state.phase = "battle_prompt";
+      state.presentationScreen = "battle_prompt";
+      state.intermissionStage = null;
+      state.battleMatchupIndex = 0;
+      state.battleMatchupCount = Array.isArray(pairing?.matchups) ? pairing.matchups.length : 0;
+      opened = true;
+    }
   } catch (error) {
     // The RPC's own message is the useful one ("A battle round needs at least
     // two joined players"), so it is shown as-is.
@@ -2259,8 +2267,8 @@ function doorChoiceCards({ interactive = false, compact = false } = {}) {
   }).join("")}</div>`;
 }
 
-// Host view for battle_prompt (slice 3a). Players are waiting for their
-// prompts; generation arrives in slice 3b.
+// Host view for the whole battle round (slice 3a): its start card, with Open,
+// and the battle_prompt screen, with End. Generation arrives in slice 3b.
 function renderHostBattle() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   const count = Number(state.battleMatchupCount) || 0;
@@ -2269,7 +2277,7 @@ function renderHostBattle() {
   const endControl = opened ? '<button class="btn btn-primary" data-battle-end-round>End battle round</button>' : "";
   const endNote = opened ? '<p class="battle-round-note">Ending the round awards no points yet.</p>' : "";
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostDoors() {
