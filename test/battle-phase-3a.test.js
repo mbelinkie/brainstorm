@@ -96,3 +96,52 @@ test("a host or Presentation reload maps battle_prompt back instead of falling t
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
   assert.match(reload, /complete: "complete", battle_prompt: "battle_prompt" \}\)\[savedRoom\.phase\]/);
 });
+
+test("startRound enters a battle round without a question and without auto-advancing", () => {
+  const body = fn("startRound");
+  assert.match(body, /isBattleRound\(hostQuizDefinition\.rounds\[roundToStart\]\)/);
+  assert.match(body, /enterBattleRound\(roundToStart\)/);
+  assert.match(body, /if \(!Number\.isInteger\(state\.battleRoundIndex\)\) scheduleRoundStartAdvance\(\);/);
+});
+
+test("setHostQuestion and startFinale leave the battle round", () => {
+  for (const name of ["setHostQuestion", "startFinale"]) {
+    const body = fn(name);
+    assert.match(body, /battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null/, `${name} clears the battle fields`);
+  }
+});
+
+test("opening adopts battle_prompt, persists, and never puts the pairing on state", () => {
+  const body = fn("openBattleRoundFromHost");
+  assert.match(body, /roomApi\.openBattleRound\(\{ roomCode, hostSecret \}\)/);
+  assert.match(body, /state\.phase = "battle_prompt";/);
+  assert.match(body, /state\.presentationScreen = "battle_prompt";/);
+  assert.match(body, /state\.battleMatchupIndex = 0;/);
+  assert.match(body, /await persistHostState\(\);/);
+  assert.match(body, /battleRoundPanel\.state = pairing;/);
+  assert.doesNotMatch(body, /state\.(matchups|pairing|battleRoundPanel)\b|state = \{[^}]*pairing/);
+});
+
+test("End battle round walks on to the round-end card or the finale", () => {
+  const body = fn("endBattleRound");
+  assert.match(body, /nextPlayablePosition\(hostQuizDefinition\?\.rounds, \{ roundIndex: battleIndex, questionIndex: 0 \}\)/);
+  assert.match(body, /startRoundEnd\(next\.roundIndex\)/);
+  assert.match(body, /startFinale\(\)/);
+});
+
+test("N on a battle round opens it rather than a stale question, and does nothing in battle_prompt", () => {
+  const body = fn("showNextScreen");
+  assert.match(body, /if \(state\.phase === "battle_prompt"\) return;/);
+  assert.match(body, /if \(Number\.isInteger\(state\.battleRoundIndex\)\) return openBattleRoundFromHost\(\);\s*return setPhase\("open"\);/);
+});
+
+test("P does not rewind out of a battle round in 3a", () => {
+  assert.match(fn("showPreviousScreen"), /if \(Number\.isInteger\(state\.battleRoundIndex\)\) return;/);
+});
+
+test("the host has a battle_prompt screen and re-fetches the pairing after a reload", () => {
+  assert.match(fn("renderHost"), /if \(state\.phase === "battle_prompt"\) \{ renderHostBattle\(\); return; \}/);
+  assert.match(fn("renderHostBattle"), /data-battle-end-round/);
+  const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
+  assert.match(reload, /if \(view === "host" && state\.phase === "battle_prompt"\) refreshBattlePairing\(\);/);
+});
