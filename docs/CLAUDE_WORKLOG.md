@@ -1668,3 +1668,37 @@ regressed**. No real room was used and nothing was deployed.
   author one yet.
 - This would also be the first real call of `open_battle_round` on a real
   roster, which slice 2 left unproven.
+
+### Final whole-branch review (same day)
+
+Verdict: ready with notes. Fixed on this branch:
+
+- **`6571de0`:**
+  - **Save recovery:** after a failed save recovers, the battle screen
+    re-renders (`renderBattleAfterSaveRecovered`), so Open is no longer stuck
+    disabled.
+  - **One refresh path:** Refresh pairing goes through `refreshBattlePairing`
+    with the same `roundIndex` check as Open. `runBattleRoundCall` removed.
+  - **Reload screen:** a reload into `battle_prompt` also sets
+    `presentationScreen = "battle_prompt"`. `open_battle_round` does not write
+    it, so after a lost Open response phones and Presentation stayed on the
+    round-start card.
+- **`1352800`:** Refresh pairing shows its busy state and a missing-secret
+  error again. These were lost when `runBattleRoundCall` was removed.
+
+`npm test`: 396 pass, 0 fail. Checked only by source-contract tests, not by
+hand.
+
+Deferred to slice 3b:
+
+- **Doors mislabel after a battle round.** Pressing P from the doors after a
+  battle round restores the round-end card with the previous question round's
+  number, and the save records that round. `screenSnapshot()` does not carry
+  the battle relabelling.
+- **Doors multiplier with no points.** Doors before a battle round target it,
+  but 3a awards no points there. Slice 5 must decide whether doors skip a
+  battle round or carry over.
+- **Duplicated phase maps.** The save and reload phase maps
+  (`hostStatePayload` and `connectHostedRoom`) are hand-written inverses.
+  Every new battle phase has to be added to both. Consider one shared map in
+  `quiz-core.js`.
