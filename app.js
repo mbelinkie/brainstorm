@@ -532,9 +532,12 @@ async function endBattleRound() {
 
 // Host-only. Fills the pairing panel after a reload into battle_prompt.
 async function refreshBattlePairing() {
+  if (view !== "host" || battleRoundPanel.busy) return;
   const hostSecret = getHostSecret();
-  if (view !== "host" || !hostSecret || battleRoundPanel.busy) return;
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
   battleRoundPanel.busy = true;
+  battleRoundPanel.error = "";
+  render();
   try {
     const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
     // Same guard as Open: until the save that moved the room onto this round

@@ -224,3 +224,14 @@ test("a reload into battle_prompt also restores the battle_prompt screen", () =>
   assert.ok(fix > merge && merge >= 0, "the screen is set after the saved state is merged");
   assert.ok(fix < reload.indexOf('if (["door_choice", "door_reveal"].includes(state.phase))'), "directly after the merge");
 });
+
+test("Refresh pairing shows progress before the call and reports a missing host secret", () => {
+  const body = fn("refreshBattlePairing");
+  assert.match(body, /if \(view !== "host" \|\| battleRoundPanel\.busy\) return;/);
+  assert.match(body, /if \(!hostSecret\) \{ battleRoundPanel\.error = "Host authorization is required\."; render\(\); return; \}/);
+  const call = body.indexOf("await roomApi.getHostBattleState");
+  const before = body.slice(0, call);
+  assert.ok(call >= 0);
+  assert.match(before, /battleRoundPanel\.busy = true;\s*battleRoundPanel\.error = "";\s*render\(\);/, "busy is set, the error cleared and the panel re-rendered before the await");
+  assert.match(body.slice(call), /finally \{ battleRoundPanel\.busy = false; render\(\); \}/);
+});
