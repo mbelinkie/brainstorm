@@ -192,3 +192,35 @@ test("Presentation shows the round and matchup count in battle_prompt, never ima
   assert.match(card, /battleMatchupCount/);
   assert.doesNotMatch(card, /<img|promptText|matchups|imageAssetId/);
 });
+
+test("a save that recovers re-renders the battle screen so Open is enabled again", () => {
+  // battlePairingPanel() disables Open while hostStateSaveFailure is set, and
+  // refreshHostSyncNotice() only patches the banner.
+  const helper = fn("renderBattleAfterSaveRecovered");
+  assert.match(helper, /if \(view === "host" && Number\.isInteger\(state\.battleRoundIndex\)\) render\(\);/);
+  const clears = app.match(/(?<!let )hostStateSaveFailure = null;/g) || [];
+  const rerenders = app.match(/hostStateSaveFailure = null; refreshHostSyncNotice\(\); renderBattleAfterSaveRecovered\(\);/g) || [];
+  assert.ok(clears.length >= 1);
+  assert.equal(rerenders.length, clears.length, "every place that clears the save failure re-renders a battle screen");
+  assert.match(fn("saveHostState"), /renderBattleAfterSaveRecovered\(\);/);
+});
+
+test("Refresh pairing goes through refreshBattlePairing, which refuses another round's pairing", () => {
+  assert.match(fn("attachEvents"), /\[data-battle-refresh-pairing\]"\)\?\.addEventListener\("click", \(\) => refreshBattlePairing\(\)\);/);
+  assert.doesNotMatch(app, /runBattleRoundCall/);
+  const body = fn("refreshBattlePairing");
+  assert.match(body, /battleRoundPanel\.busy\) return;/);
+  const guard = body.search(/if \(Number\(result\?\.roundIndex\) === state\.battleRoundIndex\)/);
+  assert.ok(guard >= 0, "refreshBattlePairing checks the pairing's roundIndex");
+  assert.ok(guard < body.indexOf("battleRoundPanel.state = result;"), "the check comes before the pairing is adopted");
+  assert.match(body, /The room was still saving the new round\. Press Refresh pairing again\./);
+});
+
+test("a reload into battle_prompt also restores the battle_prompt screen", () => {
+  // open_battle_round writes phase but not presentationScreen to sessions.state.
+  const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
+  const merge = reload.indexOf("state = { ...state, ...savedRoom.state");
+  const fix = reload.indexOf('if (state.phase === "battle_prompt") state.presentationScreen = "battle_prompt";');
+  assert.ok(fix > merge && merge >= 0, "the screen is set after the saved state is merged");
+  assert.ok(fix < reload.indexOf('if (["door_choice", "door_reveal"].includes(state.phase))'), "directly after the merge");
+});

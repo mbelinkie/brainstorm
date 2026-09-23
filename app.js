@@ -535,7 +535,13 @@ async function refreshBattlePairing() {
   const hostSecret = getHostSecret();
   if (view !== "host" || !hostSecret || battleRoundPanel.busy) return;
   battleRoundPanel.busy = true;
-  try { battleRoundPanel.state = await roomApi.getHostBattleState({ roomCode, hostSecret }); battleRoundPanel.error = ""; }
+  try {
+    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
+    // Same guard as Open: until the save that moved the room onto this round
+    // lands, the server still answers for the previous round.
+    if (Number(result?.roundIndex) === state.battleRoundIndex) { battleRoundPanel.state = result; battleRoundPanel.error = ""; }
+    else battleRoundPanel.error = "The room was still saving the new round. Press Refresh pairing again.";
+  }
   catch (error) { battleRoundPanel.error = error?.message || "Could not load the pairing."; }
   finally { battleRoundPanel.busy = false; render(); }
 }
@@ -1019,7 +1025,7 @@ async function saveHostState(request, hostSecret, payload) {
       // path treats a stale revision as a real conflict, so guessing here
       // would reject answers the server would have accepted.
       state.revision = result.revision;
-      if (hostStateSaveFailure) { hostStateSaveFailure = null; refreshHostSyncNotice(); }
+      if (hostStateSaveFailure) { hostStateSaveFailure = null; refreshHostSyncNotice(); renderBattleAfterSaveRecovered(); }
       return;
     } catch (error) {
       if (attempt < HOST_STATE_SAVE_BACKOFF_MS.length && isTransientSaveError(error)) {
@@ -1179,6 +1185,9 @@ async function connectHostedRoom() {
         const savedQuestionPosition = hasSavedQuestion ? questionPosition(savedRoom.state.questionId) : null;
         if (hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex)) {
           state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" })[savedRoom.phase] || "lobby" };
+          // open_battle_round writes only phase and the battle fields, so a
+          // lost Open response leaves the saved screen on round_start.
+          if (state.phase === "battle_prompt") state.presentationScreen = "battle_prompt";
           if (["door_choice", "door_reveal"].includes(state.phase)) {
             state.targetRoundIndex = savedRoom.roundIndex;
             state.doorBonus = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
@@ -1404,6 +1413,13 @@ function refreshHostSyncNotice() {
   if (existing) existing.outerHTML = markup;
   else document.querySelector(".shell")?.insertAdjacentHTML("beforeend", markup);
   attachHostSyncRetry();
+}
+
+// battlePairingPanel() disables Open while a save has failed, and the banner
+// patch above does not touch it. Only the battle screen is re-rendered: the
+// ordinary host screens persist mid-cue and must not be rebuilt (mistakes.md #15).
+function renderBattleAfterSaveRecovered() {
+  if (view === "host" && Number.isInteger(state.battleRoundIndex)) render();
 }
 
 function attachHostSyncRetry() {
@@ -2945,27 +2961,8 @@ function attachEvents() {
   // Prompt Battle pairing. Both calls go straight to the host RPCs; the
   // pairing they return stays in battleRoundPanel and is never merged into
   // `state`, so it cannot reach publicRoomState().
-  const runBattleRoundCall = async (operation) => {
-    if (battleRoundPanel.busy) return;
-    const hostSecret = getHostSecret();
-    if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
-    battleRoundPanel.busy = true;
-    battleRoundPanel.error = "";
-    render();
-    try {
-      battleRoundPanel.state = await operation({ roomCode, hostSecret });
-    } catch (error) {
-      // The RPC's own message is the useful one here ("Round 3 is not a prompt
-      // battle round", "A battle round needs at least two joined players"), so
-      // it is shown rather than replaced with a generic failure string.
-      battleRoundPanel.error = error?.message || "The battle round call failed.";
-    } finally {
-      battleRoundPanel.busy = false;
-      render();
-    }
-  };
   document.querySelector("[data-battle-open-round]")?.addEventListener("click", () => openBattleRoundFromHost());
-  document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => runBattleRoundCall((args) => roomApi.getHostBattleState(args)));
+  document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => refreshBattlePairing());
   document.querySelector("[data-battle-end-round]")?.addEventListener("click", () => endBattleRound());
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
