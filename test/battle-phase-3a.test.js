@@ -78,3 +78,21 @@ test("hostStatePayload saves battle_prompt and the hostSavedPosition result", ()
   assert.match(body, /battle_prompt: "battle_prompt"/);
   assert.match(body, /hostSavedPosition\(state\)/);
 });
+
+const BATTLE_FIELDS = ["battleRoundIndex", "battleMatchupIndex", "battleMatchupCount"];
+
+test("publicRoomState forwards exactly the three battle integers and nothing else battle-related", () => {
+  const body = fn("publicRoomState");
+  for (const field of BATTLE_FIELDS) assert.match(body, new RegExp(`${field}: Number\\.isInteger\\(state\\.${field}\\) \\? state\\.${field} : null`));
+  assert.doesNotMatch(body, /battleRoundPanel|matchups|promptText|entrants|shuffleSeed/);
+});
+
+test("the player render key includes the battle fields", () => {
+  const body = fn("playerRenderKey");
+  for (const field of BATTLE_FIELDS) assert.match(body, new RegExp(`${field}: roomState\\?\\.${field}`));
+});
+
+test("a host or Presentation reload maps battle_prompt back instead of falling to lobby", () => {
+  const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
+  assert.match(reload, /complete: "complete", battle_prompt: "battle_prompt" \}\)\[savedRoom\.phase\]/);
+});

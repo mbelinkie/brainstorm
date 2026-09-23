@@ -196,7 +196,9 @@ test("source presence: the pairing panel is host-only and never touches broadcas
   // Same guarantee test/battle-test-panel.test.js pins for the slice-1 panel:
   // the pairing maps player names to matchups and must never be assigned onto
   // `state`, where publicRoomState() could forward it to a phone.
-  assert.doesNotMatch(app, /state\.battleRound/);
+  // state.battleRoundIndex (slice 3a) is a public round position, not the
+  // pairing. What must never reach state is the panel or its matchups.
+  assert.doesNotMatch(app, /state\.battleRoundPanel|state\.battleRound\s*=|state\.(matchups|pairing)\b/);
   assert.match(app, /let battleRoundPanel = /, "expected battleRoundPanel to be its own module-level variable, not a field on `state`");
 
   const renderPlayer = app.slice(app.indexOf("function renderPlayer("), app.indexOf("\nfunction ", app.indexOf("function renderPlayer(") + 1));

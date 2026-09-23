@@ -264,6 +264,11 @@ function publicRoomState() {
     doorPicks: state.doorPicks || [],
     doorResults: state.doorResults || [],
     targetRoundIndex: Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : null,
+    // Prompt Battle position only (slice 3a). Who is paired with whom, and
+    // each matchup's prompt, stay on the host: they are future state.
+    battleRoundIndex: Number.isInteger(state.battleRoundIndex) ? state.battleRoundIndex : null,
+    battleMatchupIndex: Number.isInteger(state.battleMatchupIndex) ? state.battleMatchupIndex : null,
+    battleMatchupCount: Number.isInteger(state.battleMatchupCount) ? state.battleMatchupCount : null,
     intermissionStage: state.intermissionStage || null,
     // Navigation history contains only screen identifiers and score-display
     // data; it never includes answer keys or authored media.
@@ -794,6 +799,9 @@ function playerRenderKey(roomState) {
     doorBonus: roomState?.doorBonus,
     doorResults: roomState?.doorResults,
     targetRoundIndex: roomState?.targetRoundIndex,
+    battleRoundIndex: roomState?.battleRoundIndex,
+    battleMatchupIndex: roomState?.battleMatchupIndex,
+    battleMatchupCount: roomState?.battleMatchupCount,
     timerEndsAt: roomState?.timerEndsAt,
     timerDurationSeconds: roomState?.timerDurationSeconds,
     // Scores can change without a phase or question change (for example, a
@@ -1077,7 +1085,7 @@ async function connectHostedRoom() {
         const hasSavedQuestion = savedRoom.state?.questionId;
         const savedQuestionPosition = hasSavedQuestion ? questionPosition(savedRoom.state.questionId) : null;
         if (hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex)) {
-          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete" })[savedRoom.phase] || "lobby" };
+          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" })[savedRoom.phase] || "lobby" };
           if (["door_choice", "door_reveal"].includes(state.phase)) {
             state.targetRoundIndex = savedRoom.roundIndex;
             state.doorBonus = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
