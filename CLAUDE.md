@@ -32,7 +32,8 @@ Before editing anything:
    already documents the failure modes most likely to bite you again.
 5. Read `RUNBOOK.md` before running anything locally, and `DEPLOYMENT.md` before
    touching migrations or deploy scripts.
-6. Read `CHANGELOG.md`'s most recent entries for current status. Prefer live
+6. Read `HANDOFF.md` for what is in flight, then `CHANGELOG.md`'s most recent
+   entries for current status. Prefer live
    files, Git history, and the user's latest instruction over any summary.
 7. Inspect the actual implementation, the relevant migration(s), and the
    relevant tests before proposing a change.
@@ -72,6 +73,62 @@ Never use destructive Git or filesystem commands on user work: no
 `git reset --hard`, no `git clean`, no broad `checkout`/`restore`, no automatic
 stashing, no recursive deletion outside a scratch directory you created. Never
 rewrite shared history.
+
+## Operational lessons
+
+Each of these cost real time at least once. They were kept as agent memory on
+Matthew's Mac until 2026-09-23 and now live here so they follow the repo.
+
+- **Launch sessions from the repo root.** This file only loads as project
+  context when the session's working directory is this repo. Sessions started
+  from elsewhere silently ran without these rules.
+- **Hidden work: check more than `git status`.** In-flight work has hidden in
+  untracked files and in a `git stash`. Before calling the tree clean, also run
+  `git stash list` and `git rev-list --count origin/main..main`. `test/*.test.js`
+  is a glob, so an untracked test still runs and inflates the count. Stage
+  explicit paths only — never `git add -A` / `git add .`, especially while
+  resolving a merge — and check `git show --stat HEAD` after any merge commit.
+- **Deploys ship the working directory, not a git ref.** `prepare-deploy.mjs`
+  copies from `process.cwd()`, so a stale checkout deploys old code with no
+  error. `/__version` reports deploy time and `commit: null`, so it cannot
+  catch this. Before deploying, confirm HEAD matches the intended branch; to
+  prove a feature shipped, grep the live asset:
+  `curl -s https://brainstorm.matthewbelinkie.com/app.js | grep -c '<marker>'`.
+- **Supabase grants are non-default.** `anon`, `authenticated` and
+  `service_role` have **no SELECT** on public tables; only `postgres` does.
+  `security definer` RPCs are unaffected, but any Worker route that reads a
+  table directly through PostgREST needs an explicit `grant select` in a
+  migration (`BYPASSRLS` bypasses policies, not grants — mistakes.md #9). After
+  adding such a route, list unreadable tables:
+
+  ```sql
+  select relname from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'
+    and not has_table_privilege('service_role', oid, 'select') order by relname;
+  ```
+
+- **`/media/*` is edge-cached — keep it that way.** `/media/:assetId` and
+  `/author-media/:assetId` once re-fetched the object from Supabase Storage on
+  every request, which blew the org's Cached Egress quota (9.3 GB of 5 GB,
+  Aug 2026). `a6513bf` added a `caches.default` layer keyed by `storage_path`
+  (15 min TTL) after the authorization check. Do not reintroduce an uncached
+  Storage fetch. Trade-off: an in-place audio re-trim can serve stale bytes for
+  up to 15 minutes. If quota trouble recurs, read the Supabase usage dashboard
+  by metric first; the next lever is moving media to R2, not a longer TTL.
+- **Diagnostics exports are device-local.** `quiz-control-diagnostics.json`
+  holds only the exporting device's errors (host/presenter; Matthew hosts from
+  Windows/Chrome), cumulative, last 30 entries. Player-phone errors
+  (`submit-answer`, `door-choice`, `auto-submit-answer`) are only in Sentry
+  (org `ead-ot`, project `javascript`): group by the `scope` tag plus
+  `os.name`/`browser.name`. An unchanged export does not mean diagnostics broke.
+- **Parallel-session workflow.** Matthew fans work out to one session per git
+  worktree (`../quiz-<name>` on `claude/<name>`); workers commit and stop. A
+  single integrator session merges one branch at a time, smallest first, runs
+  `npm test` after each, union-resolves `CHANGELOG.md` and
+  `docs/CLAUDE_WORKLOG.md`, and deletes with `git branch -d` (never `-D`).
+  Deploys (`wrangler deploy`, `supabase db push`) and **migration numbers stay
+  with Matthew** — parallel sessions collide on numbers and git cannot see it.
+  Review-only sessions leave untracked `docs/reviews/*.md`, so check
+  `git status` before removing any worktree.
 
 ## Repository shape
 

@@ -77,14 +77,14 @@ creativity game with no answer key.
 | Slice | State |
 |---|---|
 | **1 — adapter layer, Worker test route, host test panel** | Done, committed (`153bbda`, `d595a7b`) |
-| **2 — schema, pairing, engine selection** | Built, **uncommitted in git**; migration `0036` **is applied to production** |
+| **2 — schema, pairing, engine selection** | Done, committed (`3aab152`, 2026-09-23); migration `0036` **is applied to production** |
 | 3 — player generation loop | Not started |
 | 4 — submit + host review/veto | Not started |
 | 5 — voting, scoring, presentation | Not started |
 | 6 — retention, purge, export, recovery | Not started |
 | Kaplan Cloud Run proxy | Approved and unblocked; not started (parallel track) |
 
-`npm test` passes 363/363 with slice 2 in the working tree.
+`npm test` passes 363/363 at `3aab152`.
 
 ### Corrections to the older specs
 
