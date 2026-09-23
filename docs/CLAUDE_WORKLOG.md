@@ -1554,3 +1554,117 @@ test covers it.
   build for the Cloud Run proxy. Docker is not installed on the work PC, so that
   route needs `roles/cloudbuild.builds.editor` from David. Not updated in this
   commit.
+
+## 2026-09-23 — Prompt Battle slice 3a: entering and showing a battle round
+
+Branch: `claude/prompt-battle-3a`, cut from `claude/battle-author-guard`.
+Spec: `docs/superpowers/specs/2026-09-23-prompt-battle-slice-3a-design.md`.
+Plan: `docs/superpowers/plans/2026-09-23-prompt-battle-slice-3a.md`.
+
+This was built subagent-driven: one implementer per task, then a
+spec-compliance review, then a code-quality review. The controller checked
+each fix before moving on.
+
+### What changed
+
+- `quiz-core.js`:
+  - `isBattleRound`.
+  - `firstPlayableRound` / `nextPlayablePosition` reach a `prompt_battle`
+    round, which is entered only from outside and never re-entered from
+    inside.
+  - `hostSavedPosition(state)`: while `battleRoundIndex` is set, a save
+    records the battle round.
+- `app.js`:
+  - `battle_prompt` in both phase maps (save and reload).
+  - Three integer-or-null fields in `publicRoomState()` and
+    `playerRenderKey()`.
+  - `enterBattleRound` / `openBattleRoundFromHost` / `endBattleRound` /
+    `refreshBattlePairing` / `renderHostBattle`.
+  - Host renders `renderHostBattle` for the whole battle round (start card
+    with Open, `battle_prompt` with End).
+  - N on the start card opens the round; N in `battle_prompt` does nothing.
+  - P does nothing inside a battle round and never steps back onto a
+    `battle_prompt` history entry.
+  - Player holding screen; Presentation `presenterBattlePrompt()` and a
+    "Prompt Battle" phase label.
+  - `battleRoundDefinition` removed (unused).
+- `styles.css`: one line for the Presentation battle card.
+- Tests:
+  - `test/battle-phase-3a.test.js` (new).
+  - `test/battle-pairing.test.js`: the call-site count is now 1 (in
+    `renderHostBattle`). The privacy regex was narrowed from
+    `/state\.battleRound/` to the pairing names, then tightened with spread
+    and `Object.assign` checks.
+
+### Judgment calls and review fixes
+
+- **The host adopts `open_battle_round`'s result** and saves it through
+  `set_live_room_state` (review finding 2). The host stays the only phase
+  writer. No migration.
+- **`enterBattleRound` moves `state.question`'s round number and title** to
+  the battle round, so the progress bar, round labels and the later round-end
+  card name the right round.
+- **Plan error:** the `/state\.battleRound/` narrowing belonged in Task 3, not
+  Task 4. The Task 3 implementer stopped at 379/1 instead of editing outside
+  its scope. The plan was corrected in `22476d1`.
+- **`fc45920`:** the battle start card was drawing the previous round's last
+  question (prompt, audio/video controls, "Opening the first question…").
+  Also, P after End restored a broken `battle_prompt`. Both fixed.
+- **`3099048`:**
+  - **Stale-pairing race:** with two adjacent battle rounds and a fast second
+    N, `open_battle_round` could return round A's pairing while B's save was
+    in flight. Open now refuses a pairing whose `roundIndex` differs from
+    `state.battleRoundIndex`, and asks the host to press Open again.
+  - The battle screen keeps `hostUtilityControls()` and
+    `manualScoreControls()`, per spec §5.
+- **`811a1d3`:** the player battle screen was missing `shell(..., true)`, so it
+  had no player styling and no score celebration. That was a plan-code bug.
+  It also gained `playerIdentityBadge()`, which shows only the player's own
+  name and logo.
+- **No CHANGELOG line yet.** CLAUDE.md allows one only for verified work, and
+  the battle path has not run in a real room. Add it after the rehearsal.
+
+### Commands run
+
+```
+$ npm test          # after each task: 374, 377, 380, 387, 388, 390, 392, 392
+ℹ tests 392
+ℹ pass 392
+ℹ fail 0
+```
+
+Manual check, local `npm run dev` in the in-app browser:
+- The editor still refuses a battle round ("Not applied: Round 6 is a Prompt
+  Battle round…").
+- Host, player and Presentation all load with no console errors.
+- The local demo plays start → question → reveal → finale with no errors.
+
+The local demo has no battle round, so **this proves only that nothing
+regressed**. No real room was used and nothing was deployed.
+
+### Known limits (deliberate)
+
+- A battle round cannot be round 1. Room setup and host reload need a question
+  in round 1.
+- End battle round awards no points and leaves the matchups unresolved. Slices
+  4 and 5 replace it.
+- There is no audio stop on the battle screens. A long round-start cue plays on
+  until End cues `roundEnd`.
+- The Presentation shows the round title twice, in the heading and in the card.
+  This is cosmetic.
+- `preparePresentationVideo()` preloads the previous question's video, if it
+  had one, from the stale `questionId`. This already happens on round cards and
+  was not introduced here.
+- Tasks 1–3 alone would dead-end a host at a battle round. Only ship them
+  together with Task 4.
+
+### Still unproven
+
+- **The whole battle path in a hosted room.** That covers walking into the
+  round, Open, adoption, the Presentation and phones, host reload in both
+  battle screens, a repeat Open (idempotency), and End. It needs a real-room
+  rehearsal against production Supabase (plan Task 8), which needs Matthew's
+  approval and a published quiz containing a battle round. The editor cannot
+  author one yet.
+- This would also be the first real call of `open_battle_round` on a real
+  roster, which slice 2 left unproven.
