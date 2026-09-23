@@ -377,11 +377,14 @@ export function presentationCueDecision(command, { lastApplied = null, roomCode 
 // walks are the whole "where does the host go next" question, kept pure so
 // every navigation path can share one answer.
 
-// The first round at or after `startIndex` that actually has questions, or -1.
+// A prompt_battle round has prompts instead of questions (0036, slice 2), so
+// "has questions" is not the only way a round can be playable.
+export const isBattleRound = (round) => round?.type === "prompt_battle";
+
 export function firstPlayableRound(rounds = [], startIndex = 0) {
   const list = Array.isArray(rounds) ? rounds : [];
   for (let index = Math.max(0, Number(startIndex) || 0); index < list.length; index += 1) {
-    if ((list[index]?.questions || []).length) return index;
+    if ((list[index]?.questions || []).length || isBattleRound(list[index])) return index;
   }
   return -1;
 }
@@ -390,12 +393,19 @@ export function firstPlayableRound(rounds = [], startIndex = 0) {
 // means "the first playable question anywhere". Returns null when the quiz has
 // nothing left to play, which is the finale. `roundChanged` tells the caller
 // to show the round-end card rather than moving straight on.
+//
+// A battle round is returned as { roundIndex, questionIndex: 0, battle: true }
+// and is entered only from outside it: a position inside a battle round moves
+// on to the next playable round, which is what End battle round relies on.
 export function nextPlayablePosition(rounds = [], position = null) {
   const list = Array.isArray(rounds) ? rounds : [];
   let roundIndex = position ? Math.max(0, Number(position.roundIndex) || 0) : 0;
   let questionIndex = position ? Math.max(0, Number(position.questionIndex) || 0) + 1 : 0;
   for (; roundIndex < list.length; roundIndex += 1) {
-    if (questionIndex < (list[roundIndex]?.questions || []).length) {
+    const round = list[roundIndex];
+    if (isBattleRound(round)) {
+      if (questionIndex === 0) return { roundIndex, questionIndex: 0, battle: true, roundChanged: true };
+    } else if (questionIndex < (round?.questions || []).length) {
       return { roundIndex, questionIndex, roundChanged: !position || roundIndex !== position.roundIndex };
     }
     questionIndex = 0;
