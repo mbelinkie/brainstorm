@@ -54,8 +54,9 @@ export function setPromptBattleField(round, path, rawValue) {
   if (parts.length < 2 || parts.length > 3 || !["engine", "scoring", "prompts"].includes(parts[0])) return;
   const index = parts.length === 3 ? Number(parts[1]) : null;
   const key = parts.at(-1);
+  if (parts.length === 2 && ["engine", "scoring"].includes(parts[0]) && (!round[parts[0]] || typeof round[parts[0]] !== "object" || Array.isArray(round[parts[0]]))) round[parts[0]] = {};
   const parent = parts.length === 3 ? round[parts[0]]?.[index] : round[parts[0]];
-  if (!parent || (parts.length === 3 && !Number.isInteger(index))) return;
+  if (!parent || typeof parent !== "object" || (parts.length === 3 && !Number.isInteger(index))) return;
   if (parts[0] === "prompts" && !["id", "text"].includes(key)) return;
   if (parts[0] === "engine" && !["defaultProvider", "defaultModel", "permittedModels", "variants", "attemptBudget", "steps", "resolution", "outputFormat", "maxSessionSpendUsd", "maxSessionGenerations"].includes(key)) return;
   if (parts[0] === "scoring" && !["winnerPoints", "voterPoints"].includes(key)) return;
@@ -77,8 +78,15 @@ export function promptBattleErrorsByField(round, roundIndex) {
     let field = "round";
     if (message.endsWith("needs a title.")) field = "title";
     else if (message.includes("battle prompt")) field = "prompts";
-    if (message.includes(", prompt ")) field = "prompts";
-    else if (message.includes("engine needs a default provider")) field = "engine.defaultProvider";
+    else if (message.includes("needs an engine block")) field = "engine";
+    else if (message.includes("needs a scoring block")) field = "scoring";
+    const promptIndex = /^Round \d+, prompt (\d+)/.exec(message);
+    if (promptIndex) {
+      const index = Number(promptIndex[1]) - 1;
+      if (message.includes("needs an ID") || message.includes("duplicate prompt ID")) field = `prompts.${index}.id`;
+      else if (message.includes("prompt text")) field = `prompts.${index}.text`;
+      else field = "prompts";
+    } else if (message.includes("engine needs a default provider")) field = "engine.defaultProvider";
     else if (message.includes("engine needs a default model") || message.includes("default model must")) field = "engine.defaultModel";
     else if (message.includes("permitted model")) field = "engine.permittedModels";
     else if (message.includes("variants")) field = "engine.variants";

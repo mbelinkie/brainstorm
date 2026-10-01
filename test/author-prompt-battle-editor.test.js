@@ -27,6 +27,25 @@ test("restored drafts still reject malformed or empty question rounds", () => {
   assert.equal(isRestorableAuthorDraft({ bank: { rounds: [{ type: "other", questions: [] }] } }), false);
 });
 
+test("recoverable battle drafts can repair missing engine and scoring blocks", () => {
+  const round = { id: "round-battle", type: "prompt_battle", title: "Image round", prompts: [{ id: "pb-1", text: "Draw a moon." }] };
+  const draft = { bank: { rounds: [round] }, selection: { roundIndex: 0 } };
+  assert.equal(isRestorableAuthorDraft(draft), true);
+  assert.deepEqual(restoredAuthorSelection(draft), { roundIndex: 0, questionIndex: 0 });
+
+  let errors = promptBattleErrorsByField(round, 0);
+  assert.match(errors.engine, /needs an engine block/);
+  setPromptBattleField(round, "engine.defaultProvider", "workers_ai");
+  errors = promptBattleErrorsByField(round, 0);
+  assert.match(errors.scoring, /needs a scoring block/);
+  setPromptBattleField(round, "scoring.winnerPoints", "50");
+  assert.equal(round.engine.defaultProvider, "workers_ai");
+  assert.equal(round.scoring.winnerPoints, 50);
+  errors = promptBattleErrorsByField(round, 0);
+  assert.doesNotMatch(errors.engine || "", /needs an engine block/);
+  assert.doesNotMatch(errors.scoring || "", /needs a scoring block/);
+});
+
 test("new battle rounds have the exact editable fields and optional fields stay absent", () => {
   const round = createPromptBattleRound("round-new", "Battle");
   assert.deepEqual(Object.keys(round), ["id", "type", "title", "prompts", "engine", "scoring"]);
@@ -73,11 +92,22 @@ test("authored battle round JSON reloads with all fields unchanged", () => {
 
 test("battle field errors reuse validator messages and point at the matching editor fields", () => {
   const round = structuredClone(battleRound);
+  round.prompts[0].id = "";
   round.prompts[0].text = "x".repeat(2049);
   round.engine.variants = 11;
   round.scoring.winnerPoints = 0;
   const errors = promptBattleErrorsByField(round, 1);
-  assert.match(errors.prompts, /Round 2, prompt 1 needs prompt text of 2048 characters or fewer/);
+  assert.match(errors["prompts.0.id"], /Round 2, prompt 1 needs an ID/);
+  assert.match(errors["prompts.0.text"], /Round 2, prompt 1 needs prompt text of 2048 characters or fewer/);
   assert.match(errors["engine.variants"], /Round 2 engine needs between 1 and 10 variants/);
   assert.match(errors["scoring.winnerPoints"], /Round 2 needs positive winner points/);
+});
+
+test("author editor renders block-level validation when a recoverable block is absent", async () => {
+  const author = await (await import("node:fs/promises")).readFile(new URL("../author.js", import.meta.url), "utf8");
+  const editor = author.slice(author.indexOf("function renderPromptBattleEditor"), author.indexOf("function renderEditor"));
+  assert.match(editor, /errors\.engine \?/);
+  assert.match(editor, /errors\.scoring \?/);
+  assert.match(editor, /engine\.defaultProvider/);
+  assert.match(editor, /scoring\.winnerPoints/);
 });
