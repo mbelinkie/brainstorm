@@ -1742,3 +1742,17 @@ replaced); only 'Auto-add sub-issues' is On. Created a Board view and renamed Vi
 (fields: Labels, Parent issue, Priority, Size, Workstream, Acceptance added and saved; verified
 via the GraphQL view `fields`). The Board view's fields were not customised, and Board is grouped
 by Status by default. Auto-add to project was not configured. Push still not performed.
+
+## 2026-10-01 — Roadmap API gate (issue #4)
+
+Branch: `claude/roadmap-api-gate` (from `origin/main` at `f5be228`). Model: Sonnet 5.5.
+
+**Slice:** playbook section 5. One audited GitHub transport with budget protection, so the lifecycle wrapper (#3, #45) and a progress view can be built safely.
+
+**Files added:** `scripts/roadmap/{rate-limit,lock,gate,github-transport,bypass-check,probe}.mjs`, `scripts/roadmap/README.md`, `docs/roadmap/transport-inventory.md`, `test/roadmap-{gate,transport,bypass}.test.js`. No dependency or package.json change; `scripts/` is not in the deploy allowlist so it cannot ship.
+
+**Design points worth knowing:** refusals are returned as `{ok:false, code}`, never thrown; the gate never replays a write (an uncertain mutation must be re-read by the caller); a throttle is recognised only from status, headers and the structured RATE_LIMITED error, never from words in a body; nested truncated connections fail closed by default; `gate.session()` holds the lock across several operations for the wrapper.
+
+**Commands run:** `node --test` on the three new files (42/42); `npm test` (342/342, was 300 on main); mutation check on a scratch copy: five deliberate breakages (missing-quota allowed, live lock evicted, null coerced to 0, no mutation spacing, body text as throttle) each failed the intended test; one allowed live probe (`gh api graphql --include` rateLimit, then `node scripts/roadmap/probe.mjs`): gate reading 4020 vs raw 4021, consistent with the one point its own call spent.
+
+**Unproven / limits:** the lock is host-local only (two recoverers of one dead lock have a narrow race; PID reuse reads as alive, the safe direction); the real transport was exercised live only for the rate-limit read and `/rate_limit`, not for mutations (those run against #3/#45); no caller exists yet besides `probe.mjs`. About 980 of 5000 GraphQL points were already spent this hour by ad-hoc ticket creation, which the gate could not see.
