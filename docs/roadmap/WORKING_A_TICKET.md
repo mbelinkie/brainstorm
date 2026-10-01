@@ -260,6 +260,11 @@ in Sol's clean checkout and on integrated main. Repeating `complete` returned
   claim holder to record its own review; the dispatcher cannot impersonate it.
 - **Waiting:** native agents use `collaboration.wait_agent`. `functions.wait`
   accepts only a running exec cell ID, never an agent name or an invented ID.
+- **Handoffs:** confirm native spawn/resume/wait controls remain available after
+  a model or tool handoff. A completed child turn can still have an app-owned
+  thread writer: a CLI resume of #42 was refused with `already has an active
+  writer`. Preserve the claim and published work; resume through the owning
+  native controls rather than replacing its identity or removing writer locks.
 - **Evidence limits:** the Cloudflare Workers Builds check failed on both the
   starting baseline and integrated main. Passing repository tests established
   setup correctness; deployment success remained unproven and outside scope.
