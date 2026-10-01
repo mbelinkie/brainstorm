@@ -1837,3 +1837,122 @@ Branch: `claude/roadmap-docs` (worktree `../quiz-roadmap-docs`, from `main` at `
 - **Mistake to record:** I ran `git switch -c` in the main checkout while another session had `claude/lifecycle-wrapper-1` checked out there, which briefly changed its branch. Restored within seconds (tree was clean, branch had no commits). Lesson, now in the guide: check `git worktree list` and `git status` before any branch switch, and use a worktree per session.
 - **Updated after #3 and #45 landed on `main`:** rewrote the guide around `scripts/roadmap/lifecycle.mjs` (inspect, ready, claim, block, review, verify, complete, stale, release); removed the hand-written comment templates and the manual status helper. Ran the read-only commands against live issues (`inspect 13`, `ready 13 --dry-run`, `ready 19 --dry-run` refused with PREREQ_* codes, `stale 12`, and a `claim` with no session id refused with EXECUTION_ID_MISSING before any write). No claim, review or completion was performed. Pushed and merged through a PR at Matthew's request.
 - **Open question for Matthew:** the wrapper identifies a run by `CLAUDE_CODE_SESSION_ID`, so a person at a plain terminal cannot claim. The guide says to work through a Claude Code session or ask him; whether to allow a self-asserted ID is his call.
+
+## 2026-10-01 — DeepSeek orchestration (issue #51)
+
+Branch: `codex/deepseek-orchestration` (from `main` at `271a47d`). Model: DeepSeek V4 Pro (`deepseek-v4-pro`), executed through the Codex DeepSeek profile. Execution ID: `01a0f5de-3bac-7d30-a5e7-44da0c60c7a9` (this run's own `CODEX_THREAD_ID`).
+
+**Slice:** retired the Claude model ceiling and Opus escalation for a DeepSeek routing (`model:economy` = `deepseek-flash`, `model:standard` = `deepseek-v4-pro`; logical `low`/`medium`/`high` labels mapped to runner effective `low`/`high`/`high`, recorded separately on the claim). Added Codex execution identity (`CODEX_THREAD_ID`, with `CODEX_SESSION_ID` trusted only when it equals the thread id) alongside the legacy `CLAUDE_CODE_SESSION_ID`, failing closed on conflicting/ambiguous environments. Added `tools/codex-batch.mjs` (sequential batch dispatcher) and `tools/batch-core.mjs` (pure selection/budget/head/reconciliation logic); the dispatcher reuses the shared gate for the project scan, PR lookup/creation and merge, and keeps run state/logs outside git.
+
+**Files:** edited `docs/roadmap/config.json`, `docs/roadmap/routing.md`, `scripts/roadmap/lifecycle-core.mjs`, `scripts/roadmap/lifecycle.mjs`, `scripts/roadmap/lifecycle-finish.mjs`, `scripts/roadmap/README.md`, `docs/roadmap/transport-inventory.md`, `docs/roadmap/WORKING_A_TICKET.md`, `CLAUDE.md`, `docs/CLAUDE_WORKLOG.md`, `test/roadmap-lifecycle.test.js`, `test/roadmap-lifecycle-finish.test.js`; added `tools/codex-batch.mjs`, `tools/batch-core.mjs`, `test/batch-core.test.js`, `test/codex-batch.test.js`. No dependency change; no CHANGELOG line (internal process tooling).
+
+**Commands run:** `node --test test/roadmap-lifecycle.test.js test/roadmap-lifecycle-finish.test.js test/roadmap-bypass.test.js test/roadmap-gate.test.js test/roadmap-transport.test.js` (136/136); `node --test test/batch-core.test.js test/codex-batch.test.js` (17/17); `npm test` (549/549).
+
+**Unproven / outstanding:** live GitHub writes (ready/claim/review for #51) could not be performed — the `gh` token for `mbelinkie` is invalid and unauthenticated requests are rate-limited (403), which is exactly the bootstrap exception #51 records; the real CLI run, Sol review, PR, merge and completion are left to the orchestrator. The batch dispatcher and its provider balance/worker/Sol spawns are covered by offline fakes only.
+
+## 2026-10-01 — DeepSeek orchestration repair (issue #51, PR #52)
+
+Branch: `codex/deepseek-orchestration` (from `main` at `271a47d`). Model: DeepSeek V4 Pro (`deepseek-v4-pro`). Execution ID: `01a0f5f9-a3cc-7a12-b5c1-81cf4a9ffe6d` (this run's own `CODEX_THREAD_ID`; the earlier `01a0f5f2-ac82-7862-8f3e-710e1a59ae82` attribution was incorrect).
+
+**Slice:** consolidated repair of the batch dispatcher after an independent Sol review failed the published SHA. The worker now launches with the exact DeepSeek profile/model, `approval_policy=never`, workspace-write sandbox, effective-effort override, writable git shared dir, and a stripped-then-parented execution identity (the worker generates its own id; the dispatcher is recorded as `CODEX_PARENT_THREAD_ID`). Sol runs on the default provider with no DeepSeek key and its own session. Publication pushes the branch, verifies the remote head through the gate, then creates/refetches a PR; merge carries the reviewed SHA in the REST body; merged `origin/main` is fetched and tested in a separate detached integration worktree, never the caller's checkout. Acceptance requires Sol exit zero plus a fresh independent `verify` for the exact reviewed SHA. State is persisted atomically (owner-only files, outside git), corrupt state fails closed, resume reuses the owned branch/worktree and never resets spend, budget is strictly cumulative (null/empty totals are invalid, not zero), and a non-dry-run needs `--sole-dispatcher` (host-local lock) with a real process-deadline kill. `lifecycle.inspect` now returns sanitized review/verification fields instead of stripping them entirely.
+
+**Files:** edited `scripts/roadmap/lifecycle-core.mjs` (Codex parent env vars), `scripts/roadmap/lifecycle.mjs` (sanitized inspect + forbid unsupported models even with `--allow-mismatch`), `tools/batch-core.mjs` (strict budget, null-safe balance, migration allocation), `tools/codex-batch.mjs` (rewritten runner), `test/batch-core.test.js`, `test/codex-batch.test.js`, `test/roadmap-lifecycle.test.js`; added `AGENTS.md`.
+
+**Commands run (real output):** `npm test` — 563 pass, 0 fail, 0 skipped. `node scripts/roadmap/lifecycle.mjs ready 51 --dry-run` (wouldSet Ready), `ready 51` (Backlog -> Ready), `claim 51` with this run's own id (claimed, In progress).
+
+**Correction to the earlier diagnosis:** the previous "invalid gh token" reading was wrong. The token is supplied privately to the launcher as `GH_TOKEN`; the macOS Keychain is inaccessible in the sandbox, which is why `gh` auth-by-keychain could not resolve. `GH_TOKEN` is the supported path and is never printed or committed.
+
+**Unproven / outstanding:** the orchestrator still must push this branch, run the final independent Sol review and the real setup rehearsal, then merge and complete #51. The batch runner's live worker/Sol spawns and provider-balance calls are covered by offline fakes only; the exact `shell_environment_policy` exclusion of `DEEPSEEK_API_KEY` from a child shell is not yet asserted offline.
+
+## 2026-10-01 — Native Luna routing and lifecycle repair (issue #51)
+
+Branch: `codex/deepseek-orchestration` (worktree based on `271a47d5`). Model:
+GPT-6 Luna (`gpt-6-luna`) as a native Codex subagent. Execution ID:
+`01a0f723-2ce8-7071-b5c2-5004b0c1e211` (this run's `CODEX_THREAD_ID`).
+
+**Slice:** both logical model profiles now identify Luna; logical efforts map to
+effective `medium`/`high`/`max`; distinct full commit IDs compare exactly while
+legacy abbreviated records remain readable. Historical Claude and DeepSeek
+records stay parseable, and new unsupported model claims remain refused.
+
+**Files:** edited `docs/roadmap/config.json`, `docs/roadmap/routing.md`,
+`docs/roadmap/WORKING_A_TICKET.md`, `scripts/roadmap/README.md`,
+`docs/roadmap/transport-inventory.md`, `AGENTS.md`, `CLAUDE.md`,
+`scripts/roadmap/lifecycle-core.mjs`, `scripts/roadmap/lifecycle.mjs` and the two
+lifecycle test files.
+
+**Commands run:** `ctx-wire run node --test test/roadmap-lifecycle.test.js test/roadmap-lifecycle-finish.test.js`
+(97 pass, 0 fail); `ctx-wire run git diff --check` (clean). The first live claim
+attempt refused before network access because the child environment inherited a
+parent `CODEX_SESSION_ID`. Retried with only that inherited alias unset and the
+authentic `CODEX_THREAD_ID` unchanged; lifecycle claimed #51 at high/max and set
+In progress.
+
+**Unproven / outstanding:** the native Luna/Sol setup rehearsal and independent
+review are still pending. The temporary subprocess dispatcher remains for the
+separately scoped next change.
+
+
+## 2026-10-01 — Read-only Prompt Battle planner (issue #51)
+
+Branch: `codex/deepseek-orchestration`. Model: GPT-6 Luna (`gpt-6-luna`),
+executed as a native Codex subagent. Execution ID: this run's own
+`CODEX_THREAD_ID`.
+
+**Slice:** removed the subprocess batch runner, provider key/balance access,
+resume state, execution flags and publication/completion behavior. Replaced it
+with a read-only `--dry-run` planner for issues #13–44 using the shared GitHub
+gate and lifecycle `inspect`/`ready --dry-run`. It fails closed on absent or
+incomplete issue data, incomplete claim history, unknown scope/authorization,
+ambiguous migration assignment and stale SHA identity; respects status,
+priority, dependencies, claims and acceptance class. External work is excluded;
+Producer selection states the owner-acceptance merge gate. Eligible Backlog and
+Blocked promotion candidates are reported without changing Project status.
+
+**Files:** `tools/codex-batch.mjs`, `tools/batch-core.mjs`,
+`test/codex-batch.test.js`, `test/batch-core.test.js`, `AGENTS.md`, `CLAUDE.md`,
+`docs/roadmap/WORKING_A_TICKET.md`, `docs/roadmap/routing.md`,
+`scripts/roadmap/README.md`, and `docs/roadmap/transport-inventory.md`.
+
+**Commands run:** `ctx-wire run node --test test/batch-core.test.js test/codex-batch.test.js`
+(18 pass, 0 fail); `ctx-wire run env -u GH_TOKEN -u DEEPSEEK_API_KEY npm test`
+(553 pass, 0 fail); `ctx-wire run git diff --check` (clean);
+`ctx-wire run node tools/codex-batch.mjs --dry-run` (32 issues scanned, no Ready
+selection, #42 reported as the sole eligible Backlog promotion candidate, and
+contract/acceptance skips reported for the other actionable issues). The first
+live attempt stopped at #16's missing authorization field; after changing
+per-ticket unknown scope/authorization to a skip, the full scan completed.
+
+**Unproven / outstanding:** whether Matthew promotes #42, publication,
+independent Sol review of the published full-SHA head, merge, integrated-main
+test and lifecycle completion remain with the owner/dispatcher. No GitHub mutation,
+worker launch, model-provider request, publication or merge was performed by
+this worker.
+
+## 2026-10-01 — Reject ambiguous release-run identity (issue #51 follow-up)
+
+Branch: `codex/deepseek-orchestration`. Model: GPT-6 Luna
+(`gpt-6-luna`), native Codex subagent. Execution ID: this run's own
+`CODEX_THREAD_ID` (`01a0f723-2ce8-7071-b5c2-5004b0c1e211`).
+
+**Slice:** fixed `lifecycle.release` to reject a present but ambiguous runner
+identity before GitHub access, including a thread ID paired with a conflicting
+session ID. A plain terminal with no runner identity can still perform the
+evidence-backed owner release. Existing release-marker parsing and historical
+records are unchanged. The live #51 claim was not released or otherwise
+modified.
+
+**Files:** `scripts/roadmap/lifecycle-finish.mjs`,
+`test/roadmap-lifecycle-finish.test.js`, and `docs/CLAUDE_WORKLOG.md`.
+
+**Commands run:** initial regression reproduction,
+`ctx-wire run node --test test/roadmap-lifecycle-finish.test.js` (31 pass,
+1 fail: ambiguous identity incorrectly released the claim); after the fix,
+`ctx-wire run node --test test/roadmap-lifecycle-finish.test.js` (32 pass,
+0 fail); `ctx-wire run node --test test/roadmap-lifecycle.test.js test/roadmap-lifecycle-finish.test.js`
+(98 pass, 0 fail); `ctx-wire run env -u GH_TOKEN -u DEEPSEEK_API_KEY npm test`
+(554 pass, 0 fail); `ctx-wire run git diff --check` (clean).
+
+**Unproven / outstanding:** no live release was attempted; the existing #51
+claim remains live. Publication, Sol review, merge and completion remain with
+the owner/dispatcher.

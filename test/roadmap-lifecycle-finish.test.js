@@ -5,7 +5,7 @@ import {
   COMMIT, OTHER, SELF, STATUS_OPTIONS, VERIFIER, acceptComment, claimComment, completeComment, config, contractBody,
   makeWorld, reviewComment, reviewedWorld, root, setup, verifyComment,
 } from "./helpers/roadmap-world.js";
-import { parseClaims } from "../scripts/roadmap/lifecycle-core.mjs";
+import { findOwnerAcceptance, parseClaims, sameCommit } from "../scripts/roadmap/lifecycle-core.mjs";
 
 // Lifecycle wrapper part 2 (issue #45): review, verify, complete, stale, release.
 // Fake GitHub only. Every refusal also asserts that no write was sent.
@@ -25,6 +25,16 @@ const inProgressWorld = (acceptance = "Automated", extra = {}) => {
 const statusOf = (world) => world.issues[3].items[0].status;
 
 // ---- review ---------------------------------------------------------------
+
+test("full commit IDs compare exactly while legacy abbreviated records remain readable", () => {
+  const other = `${COMMIT.slice(0, 7)}${"f".repeat(33)}`;
+  assert.equal(sameCommit(COMMIT, COMMIT), true);
+  assert.equal(sameCommit(COMMIT, other), false);
+  assert.equal(sameCommit(COMMIT, COMMIT.slice(0, 7)), true);
+  assert.equal(sameCommit(COMMIT.slice(0, 12), COMMIT), true);
+  assert.equal(findOwnerAcceptance([{ author: { login: "mbelinkie" }, body: `accepted ${other}` }], -1, COMMIT, ["mbelinkie"]), false);
+  assert.equal(findOwnerAcceptance([{ author: { login: "mbelinkie" }, body: `accepted ${COMMIT.slice(0, 7)}` }], -1, COMMIT, ["mbelinkie"]), true);
+});
 
 test("review records the tested commit, commands, exclusions and outstanding steps, then sets In review", async () => {
   const world = inProgressWorld();
@@ -369,7 +379,7 @@ test("claim age is reported but is never evidence that the execution stopped", a
   assert.ok(report.liveClaim.ageHours > 1000);
   noWrites(transport);
   const takeover = setup({ world, env: { CLAUDE_CODE_SESSION_ID: VERIFIER } });
-  assert.equal((await takeover.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "claude-sonnet-5-5", effort: "high" })).code, "CLAIM_HELD");
+  assert.equal((await takeover.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "deepseek-v4-pro", effort: "high" })).code, "CLAIM_HELD");
   noWrites(takeover.transport);
 });
 
@@ -384,6 +394,20 @@ test("release refuses without recorded operator evidence, before any request", a
     assert.equal(result.code, code);
     assert.equal(transport.calls.length, 0, code);
   }
+});
+
+test("release refuses when the current run identity is ambiguous, before any request", async () => {
+  const { lifecycle, transport } = setup({
+    world: inProgressWorld(),
+    env: { CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: OTHER },
+  });
+  const result = await lifecycle.release(3, {
+    stoppedExecution: SELF,
+    confirmedBy: "mbelinkie",
+    evidence: "terminal closed, process gone",
+  });
+  assert.equal(result.code, "EXECUTION_ID_AMBIGUOUS");
+  assert.equal(transport.calls.length, 0);
 });
 
 test("release refuses when the named execution is not the live claimant", async () => {
@@ -402,7 +426,7 @@ test("release refuses when the named execution is not the live claimant", async 
 test("release records the confirmation, ends the claim, and returns the issue to Ready for a new claim", async () => {
   const world = inProgressWorld();
   world.issues[3].comments = [claimComment(OTHER)];
-  const { lifecycle, transport } = setup({ world });
+  const { lifecycle, transport } = setup({ world, env: {} });
   const result = await lifecycle.release(3, { stoppedExecution: OTHER, confirmedBy: "mbelinkie", evidence: "laptop was shut down; session cannot resume" });
   assert.equal(result.ok, true);
   assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
@@ -412,7 +436,7 @@ test("release records the confirmation, ends the claim, and returns the issue to
   assert.equal(statusOf(world), "Ready");
   assert.equal(parseClaims(world.issues[3].comments, 3, { endAuthors: ["mbelinkie"] }).live, null);
   const next = setup({ world, env: { CLAUDE_CODE_SESSION_ID: VERIFIER } });
-  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "claude-sonnet-5-5", effort: "high" });
+  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "codex/x", startCommit: COMMIT, model: "gpt-6-luna", effort: "high" });
   assert.equal(claimed.ok, true);
 });
 

@@ -40,10 +40,22 @@ export const PLACEHOLDER_LINES = [
 const UNFINISHED_WORD = /\b(?:TBD|TODO|FIXME)\b/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-// The one environment variable the Claude Code runner sets to its own session id.
-// Other runners need an adapter; the wrapper refuses rather than guessing.
+// Execution identity sources. Codex puts its own id in CODEX_THREAD_ID (and a
+// CODEX_SESSION_ID that is only trusted when it equals the thread id). The
+// legacy Claude Code runner sets CLAUDE_CODE_SESSION_ID. The wrapper refuses
+// rather than guessing; conflicting or ambiguous environments fail closed.
+export const CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
+export const CODEX_SESSION_ID_ENV = "CODEX_SESSION_ID";
 export const SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID";
-export const PARENT_SESSION_ENVS = ["CLAUDE_CODE_PARENT_SESSION_ID", "CLAUDE_PARENT_SESSION_ID"];
+export const PARENT_SESSION_ENVS = [
+  "CLAUDE_CODE_PARENT_SESSION_ID",
+  "CLAUDE_PARENT_SESSION_ID",
+  "CODEX_PARENT_THREAD_ID",
+  "CODEX_PARENT_SESSION_ID",
+];
+// Retired in the current workflow; kept so an old issue that still carries the
+// label stays readable. It never changes a new run's routing.
+export const LEGACY_ESCALATION_LABEL = "escalation:opus";
 
 const problem = (code, message, extra = {}) => ({ code, message, ...extra });
 const stripComments = (text) => String(text ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -145,7 +157,15 @@ export function evaluateRouting(labels, routing) {
   if (profile && effort && !routing.profiles[profile].efforts.includes(effort)) {
     problems.push(problem("ROUTING_UNSUPPORTED", `model:${profile} does not support effort:${effort}; resolve it explicitly, it is never translated silently`));
   }
-  return { profile, effort, escalation: labels.includes(routing.escalation.label), problems };
+  return { profile, effort, escalation: labels.includes(LEGACY_ESCALATION_LABEL), problems };
+}
+
+// The runner's effective effort for a logical effort label. Returns null for a
+// label the policy does not define.
+export function effectiveEffort(logicalEffort, routing) {
+  const map = routing?.effectiveEfforts ?? {};
+  if (typeof logicalEffort !== "string" || !Object.prototype.hasOwnProperty.call(map, logicalEffort)) return null;
+  return map[logicalEffort];
 }
 
 // ---- claims ---------------------------------------------------------------
@@ -186,20 +206,46 @@ export function hasCompletionRecord(comments, issueNumber, trustedAuthors) {
 
 // ---- execution id ---------------------------------------------------------
 
+const refuse = (code, message) => ({ ok: false, code, message });
+
+// Determine this run's own id from the environment. Codex identity wins; the
+// Codex session id only counts when it validates equal to the thread id. A
+// legacy Claude id is still honoured, but a mixed/conflicting environment fails
+// closed rather than guessing which value is the real one.
+export function resolveOwnExecutionId(env = {}) {
+  const get = (name) => String(env[name] ?? "").trim();
+  const thread = get(CODEX_THREAD_ID_ENV);
+  const codexSession = get(CODEX_SESSION_ID_ENV);
+  const claude = get(SESSION_ID_ENV);
+  if (thread) {
+    if (codexSession && codexSession.toLowerCase() !== thread.toLowerCase()) {
+      return refuse("EXECUTION_ID_AMBIGUOUS", `${CODEX_SESSION_ID_ENV} differs from ${CODEX_THREAD_ID_ENV}; the environment is conflicting and this run's own id cannot be verified`);
+    }
+    if (claude && claude.toLowerCase() !== thread.toLowerCase()) {
+      return refuse("EXECUTION_ID_AMBIGUOUS", `both ${CODEX_THREAD_ID_ENV} and ${SESSION_ID_ENV} are set and differ; the environment is conflicting and this run's own id cannot be verified`);
+    }
+    return { ok: true, executionId: thread.toLowerCase() };
+  }
+  if (codexSession) {
+    return refuse("EXECUTION_ID_AMBIGUOUS", `${CODEX_SESSION_ID_ENV} is set without ${CODEX_THREAD_ID_ENV}, so it cannot be validated as this run's own id`);
+  }
+  if (claude) return { ok: true, executionId: claude.toLowerCase() };
+  return refuse("EXECUTION_ID_MISSING", `no ${CODEX_THREAD_ID_ENV} or ${SESSION_ID_ENV} is set, so this run's own id cannot be verified`);
+}
+
 // The id must be stated explicitly (--execution-id) AND agree with the id the
 // runner put in this process's own environment. A child that merely inherits the
 // environment never states an id, and one that copies its parent's is caught by
 // the parent-session variables. Honest limit: a runner that exposes no parent
 // variable cannot be told apart from its parent by this check.
 export function resolveExecutionId({ flag, env = {} }) {
-  const refuse = (code, message) => ({ ok: false, code, message });
   if (Array.isArray(flag)) return refuse("EXECUTION_ID_CONFLICT", "--execution-id was given more than once");
   const stated = typeof flag === "string" ? flag.trim() : "";
-  const own = String(env[SESSION_ID_ENV] ?? "").trim();
   if (!stated) return refuse("EXECUTION_ID_MISSING", "state this run's id with --execution-id; it is never guessed");
-  if (!own) return refuse("EXECUTION_ID_MISSING", `${SESSION_ID_ENV} is not set, so this run's own id cannot be verified`);
-  if (stated.toLowerCase() !== own.toLowerCase()) {
-    return refuse("EXECUTION_ID_CONFLICT", `--execution-id does not match this run's own ${SESSION_ID_ENV}`);
+  const own = resolveOwnExecutionId(env);
+  if (!own.ok) return own;
+  if (stated.toLowerCase() !== own.executionId) {
+    return refuse("EXECUTION_ID_CONFLICT", `--execution-id does not match this run's own ${CODEX_THREAD_ID_ENV} (or legacy ${SESSION_ID_ENV})`);
   }
   if (!UUID.test(stated)) return refuse("EXECUTION_ID_INVALID", "the execution id is not a UUID");
   for (const name of PARENT_SESSION_ENVS) {
@@ -214,7 +260,7 @@ export function resolveExecutionId({ flag, env = {} }) {
 
 const oneLine = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
 
-export function renderClaimComment({ repo, number, executionId, owner, model, effort, labels, startCommit, branch, worktree, mismatch, nowIso, baselineOid }) {
+export function renderClaimComment({ repo, number, executionId, owner, model, effort, effectiveEffort: effective, labels, startCommit, branch, worktree, mismatch, nowIso, baselineOid }) {
   const lines = [
     `<!-- claim:v1 issue=${number} -->`,
     "**Claim** (lifecycle wrapper; Ready gates re-checked under the lock)",
@@ -222,7 +268,7 @@ export function renderClaimComment({ repo, number, executionId, owner, model, ef
     `- Repository / issue: ${repo} #${number}`,
     `- Execution ID: \`${executionId}\``,
     `- Owner: ${owner}; executed by the run above`,
-    `- Model / effort: \`${model}\` / effort \`${effort}\`; labels \`${labels.model}\` / \`${labels.effort}\``,
+    `- Model / effort: \`${model}\` / effort \`${effort}\`${effective ? ` (effective \`${effective}\`)` : ""}; labels \`${labels.model}\` / \`${labels.effort}\``,
     `- Starting commit: \`${startCommit}\` (integration baseline seen: \`${baselineOid ?? "unknown"}\`)`,
     `- Working branch: \`${branch}\`; worktree: ${worktree}`,
     `- Claimed at: ${nowIso}`,
@@ -231,7 +277,7 @@ export function renderClaimComment({ repo, number, executionId, owner, model, ef
   return `${lines.join("\n")}\n`;
 }
 
-export function renderBlockComment({ number, cause, needs, executionId, routingChange, justification, approvedBy, nowIso }) {
+export function renderBlockComment({ number, cause, needs, executionId, routingChange, justification, nowIso }) {
   const lines = [
     `<!-- block:v1 issue=${number} -->`,
     "**Blocked**",
@@ -248,7 +294,6 @@ export function renderBlockComment({ number, cause, needs, executionId, routingC
       `  - Remaining risk: ${oneLine(justification.remainingRisk)}`,
       `  - Smallest next scope: ${oneLine(justification.nextScope)}`,
     );
-    if (approvedBy) lines.push(`  - Owner go-ahead: ${oneLine(approvedBy)}`);
   }
   lines.push("- Scope, priority, size and routing labels are unchanged.", `- Recorded at: ${nowIso}`);
   return `${lines.join("\n")}\n`;
@@ -273,7 +318,13 @@ const HEX_COMMIT = /^[0-9a-f]{7,40}$/i;
 const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 export const isCommit = (value) => typeof value === "string" && HEX_COMMIT.test(value.trim());
 const shortCommit = (commit) => commit.trim().toLowerCase().slice(0, 7);
-export const sameCommit = (a, b) => Boolean(a && b) && shortCommit(a) === shortCommit(b);
+export const sameCommit = (a, b) => {
+  if (!isCommit(a) || !isCommit(b)) return false;
+  const first = a.trim().toLowerCase();
+  const second = b.trim().toLowerCase();
+  if (first.length === 40 && second.length === 40) return first === second;
+  return first.startsWith(second) || second.startsWith(first);
+};
 
 // Comments of one marker kind for this issue, in order: [{ comment, index }].
 export function markedComments(comments, kind, issueNumber, { authors = null } = {}) {
@@ -347,7 +398,7 @@ export function findOwnerAcceptance(comments, afterIndex, commit, trustedAuthors
     if (index <= afterIndex || MARKER.test(body)) return false;
     if (!trustedAuthors.includes(comment.author?.login)) return false;
     if (!/\baccepted\b/i.test(body) || /\b(?:not|never|un)\s*accepted\b/i.test(body)) return false;
-    return body.toLowerCase().includes(shortCommit(commit));
+    return (body.match(/\b[0-9a-f]{7,40}\b/gi) ?? []).some((acceptedCommit) => sameCommit(acceptedCommit, commit));
   });
 }
 

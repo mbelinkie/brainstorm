@@ -5,29 +5,23 @@ Implements playbook §3. Every executable issue carries **exactly one**
 
 ## Model profiles
 
-| Label | Model | Notes |
-| --- | --- | --- |
-| `model:economy` | Haiku 4.5 (`claude-haiku-4-5-20251001`) | Mechanical, well-specified edits, docs, test scaffolding. |
-| `model:standard` | Sonnet 5.5 (`claude-sonnet-5-5`) | **The ceiling profile.** Default for real feature and bug work. |
+The Codex orchestrator launches native Luna coding subagents and an independent
+Sol reviewer. Both coding labels currently select the same exact model; the
+labels remain distinct for existing issue contracts and history.
 
-There is deliberately **no** `model:advanced` profile. API budget is limited
-(decision by Matthew, 2026-09-30), so Sonnet is the top model in the system.
+| Label | Model | Model ID | Notes |
+| --- | --- | --- | --- |
+| `model:economy` | GPT-6 Luna | `gpt-6-luna` | Mechanical, well-specified edits and bounded coding work. |
+| `model:standard` | GPT-6 Luna | `gpt-6-luna` | Default for real feature and bug work. |
 
-### Opus escalation (exception, not a profile)
-
-Opus may be used for bounded problem solving on **one issue** only after Sonnet
-has failed. To escalate, add the `escalation:opus` label and record in the
-issue, in this order:
-
-1. the checks Sonnet attempted and their results,
-2. the failure or remaining risk,
-3. the smallest next scope Opus will be asked to solve,
-4. Matthew's go-ahead.
-
-The label stays on the issue as history. Escalation never changes the issue's
-`model:` label, and never applies to later issues by default.
+The labels do not select different model capabilities today. Use
+`model:standard` for the normal coding route; retain `model:economy` where
+existing contracts or future triage use it. The independent reviewer uses
+`gpt-6.1-sol` and verifies the change without taking over coding work.
 
 ## Effort levels
+
+Effort labels are **logical** and remain `low`, `medium` and `high`:
 
 | Label | Meaning |
 | --- | --- |
@@ -35,14 +29,34 @@ The label stays on the issue as history. Escalation never changes the issue's
 | `effort:medium` | Normal bug fix or slice; some cross-module reasoning. |
 | `effort:high` | Authorization, scoring, migrations, or hard cross-system state. |
 
-Runner mapping: the runner (Claude Code) takes the effort level as a session
-setting. Unsupported model/effort combinations must be resolved explicitly,
-never translated silently.
+The Codex runner maps the logical label to its **effective** effort:
 
-Choose the cheapest profile and effort that safely fits. Authorization,
-data-loss, and scoring work get `effort:high` rather than a bigger model.
-Split large issues instead of routing them upward.
+| Logical label | Luna effective effort |
+| --- | --- |
+| `low` | `medium` |
+| `medium` | `high` |
+| `high` | `max` |
+
+The claim records both the logical label and the effective effort used by the
+Luna subagent. Unsupported effort/model mappings are resolved explicitly, never
+translated silently. Split large issues instead of routing them upward.
 
 ## Evidence
 
-Execution evidence records the exact model ID actually used, not just the label.
+Execution evidence records the exact model ID and effective effort actually
+used, not just the label.
+
+The orchestrator launches native Luna coding workers and an independent Sol
+reviewer. `tools/codex-batch.mjs --dry-run` is a read-only planner for issues
+#13–44; it cannot claim tickets, start subprocesses, access provider balances,
+publish, merge or complete work. Claims and lifecycle state remain with the
+shared lifecycle and gate. The native Luna/Sol rehearsal has not yet been
+recorded as complete.
+
+## Historical records
+
+Older issues and claim records may name Claude or DeepSeek model IDs, and some
+carry `escalation:opus`. They remain readable as historical evidence. New claims
+must use a currently configured model; `--allow-mismatch` cannot authorize a
+retired or otherwise unsupported coding model. There is no active Opus coding
+escalation in the current workflow.

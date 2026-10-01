@@ -47,11 +47,18 @@ Before creating, promoting, claiming, reviewing, or completing roadmap work,
 read `docs/PROJECT_OPERATING_PLAYBOOK.md`, `docs/roadmap/config.json` and
 `docs/roadmap/routing.md`. The live board is the "Brainstorm Roadmap" Project
 (user project #4). Preserve explicit dependencies, bounded scope, exact routing
-(Sonnet 5.5 is the model ceiling; Opus only via a recorded `escalation:opus`),
-acceptance class, and private-data boundaries. The lifecycle wrapper and API
-budget gate are not built yet (issues #3 and #4), so apply those gates by hand
-and report missing capabilities or conflicting evidence instead of bypassing
-them.
+(both `model:standard` and `model:economy` use native Luna subagents with model
+ID `gpt-6-luna`; logical `low`/`medium`/`high` maps to effective
+`medium`/`high`/`max`; independent review uses `gpt-6.1-sol`), acceptance class,
+and private-data boundaries. Use the shared lifecycle wrapper
+(`scripts/roadmap/lifecycle.mjs`, issues #3 and #45) through the API gate
+(`scripts/roadmap/gate.mjs`, issue #4). Execution identity is the run's own
+`CODEX_THREAD_ID` (or the legacy `CLAUDE_CODE_SESSION_ID`). The Codex orchestrator launches one native Luna coding worker at a time
+and an independent Sol reviewer. Use `tools/codex-batch.mjs --dry-run` only to
+read a proposal for issues #13–44; that planner cannot claim, launch, publish,
+merge or complete work. Read `docs/roadmap/WORKING_A_TICKET.md` before working
+a ticket. Report missing capabilities or conflicting evidence instead of
+bypassing the gates.
 
 ## Attribution: distinguishing Claude's work
 

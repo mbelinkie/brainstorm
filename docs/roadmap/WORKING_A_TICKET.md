@@ -1,6 +1,6 @@
 # Working a ticket: instructions for a new machine
 
-For anyone (a person, or a Claude Code session) picking up work on the Brainstorm
+For anyone (a person, or a Codex session) picking up work on the Brainstorm
 quiz platform from a machine that has access to `mbelinkie/brainstorm`. It covers
 finding a ticket you may work, claiming it, doing the work, reporting it, and
 stopping at the right place.
@@ -32,10 +32,12 @@ format it can read back.
 6. **Public repo.** No tokens, passwords, `.env.local` contents, private
    recordings, personal data or absolute local paths in issues, comments, commits
    or logs.
-7. **Sonnet 5.5 is the model ceiling.** `model:standard` means Sonnet 5.5,
-   `model:economy` means Haiku 4.5 (efforts low or medium only). Opus is used only
-   on one issue, only after Sonnet has failed, only with the `escalation:opus`
-   label and Matthew's recorded go-ahead (`docs/roadmap/routing.md`).
+7. **Routing uses native Luna subagents.** Both `model:standard` and
+   `model:economy` mean `gpt-6-luna`. Logical `low`/`medium`/`high` effort maps
+   to effective `medium`/`high`/`max`. The independent reviewer uses
+   `gpt-6.1-sol` and checks the change without taking over coding. Historical
+   Claude and DeepSeek claims remain readable; unsupported models are refused
+   for new claims, including with `--allow-mismatch` (`docs/roadmap/routing.md`).
 8. **The wrapper does not replace judgment.** If it refuses, read the reason. Do
    not work around a refusal; fix its cause or ask.
 
@@ -69,31 +71,50 @@ Read, in this order: `CLAUDE.md`, `docs/PROJECT_OPERATING_PLAYBOOK.md`,
 [#10](https://github.com/mbelinkie/brainstorm/issues/10) (the Prompt Battle MVP
 map). Read `PRODUCT_SPEC.md` and `mistakes.md` before changing behaviour.
 
-## 2. Find an eligible ticket
+## 2. Find and plan an eligible ticket
 
-List what is Ready, lowest priority number first (P0, then P1):
+The read-only planner scans the fixed Prompt Battle issue range (#13–44),
+checks Project priority and status, dependencies and claims, and reports at most
+one already-Ready ticket:
 
 ```bash
-gh project item-list 4 --owner mbelinkie --limit 200 --format json \
-  -q '.items[]|select(.status=="Ready")|"#\(.content.number)\t\(.priority)\t\(.size)\t\(.title)"'
+node tools/codex-batch.mjs --dry-run
 ```
 
-Use `--limit 200`; the default is too small. If nothing is Ready, stop and ask
-Matthew. Do not pick from Backlog.
+The planner uses the shared gate, lifecycle `inspect`, and
+`ready(..., { dryRun: true })`. It never changes a Project field, claims an
+issue, launches a worker, accesses a model-provider balance, publishes, merges
+or completes work. Only `--dry-run` and `--help` are supported;
+`--sole-dispatcher`, `--resume` and issue-scope overrides are refused before
+GitHub access.
 
-Then ask the wrapper, for ticket `N`. Both commands are read-only:
+Issues are ordered P0 through P3, then by number. Missing issues, incomplete
+Project pagination or incomplete claim comments stop the scan. Unknown Scope
+or authorization on one issue skips that ticket while allowing unrelated
+work to proceed. A candidate needs `Owner decisions: None`.
+A migration is eligible only with one concrete number using one of the complete
+field values `Assigned by Matthew: migration #NNNN`, `Matthew assigned
+migration NNNN`, or `Migration NNNN assigned by Matthew`; anything else,
+including `0037+`, multiple numbers, negative text or provisional wording, is
+not an assignment. External issues are always excluded. Producer work may be
+selected, but it cannot merge until Matthew accepts the reviewed commit.
+
+The planner selects only work already marked Ready. Its `promotionCandidates`
+list reports eligible Backlog or Blocked work even when a Ready ticket is also
+selected. Those candidates still need Matthew to promote them with the
+lifecycle wrapper; a null `selected` with nonempty promotions does not mean
+there is no eligible work. The planner never promotes automatically. Before
+starting, re-read the selected issue and its gates:
 
 ```bash
 node scripts/roadmap/lifecycle.mjs inspect N
 node scripts/roadmap/lifecycle.mjs ready N --dry-run
 ```
 
-`inspect` prints the routing labels, declared and native dependencies, claims on
-record (and whether one is live), the baseline commit, and any blockers.
-`ready --dry-run` runs every Ready gate without writing. A passing run looks like:
+Both commands are read-only. A passing Ready check looks like:
 
 ```text
-OK {"ok":true,"op":"ready","dryRun":true,"wouldSet":"Ready","changed":true,"status":"Backlog"}
+OK {"ok":true,"op":"ready","dryRun":true,"wouldSet":"Ready","changed":false,"status":"Ready"}
 ```
 
 A failing run names each reason and exits 1:
@@ -103,24 +124,10 @@ REFUSED NOT_READY: #19 is not ready: PREREQ_NOT_CLOSED, PREREQ_NOT_DONE, PREREQ_
   - PREREQ_NOT_DONE: ...#13 is open but is not Done on Project mbelinkie/4 (status: Backlog)
 ```
 
-The gates, and what the codes mean:
-
-| Gate | Passes when |
-| --- | --- |
-| Contract | all 9 sections present (Outcome, Scope, Exclusions, Dependencies, Acceptance, Verification, Boundaries and authorization, Starting baseline, Routing and size rationale), no placeholders |
-| Routing | exactly one `model:` and exactly one `effort:` label, and a supported pairing |
-| Acceptance | one class (Automated, External or Producer) and the board's Acceptance field agrees with the issue |
-| Dependencies | the `Blocked by` lines in the body and GitHub's native links name the same set (`DEPENDENCY_MISMATCH` otherwise) |
-| Prerequisites | each one is **closed**, **Done on the board**, and has a recorded owner acceptance (`PREREQ_NOT_CLOSED`, `PREREQ_NOT_DONE`, `PREREQ_NO_ACCEPTANCE`). Closed alone is not enough. |
-| Data | nothing truncated or stale; missing data fails closed (`STALE_READ`, `CLAIM_HISTORY_INCOMPLETE`) |
-
-Also check by eye: if the ticket adds a migration, its number is written in the
-issue (assigned by Matthew); and any existing live claim is Matthew's to clear
-(section 7).
-
-Promoting a ticket to Ready is the dispatcher's step:
-`node scripts/roadmap/lifecycle.mjs ready N` (without `--dry-run`). Do not run it
-on tickets you were not given.
+Matthew decides what becomes Ready and who works it. Do not start a ticket
+unless it is Ready and Matthew has assigned it to you. Do not run
+`ready N` without `--dry-run` unless Matthew explicitly asks you to promote
+that ticket.
 
 ## 3. Prepare your branch and worktree (no work yet)
 
@@ -131,14 +138,14 @@ records the branch, the starting commit and the worktree.
 ```bash
 git fetch origin
 git worktree list                        # confirm you are not about to use someone's checkout
-git worktree add ../quiz-<short-name> -b claude/<short-name> origin/main
+git worktree add ../quiz-<short-name> -b codex/<short-name> origin/main
 cd ../quiz-<short-name>
 npm ci                                   # every worktree gets its own install
 git status --short --branch              # report this; it should be clean
 git stash list                           # should be empty
 ```
 
-- Use `claude/<short-name>` for Claude sessions; people may use their own prefix.
+- Use `codex/<short-name>` for Codex sessions; people may use their own prefix.
 - Start from `main` unless the issue's **Starting baseline** says otherwise.
 - Never share `node_modules` between worktrees. Never start in a checkout that
   another session is using.
@@ -151,27 +158,30 @@ the ticket is still Ready, refuses if someone else holds a live claim, posts the
 
 ```bash
 node scripts/roadmap/lifecycle.mjs claim N \
-  --execution-id "$CLAUDE_CODE_SESSION_ID" \
-  --branch claude/<short-name> \
+  --execution-id "$CODEX_THREAD_ID" \
+  --branch codex/<short-name> \
   --start-commit "$(git rev-parse --short origin/main)" \
-  --model claude-sonnet-5-5 \
+  --model gpt-6-luna \
   --effort high \
+  --effective-effort max \
   --worktree ../quiz-<short-name>
 ```
 
 - **The execution ID must be this run's own.** It has to equal the runner's
-  `CLAUDE_CODE_SESSION_ID` (a UUID), and it must not equal a parent-session ID.
-  Claude Code sets `CLAUDE_CODE_SESSION_ID` and `CLAUDE_EFFORT` automatically.
-  It is never guessed.
+  `CODEX_THREAD_ID` (a UUID; its `CODEX_SESSION_ID` only counts when it equals the
+  thread id), or the legacy `CLAUDE_CODE_SESSION_ID` when no Codex id is set. It
+  must not equal a parent-session ID. A conflicting or ambiguous environment is
+  refused. It is never guessed, and the orchestrator never forges it for a worker.
 - **A person at a plain terminal has no such variable**, and the claim is refused:
-  `REFUSED EXECUTION_ID_MISSING: CLAUDE_CODE_SESSION_ID is not set`. The simplest
-  supported route is to do the work through a Claude Code session. Ask Matthew
-  before setting the variable by hand: it would satisfy the check, but it is
-  self-asserted.
+  `REFUSED EXECUTION_ID_MISSING: no CODEX_THREAD_ID or CLAUDE_CODE_SESSION_ID is
+  set`. The supported route is to do the work through a Codex session that
+  launches the native Luna subagent. Ask Matthew before setting the variable by
+  hand: it would satisfy the check, but it is self-asserted.
 - **The run must match the labels.** `--model` must be the ID of the issue's
-  `model:` profile (`model:standard` = `claude-sonnet-5-5`, `model:economy` =
-  `claude-haiku-4-5-20251001`) and `--effort` its `effort:` level, or you get
-  `ROUTING_MISMATCH`. Opus is refused unless the issue carries `escalation:opus`.
+  `model:` profile (`model:standard` and `model:economy` both use `gpt-6-luna`)
+  and `--effort` its `effort:` level, or you get `ROUTING_MISMATCH`.
+  `--effective-effort` states the runner's real effort (`low` maps to `medium`,
+  `medium` to `high`, `high` to `max`); it is validated and recorded separately.
   `--allow-mismatch "<reason>"` records a deliberate difference; ask first.
 - `--worktree` takes a name like `../quiz-x`, **never an absolute path** (the
   repo is public).
@@ -181,6 +191,46 @@ node scripts/roadmap/lifecycle.mjs claim N \
 If the claim is refused with `CLAIM_HELD`, someone else holds it. **Stand down**:
 remove your worktree (`git worktree remove ../quiz-<short-name>`), delete your
 unused branch, and tell Matthew. Do not try to override it.
+
+### Native orchestration limits
+
+The dispatcher starts one native Luna worker for one claimed issue, with an
+eight-hour wall-clock deadline. Use the Codex account allowance shown by Codex;
+do not invent a USD budget, query DeepSeek balances, or read a DeepSeek key.
+Keep intermediate checkpoints in private task notes. Put only lifecycle
+records and evidence needed for acceptance on GitHub.
+
+If work is interrupted, recover from fresh GitHub and Git reads: run
+`lifecycle inspect N`, check the recorded claim and review, then inspect
+`git status`, `git rev-parse HEAD`, the branch and its remote head, and any
+existing PR before resuming. Do not trust a stale local checkpoint as authority,
+create duplicate claims or PRs, or invent an execution ID. If the prior worker
+is confirmed stopped, the owner or dispatcher uses `lifecycle release N` with
+the stopped execution, confirmer and evidence; age alone never releases a
+claim. The same worker owns any fixes after Sol review; Sol remains read-only
+and never takes over coding.
+
+After two evidence-based attempts without progress, stop. Preserve useful
+committed partial work and state exactly what failed. A partial publication must
+be clearly marked incomplete, contain no issue-closing keywords, and go through
+an authorized gated publication path; it does not count as review or acceptance.
+If no gated publication path is available, keep the commit on its branch and
+ask Matthew how to proceed. Never erase the partial work or claim completion.
+
+Publish only the reviewed commit by its full 40-character SHA, and confirm the
+remote branch head is still that exact SHA. The independent Sol check uses a
+fresh clean detached worktree at that commit, re-runs `npm ci` and
+`npm test`, and records verification with Sol’s own execution ID. Any changed
+head invalidates that verification; send fixes back to the same Luna worker,
+then obtain a new clean verification.
+
+For Automated acceptance, after independent verification the owner or
+dispatcher merges, runs `npm test` on integrated `main`, and calls
+`lifecycle complete N`. Producer work waits for Matthew’s acceptance naming
+the tested commit after review. External work is never dispatched by the planner;
+it needs Matthew’s authorization and real-environment evidence recorded at
+review. Never hand-write lifecycle comments, change Project status, merge or
+complete around the wrapper.
 
 ## 5. Do the work
 
@@ -196,9 +246,9 @@ unused branch, and tell Matthew. Do not try to override it.
 - **Stage explicit paths only.** Never `git add -A` or `git add .`. Check
   `git show --stat HEAD` after every commit.
 - **Commits:** small and single-purpose with a `feat:` / `fix:` / `chore:` /
-  `docs:` prefix. For Claude sessions, end the body with
-  `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (use the model you
-  actually ran).
+  `docs:` prefix. Identify the model that did the work (for example
+  `Model: GPT-6 Luna (gpt-6-luna)`); never attribute work to Claude you did not
+  run through Claude.
 - **Work log:** append an entry to `docs/CLAUDE_WORKLOG.md` for every session:
   date, branch, files touched, the slice, the commands you really ran, and what
   remains unproven. Add a `CHANGELOG.md` line only for completed, user-visible,
@@ -212,9 +262,10 @@ unused branch, and tell Matthew. Do not try to override it.
   Matthew assigned. Never edit or renumber an applied migration. Do not apply it
   yourself.
 - **Stuck?** After **two** evidence-based attempts without progress, stop. Write
-  down the confirmed facts and a focused reproduction and ask. If Sonnet cannot
-  get a required check green, record the failing checks and the smallest next
-  scope and ask Matthew about a bounded Opus escalation.
+  down the confirmed facts and a focused reproduction and ask. If a Luna
+  subagent cannot get a required check green, record the failing checks and the
+  smallest next scope and ask Matthew; there is no Opus escalation in the
+  current workflow.
 
 ### Product rules that must not regress
 
@@ -234,9 +285,10 @@ node scripts/roadmap/lifecycle.mjs block N \
 ```
 
 This posts a `block:v1` comment and sets Blocked. Scope and priority stay
-untouched. To propose a routing change (for example an Opus escalation) add
+untouched. To propose a routing change (for example moving to a cheaper model)
+add
 `--routing-change <label> --attempted-checks ... --failure ... --remaining-risk ...
---next-scope ...` (all required; `escalation:opus` also needs `--approved-by`).
+--next-scope ...` (all required).
 The wrapper only records the proposal; **the owner changes the labels.**
 
 Found a new problem? File a new issue (search open **and closed** issues for
@@ -244,17 +296,17 @@ duplicates first) rather than widening this one.
 
 ### Ready for review
 
-Commit, run `npm test`, push your branch (a person pushes as normal; a Claude
+Commit, run `npm test`, push your branch (a person pushes as normal; a Codex
 session pushes only when asked), then:
 
 ```bash
 node scripts/roadmap/lifecycle.mjs review N \
-  --execution-id "$CLAUDE_CODE_SESSION_ID" \
+  --execution-id "$CODEX_THREAD_ID" \
   --commit "$(git rev-parse HEAD)" \
   --commands "npm test: <N> pass, 0 fail; <other commands you ran>" \
   --exclusions "what you deliberately did not do" \
   --outstanding "the acceptance steps still waiting on someone" \
-  --branch claude/<short-name>
+  --branch codex/<short-name>
 ```
 
 Only the execution holding the live claim can record a review. An **External**
@@ -265,12 +317,12 @@ issue, do not mark it Done, and do not merge.
 ### Independent check (Automated issues)
 
 An Automated issue is not accepted on the implementer's own report. A **different**
-execution (its own `CLAUDE_CODE_SESSION_ID`) re-runs the checks on the tested
+execution (its own `CODEX_THREAD_ID`) re-runs the checks on the tested
 commit and records it:
 
 ```bash
 node scripts/roadmap/lifecycle.mjs verify N \
-  --execution-id "$CLAUDE_CODE_SESSION_ID" --commit <tested-sha> \
+  --execution-id "$CODEX_THREAD_ID" --commit <tested-sha> \
   --checks "what you ran and what you saw"
 ```
 
@@ -281,8 +333,8 @@ Alternatively the owner accepts in writing (below).
 | Class | What permits completion |
 | --- | --- |
 | **Automated** | A `verify` record from an execution other than the implementer for the reviewed commit, or the owner's acceptance. |
-| **External** | Real evidence from the actual application, service or environment, recorded with the review. A simulation is not enough. |
-| **Producer** | The owner's explicit acceptance, posted after the review, naming the tested commit. |
+| **External** | Excluded by the planner. Dispatch requires Matthew's authorization and real evidence from the actual application, service or environment, recorded with the review. A simulation is not enough. |
+| **Producer** | The owner's explicit acceptance, posted after the review, naming the full tested commit SHA. |
 
 ## 7. Completion and recovery (owner or dispatcher only)
 
@@ -344,20 +396,23 @@ dropping the other side's entries. Delete merged branches with `git branch -d`
 - **Exit codes:** `0` done, `1` refused (the code and reason are printed), `2` bad
   usage. Add `--json` for machine-readable output.
 
-## 9. Starter prompt for a Claude Code session
+## 9. Starter prompt for a Codex session
 
-Launch it from the repository (or worktree) root so `CLAUDE.md` loads.
+Launch the dispatcher from the repository or worktree root so `CLAUDE.md`
+loads. Run `node tools/codex-batch.mjs --dry-run`, then re-read the chosen
+issue using `lifecycle inspect` and `ready --dry-run`. The native orchestrator
+assigns one already-Ready ticket to one Luna worker; the planner does not make
+claims or launch subprocesses.
 
 ```text
-You are working on the Brainstorm quiz platform. Work GitHub issue #<N> in
-mbelinkie/brainstorm exactly as docs/roadmap/WORKING_A_TICKET.md describes: read
-CLAUDE.md, the playbook and that file first; run `node scripts/roadmap/lifecycle.mjs
-inspect <N>` and `ready <N> --dry-run` and report the result; create your own
-worktree and branch from origin/main; claim with `lifecycle.mjs claim` (your own
-CLAUDE_CODE_SESSION_ID; model and effort must match the labels); work test-first
-inside the issue's scope; log your work; record `lifecycle.mjs review` with real
-evidence; and STOP at In review. Never merge, close, run `complete`, deploy, push
-to main, or choose a migration number. Sonnet 5.5 is the model ceiling. After two
-evidence-based failed attempts, stop and ask. Do not hand-write claim/review/block
-comments or edit board statuses; use the wrapper.
+Work GitHub issue #<N> in mbelinkie/brainstorm exactly as
+docs/roadmap/WORKING_A_TICKET.md describes. Read CLAUDE.md, the playbook and
+that guide; confirm the ticket is Ready and Matthew assigned it to you; create
+your own worktree from the required baseline; claim it with your own
+CODEX_THREAD_ID and labels-matched model/effort; work only inside the contract;
+test and report real results; commit with a full SHA and record lifecycle review.
+Stop at In review. Never publish unless explicitly authorized, merge, close,
+complete, deploy, promote a ticket, or choose a migration number. A separate
+clean gpt-6.1-sol worker performs independent verification. Follow the eight-
+hour limit, use only the Codex allowance, and stop after two failed attempts.
 ```
