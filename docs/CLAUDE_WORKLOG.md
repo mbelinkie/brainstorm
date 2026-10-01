@@ -2052,3 +2052,27 @@ Full `npm test` passed 605/605, zero failures/skips; `git diff --check` passed.
 Publication, independent Sol and integrated main evidence follows in the PR. Shared API balance observed $18.41 then $18.39; billing lag/cent
 precision prevents assigning a final invoice cost to this setup. Codex allowance
 is separate. No production services, deployment or migration application.
+
+
+### 2026-10-01 — issue16 DeepSeek storage, media access and seeded prompts
+
+Branch `codex/pb-storage-deepseek-16`, baseline `c21efc60c882749fa5f487ead0a8e808f552e1ed`. Native Sol coordinator owns the existing live claim; the earlier genuine Sol CLI planning execution remains separate, not substituted for it. DeepSeek Pro authored owner-assigned migration0037 and all new shipped test code. Sol orchestrated exact allowlisted artifact application, authored this operating evidence and the output-budget guide update, and ran checks; it authored no SQL/test implementation.
+
+0037 adds generation audit storage, RLS and explicit service_role SELECT, nullable author uploader/battle ownership metadata and expiry. Existing trusted-author metadata AND object-byte access are consciously preserved. Hosts can access battle assets only in their session; players require own metadata ownership AND own generation/entry/matchup/session provenance in allowed battle phases. Battle branches return before unchanged legacy quiz/options paths. Prompt order reuses the persisted shuffle seed with MD5(seed,round,promptID) and ordinal tie break; the complete old pairing function matches0036 after removing this one aggregate. No generation/voting/submission RPCs or existing migrations/tests/fixtures/source were changed.
+
+Requests and actual usage (all retained, including initial rejected/repair output):
+- `media-access`: `6168b646-ac1a-4225-97b8-e131233d918d`, Pro/high thinking, finish `stop`, 5853 prompt/13612 completion tokens.
+- `media-format`: `418dbfea-95a4-45e8-b17d-38a16f96431c`, Pro/high thinking, finish `stop`, 659 prompt/4337 completion tokens.
+- `prompt-order`: `d44ccd92-fc51-45e8-93ac-4cc3d6556417`, Pro/high thinking, finish `stop`, 5461 prompt/12049 completion tokens.
+- `shipped-contracts-repair`: `78de2bd3-a523-40c7-9305-08ee1120ade5`, Pro/high thinking, finish `stop`, 6819 prompt/14300 completion tokens.
+- `shipped-contracts`: `6399340f-d675-47b8-a3b3-8fe14eb35b29`, Pro/high thinking, finish `stop`, 13607 prompt/30094 completion tokens.
+- `storage-repair`: `e9811131-6852-4107-8050-a75b50abe4dc`, Pro/high thinking, finish `stop`, 400 prompt/416 completion tokens.
+- `storage`: `57ad659b-e83c-4318-9cbb-f131ef11e7a6`, Pro/high thinking, finish `stop`, 4990 prompt/10091 completion tokens.
+
+Storage needed one localized repair to remove an unrequested constraint DROP. Media source was correct; two private acceptance bugs falsely rejected legal formatting/DDL. Sol independently preserved the original frozen harness, corrected host trailing whitespace and scanning CREATE OR REPLACE instead of executable authorization, refroze revised hash `01dc18992000fb0204c646e30080c05c176bcc66a55e63f7f7af6d178f27f345`, and proved three privacy-weakening snapshots still failed. The unnecessary formatting repair and original HTTP400 (unknown error-body cause) remain recorded; later runner JSON-prefix/error retention is explicit.
+
+Prompt-order slice passed first try. Initial shipped test passed valid SQL but missed four negative snapshots (browser grant ALL, disabled host guard, final default allow, removed actual0032 webp MIME). One localized DeepSeek test repair catches all five negative controls, including existing missing-own-player rejection. No valid SQL changed for test-only repair. Final frozen acceptance11/11, full repository620/620, new shipped15/15; syntax and diff checks pass. Protected baseline92files remain byte-identical. These are SOURCE checks, not executed SQL or DB privilege proof.
+
+Output-budget result: shipped test generation completed with30094tokens (26324reasoning), exceeding the former16384 cap, at documented65536 thinking budget; tests then required the recorded coverage repair. The prior #42 same-prompt retry fit under the old cap and was not causal proof; this larger complete output demonstrates why the larger ceiling matters, without claiming general reliability. Shared batch balance observed18.39->18.06 ($0.33, delayed cent-precision billing); Sol/Codex allowance is separate.
+
+Outstanding: independent exact-published-SHA Sol review; Matthew must apply0037 after his migration-ledger preflight and retain the actual has_table_privilege query result versus pre-application list. The new session_battle_generations table must not be newly unreadable by service_role. No production SQL, real-room write, deployment, provider generation, owner acceptance, merge or lifecycle completion occurred.
