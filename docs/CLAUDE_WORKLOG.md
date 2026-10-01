@@ -2082,3 +2082,14 @@ The combined repair request `366f60fb-dfdb-4561-bfd2-6a52ce036231` exhausted1638
 Process lessons: make source transformations smaller than combined implementation/test design; preserve complete private failing evidence before dispatch; source regex tests can pass while browser input events lose drafts/clicks. Inspect the actual parent DOM before hiding a container. Retain same-element/focus checks and actual first-click/reload/reorder tests. High thinking can consume the entire output limit even on a small test packet; record a failed request and re-scope/reroute explicitly instead of applying truncated code or claiming tests passed.
 
 Outstanding: shipped numeric-input regression, separate Sol review of the published commit, authorized actual local-room pairing-panel rehearsal and Producer acceptance. This rehearsal uses production Supabase, and no production writes, provider-image calls, migrations or deployment occurred.
+
+
+### 2026-10-01 — output budget correction and issue42 regression
+
+The private dispatcher imposed `max_tokens:16384`, including reasoning and final answer. Current official completion docs support 393216 and document 65536 as the thinking default. Sol changed only the private orchestration runner to 65536, retaining deadline/USD/model/artifact guards and recording the cap in success/failure metadata. The portable DeepSeek guide now explains this budget, truncation rejection and controlled retry. Historical failed calls remain charged and preserved.
+
+The identical reduced regression prompt, Pro/high, completed with `stop`: request `de5edea2-9158-4892-91cd-3a8507d11455`, 905 prompt/14742 completion tokens (13791 reasoning), 97.3 seconds. It used less than the former cap, so this stochastic retry alone does not prove causation or general reliability. The returned test omitted the closing brace for its extracted function; one localized DeepSeek repair `b48c53e6-d2e8-46ef-98c4-57fa25f0afc6` completed with 292 prompt/1793 completion tokens (1733 reasoning), 14.7 seconds. Artifacts applied verbatim; Sol authored no test implementation.
+
+`test/author-battle-input.test.js` runs the actual source binding and shared helpers. On an archived genuine `ab7c7b8` baseline it fails specifically on the missing input listener; current source passes persistence before blur, exact invalid/valid marker feedback and zero remounts. Full `npm test`:613 passed, zero failures/skips; `node --check author.js` and `git diff --check` pass. Browser product source is unchanged from the preceding successful isolated Chrome checkpoint. Observed batch USD balance18.39->18.19 ($0.20, delayed cent-precision billing); Sol allowance is separate.
+
+The regression-generation blocker is resolved. Renewed independent Sol verification of the new published SHA, authorized real-room pairing-panel evidence and Producer acceptance remain required. No production calls, deployment, migration application, merge or completion.
