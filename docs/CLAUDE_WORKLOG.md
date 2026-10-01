@@ -1782,3 +1782,15 @@ Branch: `claude/lifecycle-wrapper-2` (from local `main` at `cd15757`, which is #
 **Commands run:** `node --test` on both lifecycle files (89/89); `npm test` (527/527, was 497); mutation check on a scratch copy of six breakages (self-verification allowed, reachability skipped, Automated bare self-report accepted, no re-read check, release without evidence, recorded-completion check removed), each failing the intended tests, control 30/30.
 
 **Unproven at this point:** the live `[SETUP TEST]` run and the Producer confirmation; `complete` against the real compare API; the commit must be pushed before #45 itself can be completed.
+
+## 2026-10-01 — Read-only progress view (issue #5)
+
+Branch: `claude/progress-view` (from `main` = `origin/main` at `3447913`, which contains the lifecycle wrapper). Model: Sonnet 5.5, effort `medium` (matches the `effort:medium` label). #5 was an Inbox placeholder; at Matthew's instruction ("yes to all") I wrote its contract, labeled it `model:standard`/`effort:medium`, set Backlog/Automated/Medium on the board, then `ready 5` and `claim 5` through the wrapper.
+
+**Slice:** `scripts/roadmap/progress.mjs` (CLI, read-only, gate only) and `progress-core.mjs` (pure counting and Markdown/HTML rendering); `test/roadmap-progress.test.js` (15 tests); inventory and README updated.
+
+**Judgment calls:** executable denominator excludes Inbox placeholders, `setup-test`, goals (label `goal`/`parent` or a `GOAL:` title; the live board has #10/#11 titled that way with no label) and drafts. Snapshot reuse is a temp-dir JSON file (default 60s), never for a partial fetch. Block reasons come from one batched read of the latest `block:v1` comment for up to 20 blocked issues in this repo.
+
+**Commands run:** `node --test test/roadmap-progress.test.js` (15/15); `npm test` (541/541, was 527); mutation check on a scratch copy of four breakages (setup-test counted, partial shown as complete, partial snapshot reused, nested truncation tolerated), each failed the intended tests; one read-only live `node scripts/roadmap/progress.mjs --fresh --html <file>`: Done 4 of 40 executable, 2 Inbox placeholders, 4 setup-test excluded, exit 0.
+
+**Unproven:** the HTML page was not opened in a browser; organization-owned Projects are untested (this one is user-owned); block-reason lookups only cover this repository.

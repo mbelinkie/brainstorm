@@ -20,7 +20,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 - `scripts/roadmap/probe.mjs`: read-only budget diagnostic.
 - `scripts/roadmap/lifecycle.mjs` (+ `lifecycle-core.mjs`, pure): inspect, ready, claim, block (#3). Uses `gate.session()` only.
 - `scripts/roadmap/lifecycle-finish.mjs`: review, verify, complete, stale, release (#45). Uses `gate.session()` and `ops.rest` only.
-- Future: the progress view (#5).
+- `scripts/roadmap/progress.mjs` (+ `progress-core.mjs`, pure): read-only progress view (#5). Uses `gate.readAll` and `gate.read` only; it has no write path.
 
 ## Not covered, and why
 
