@@ -19,6 +19,9 @@ chains, newlines, `$(...)` and backticks, `bash -c`, `powershell -Command`
 `/usr/bin/git` and `git.exe`, and git's global options such as `-C` and `-c`. A
 refused command word that only appears inside a quoted argument (a commit
 message, an `echo`) is not a command and is allowed.
+Heredoc bodies are treated as data (so a commit message with an apostrophe is fine), except a
+body fed to a shell such as `bash <<EOF`, which is checked as commands; a body fed to `python`,
+`node` or `cat > file` is not parsed.
 
 | Rule | Refuses | Why |
 | --- | --- | --- |
