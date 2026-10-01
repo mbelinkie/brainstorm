@@ -1067,3 +1067,7 @@ moved to Ready only after a live read showed #1 CLOSED/COMPLETED. Final live rea
 - Board/table views, and a Backlog/auto-add rule, were not created (no API); UI step.
 - No backups claimed (#7). Worktree guards not built (#6).
 - Jira was initially assumed, then corrected to GitHub before any work started.
+
+Follow-up (same day): added the roadmap pointer section to `CLAUDE.md` at Matthew's request.
+Project workflow audit (#8) and board/table views were attempted via the in-app browser, which
+timed out (pane hidden); they remain pending. Branch push was requested but not performed.
