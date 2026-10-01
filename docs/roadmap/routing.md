@@ -50,8 +50,9 @@ The orchestrator launches native Luna coding workers and an independent Sol
 reviewer. `tools/codex-batch.mjs --dry-run` is a read-only planner for issues
 #13–44; it cannot claim tickets, start subprocesses, access provider balances,
 publish, merge or complete work. Claims and lifecycle state remain with the
-shared lifecycle and gate. The native Luna/Sol rehearsal has not yet been
-recorded as complete.
+shared lifecycle and gate. The native Luna/Sol rehearsal completed in #51 through PR #52; verified
+commit and recovery evidence are recorded in
+[Working a ticket](WORKING_A_TICKET.md#verified-rehearsal-lessons-2026-10-01).
 
 ## Historical records
 

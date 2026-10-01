@@ -1982,3 +1982,22 @@ Branch: `claude/worktree-guards` (from `origin/main` `271a47d`, which includes t
 **Real-runner evidence (after Matthew approved a local-only hook):** a nested `claude -p` could not authenticate ("Not logged in"), so the hook was loaded through a git-ignored `.claude/settings.local.json` in the desktop app session instead. In that live session a Bash `git reset --hard HEAD` and a PowerShell `git -C <scratch> clean -fd` were both denied by the hook with the rule named (`reset-hard`, `git-clean`), the scratch repo's uncommitted line survived, and an allowed `git status` ran. The live hook then blocked this session's own next command as "unparseable": a heredoc whose text contained an apostrophe. The guard now cuts heredoc bodies out before scanning (a body fed to a shell such as `bash <<EOF` is still checked as commands, a `<<` inside quotes is not a heredoc, an unterminated heredoc is refused); two tests added and shown to fail without the change. Earlier, Windows PowerShell's UTF-8 byte-order mark made the hook refuse valid input; it is now stripped (test added).
 
 **Unproven:** `tools/worktree-setup.mjs` was exercised only with a fake exec, not on a real fresh worktree; the PowerShell `tool_name` is confirmed only by one live denial; the hook is active only through the git-ignored local settings file, not the tracked `.claude/settings.json` (owner decision); a heredoc piped to an interpreter other than a shell (python, node) is not parsed, as documented in guard-coverage.md.
+
+## 2026-10-01 — Verified native workflow lessons
+
+Branch: `codex/native-workflow-lessons`. Author: Codex orchestrator
+(documentation only; product implementation remains Luna-owned).
+
+**Slice:** updated the existing ticket guide with the completed #51/#52
+rehearsal evidence, authentic native child identity handling, exact published
+commit verification, safe recovery notes, strict boundary-field normalization,
+and the distinction between repository checks and existing deployment failures.
+Recorded only observed behavior; added no runner or scheduler.
+
+**Files:** `docs/roadmap/WORKING_A_TICKET.md`, `docs/roadmap/routing.md`, and this worklog.
+Sol flagged the stale pending-rehearsal statement in routing; it now points to
+the verified rehearsal evidence in the ticket guide.
+**Verification:** live lifecycle completion returned completed, then
+alreadyCompleted; stale confirmed CLOSED/Done, no live claim and no discrepancy.
+Sol and integrated main each passed 554 tests at the recorded rehearsal SHAs.
+`git diff --check` passed for this documentation change. No product code changed.
