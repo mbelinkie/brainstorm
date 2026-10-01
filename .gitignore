@@ -26,8 +26,9 @@ music quiz originals/
 # Not shipped, not deployed, not part of the product.
 local-reference/
 
-# Agent worktrees and local session state.
-.claude/
+# Agent worktrees and local session state. Only the shared hook settings are tracked.
+.claude/*
+!.claude/settings.json
 
 # Supabase CLI local cache
 supabase/.temp/
