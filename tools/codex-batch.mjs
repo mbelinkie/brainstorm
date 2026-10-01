@@ -46,6 +46,7 @@ function scanQuery(owner, name, numbers) {
 }
 
 function normalizeIssue(config, node, number) {
+  node = node ?? {};
   const labels = (node.labels?.nodes ?? []).map((l) => l.name);
   const item = (node.projectItems?.nodes ?? []).find(
     (it) => it.project?.number === config.project.number && it.project?.owner?.login === config.project.owner,
