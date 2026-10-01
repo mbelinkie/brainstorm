@@ -1801,6 +1801,32 @@ Branch: `claude/roadmap-api-gate` (from `origin/main` at `f5be228`). Model: Sonn
 
 **Unproven / limits:** the lock is host-local only (two recoverers of one dead lock have a narrow race; PID reuse reads as alive, the safe direction); the real transport was exercised live only for the rate-limit read and `/rate_limit`, not for mutations (those run against #3/#45); no caller exists yet besides `probe.mjs`. About 980 of 5000 GraphQL points were already spent this hour by ad-hoc ticket creation, which the gate could not see.
 
+## 2026-10-01 — Lifecycle wrapper part 1 (issue #3)
+
+Branch: `claude/lifecycle-wrapper-1` (from `origin/main` at `eace950`). Model: Sonnet 5.5 (`claude-sonnet-5-5`); session `CLAUDE_EFFORT` read `medium` against the `effort:high` label (recorded on the claim).
+
+**Slice:** `inspect`, `ready`, `claim`, `block` on top of the #4 gate. Spin-up was by hand (the wrapper did not exist): read live state, set Ready, posted the `claim:v1` comment, set In progress.
+
+**Files:** added `scripts/roadmap/lifecycle.mjs`, `scripts/roadmap/lifecycle-core.mjs`, `test/roadmap-lifecycle.test.js`; edited `docs/roadmap/config.json` (additive `routing` block only), `scripts/roadmap/README.md`, `docs/roadmap/transport-inventory.md`. No package.json change; no CHANGELOG line (tooling).
+
+**Judgment calls (flag for Matthew):** `model:economy` is mapped to efforts low/medium only (routing.md is silent; `ROUTING_UNSUPPORTED` fires on economy+high). Execution ID = explicit `--execution-id` that must equal `CLAUDE_CODE_SESSION_ID` and differ from any parent-session variable. Claims by anyone count as live; only owner comments end a claim or prove acceptance (public repo). A worktree must be a name, never an absolute local path. `block` records routing changes as proposals and does not edit labels.
+
+**Commands run:** `node --test test/roadmap-lifecycle.test.js` (59/59); `npm test` (497/497, was 438); read-only live `lifecycle.mjs inspect 12` and `ready 12 --dry-run` (refused ISSUE_CLOSED, no write); mutation check on a scratch copy: removed the duplicate-claim guard, the prerequisite-Done check, the partial-write reconcile, and the dependency-mismatch check; each failed the intended tests, control 59/59.
+
+**Unproven:** the real transport has not yet performed these mutations live (ready/claim/block writes are covered only by the fake); the execution-id check cannot tell a child from its parent if the runner exposes no parent variable; lock is host-local; stale-claim recovery, review and complete are #45.
+
+## 2026-10-01 — Lifecycle wrapper part 2 (issue #45)
+
+Branch: `claude/lifecycle-wrapper-2` (from local `main` at `cd15757`, which is #3 merged; `origin/main` was still `eace950`). Model: Sonnet 5.5. Spin-up used the new wrapper itself: `ready 45` then `claim 45 --allow-mismatch` (session effort `medium` vs `effort:high` label), the first live writes the wrapper has made.
+
+**Slice:** `review`, `verify`, `complete`, `stale`, `release` in `scripts/roadmap/lifecycle-finish.mjs`; new parsers and renderers in `lifecycle-core.mjs`; `lifecycle.mjs` gained the CLI ops and passes its internals to part 2. Tests: `test/roadmap-lifecycle-finish.test.js` (30) with a shared fake in `test/helpers/roadmap-world.js`. The part 1 test file is untouched (it keeps its own copy of the fake).
+
+**Judgment calls (flag for Matthew):** an Automated issue completes on an independent `verify:v1` record (a different execution than any claimant or reviewer) or on the owner's acceptance; External needs the evidence line in the review; Producer needs the owner's acceptance naming the tested commit after the review. Reachability uses the GitHub compare API against `main` (identical/behind = reachable). `release` is the stale-claim restart and needs an operator name plus written evidence; a run cannot release itself. The close mutation exists only in `lifecycle-finish.mjs`.
+
+**Commands run:** `node --test` on both lifecycle files (89/89); `npm test` (527/527, was 497); mutation check on a scratch copy of six breakages (self-verification allowed, reachability skipped, Automated bare self-report accepted, no re-read check, release without evidence, recorded-completion check removed), each failing the intended tests, control 30/30.
+
+**Unproven at this point:** the live `[SETUP TEST]` run and the Producer confirmation; `complete` against the real compare API; the commit must be pushed before #45 itself can be completed.
+
 ## 2026-10-01 — Accepting and merging #12 and #4; contributor guide
 
 Branch: `claude/roadmap-docs` (worktree `../quiz-roadmap-docs`, from `main` at `eace950`). Model: Sonnet 5.5.
