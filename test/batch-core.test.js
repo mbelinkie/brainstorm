@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  branchName, budgetAllowsNext, decideAcceptance, headMatchesReviewed, isPastDeadline, parseDeepseekBalance,
-  prBodyAutoCloses, renderPrBody, renderSolPrompt, renderWorkerPrompt, resumeDecision, routeIssue,
-  selectEligibleIssues, sessionSpendUsd, sortIssues, validateBalance, verifyInvalidated, worktreeName,
+  branchName, budgetAllowsNext, decideAcceptance, headMatchesReviewed, isPastDeadline, migrationAllocation,
+  parseDeepseekBalance, prBodyAutoCloses, renderPrBody, renderSolPrompt, renderWorkerPrompt, resumeDecision,
+  routeIssue, selectEligibleIssues, sessionSpendUsd, sortIssues, validateBalance, verifyInvalidated, worktreeName,
 } from "../tools/batch-core.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -82,10 +82,27 @@ test("parseDeepseekBalance reads balance_infos and sessionSpendUsd treats an inc
   assert.equal(up.increase, true);
 });
 
-test("budgetAllowsNext permits the last session to exceed the budget but not an earlier one", () => {
-  assert.equal(budgetAllowsNext({ spentUsd: 5, budgetUsd: 10, isLastTicket: false }), true);
-  assert.equal(budgetAllowsNext({ spentUsd: 10, budgetUsd: 10, isLastTicket: false }), false);
-  assert.equal(budgetAllowsNext({ spentUsd: 10, budgetUsd: 10, isLastTicket: true }), true);
+test("budgetAllowsNext launches only while cumulative spend is strictly below budget", () => {
+  assert.equal(budgetAllowsNext({ spentUsd: 5, budgetUsd: 10 }), true);
+  assert.equal(budgetAllowsNext({ spentUsd: 9.99, budgetUsd: 10 }), true);
+  assert.equal(budgetAllowsNext({ spentUsd: 10, budgetUsd: 10 }), false);
+  assert.equal(budgetAllowsNext({ spentUsd: 10.01, budgetUsd: 10 }), false);
+});
+
+test("null or empty balance totals never coerce to zero", () => {
+  assert.equal(validateBalance({ currency: "USD", total: null }).ok, false);
+  assert.equal(validateBalance({ currency: "USD", total: "" }).ok, false);
+  assert.equal(validateBalance({ currency: "USD" }).ok, false);
+  const nullTotal = parseDeepseekBalance({ balance_infos: [{ currency: "USD", total_balance: null }] });
+  assert.equal(Number.isNaN(nullTotal.total), true);
+  assert.equal(validateBalance(nullTotal).ok, false);
+});
+
+test("migrationAllocation never guesses a migration number", () => {
+  assert.equal(migrationAllocation("## Migrations\nNone"), null);
+  assert.equal(migrationAllocation("no migrations section"), null);
+  assert.deepEqual(migrationAllocation("## Migrations\nadd a table (number TBD)"), { allocated: false, number: null });
+  assert.deepEqual(migrationAllocation("## Migrations\n0034_add_thing.sql"), { allocated: true, number: 34 });
 });
 
 test("isPastDeadline stops the batch after the deadline", () => {

@@ -346,6 +346,7 @@ test("resolveExecutionId honours the Codex thread id and refuses a mismatched ex
   assert.equal(resolveExecutionId({ flag: OTHER, env }).code, "EXECUTION_ID_CONFLICT");
   assert.equal(resolveExecutionId({ flag: SELF, env: { CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: OTHER } }).code, "EXECUTION_ID_AMBIGUOUS");
   assert.equal(resolveExecutionId({ flag: SELF, env: { CODEX_THREAD_ID: SELF, CLAUDE_CODE_PARENT_SESSION_ID: SELF } }).code, "EXECUTION_ID_INHERITED");
+  assert.equal(resolveExecutionId({ flag: SELF, env: { CODEX_THREAD_ID: SELF, CODEX_PARENT_THREAD_ID: SELF } }).code, "EXECUTION_ID_INHERITED");
 });
 
 // ---- inspect --------------------------------------------------------------
@@ -750,6 +751,13 @@ test("claim refuses a model or effort that does not match the issue's labels unl
   assert.match(body, /effort `medium`/);
   assert.match(body, /Routing mismatch accepted: session effort cannot be raised/);
   assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
+});
+
+test("claim refuses an unsupported coding model even with --allow-mismatch", async () => {
+  const { lifecycle, transport } = setup({ world: readyWorld() });
+  const result = await lifecycle.claim(3, claimOpts({ model: "gpt-6.1-sol", allowMismatch: "deliberate" }));
+  assert.equal(result.code, "MODEL_UNSUPPORTED");
+  assertNoWrites(transport);
 });
 
 // ---- claim: success, idempotency, partial writes --------------------------

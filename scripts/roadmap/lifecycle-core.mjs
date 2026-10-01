@@ -47,7 +47,12 @@ const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export const CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 export const CODEX_SESSION_ID_ENV = "CODEX_SESSION_ID";
 export const SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID";
-export const PARENT_SESSION_ENVS = ["CLAUDE_CODE_PARENT_SESSION_ID", "CLAUDE_PARENT_SESSION_ID"];
+export const PARENT_SESSION_ENVS = [
+  "CLAUDE_CODE_PARENT_SESSION_ID",
+  "CLAUDE_PARENT_SESSION_ID",
+  "CODEX_PARENT_THREAD_ID",
+  "CODEX_PARENT_SESSION_ID",
+];
 // Retired in the current workflow; kept so an old issue that still carries the
 // label stays readable. It never changes a new run's routing.
 export const LEGACY_ESCALATION_LABEL = "escalation:opus";

@@ -17,13 +17,16 @@ import { createFinish } from "./lifecycle-finish.mjs";
 import {
   effectiveEffort,
   evaluateRouting,
+  findIndependentVerification,
   isRepoName,
   hasCompletionRecord,
   latestBlockCause,
+  markedComments,
   parseAcceptanceClass,
   parseClaims,
   parseContract,
   parseDependencies,
+  parseReviewComment,
   renderBlockComment,
   renderClaimComment,
   resolveExecutionId,
@@ -253,7 +256,19 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
       const snap = await evaluate(ops, number);
       if (!snap.ok) return snap;
       const { boardItem, comments, ...rest } = snap;
-      return { ...rest, op: "inspect", boardItemId: boardItem?.id ?? null };
+      // Comments are stripped on purpose: expose only the sanitized fields the
+      // dispatcher needs to discover a recorded review and an independent check.
+      const reviewMarked = markedComments(comments, "review", number, { authors: trusted }).at(-1);
+      const review = reviewMarked ? { ...parseReviewComment(reviewMarked.comment.body), index: reviewMarked.index } : null;
+      const implementing = snap.claims.claims.map((c) => c.executionId).filter(Boolean);
+      for (const { comment } of markedComments(comments, "review", number)) {
+        const id = parseReviewComment(comment.body).executionId;
+        if (id) implementing.push(id);
+      }
+      const independentVerification = review?.commit
+        ? findIndependentVerification(comments, number, review.index, review.commit, implementing, trusted)
+        : false;
+      return { ...rest, op: "inspect", boardItemId: boardItem?.id ?? null, review, independentVerification };
     });
   }
 
@@ -358,6 +373,14 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
       const mismatches = routingMismatch(facts, snap);
       if (mismatches.length > 0 && !facts.allowMismatch) {
         return refuse("ROUTING_MISMATCH", `this run does not match the issue's routing: ${mismatches.join("; ")}. Fix the run, or pass --allow-mismatch with a written reason`, { mismatches });
+      }
+      // --allow-mismatch can record a supported model that differs from the
+      // labels, but it can never authorize a model the routing policy does not
+      // define. This keeps an arbitrary or retired coding model from being
+      // smuggled in behind a nonempty mismatch reason.
+      const supportedModels = new Set(Object.values(config.routing.profiles).map((p) => p.modelId));
+      if (facts.allowMismatch && !supportedModels.has(facts.model)) {
+        return refuse("MODEL_UNSUPPORTED", `--allow-mismatch cannot authorize an unsupported coding model (${facts.model}); supported models are ${[...supportedModels].join(", ")}`);
       }
 
       const body = renderClaimComment({
