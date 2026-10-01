@@ -1071,3 +1071,10 @@ moved to Ready only after a live read showed #1 CLOSED/COMPLETED. Final live rea
 Follow-up (same day): added the roadmap pointer section to `CLAUDE.md` at Matthew's request.
 Project workflow audit (#8) and board/table views were attempted via the in-app browser, which
 timed out (pane hidden); they remain pending. Branch push was requested but not performed.
+
+Follow-up 2 (same day, Claude in Chrome): workflow audit done in the Project UI (#8 commented).
+'Item closed' and 'Pull request merged' are Off (error icon after the Status options were
+replaced); only 'Auto-add sub-issues' is On. Created a Board view and renamed View 1 to Table
+(fields: Labels, Parent issue, Priority, Size, Workstream, Acceptance added and saved; verified
+via the GraphQL view `fields`). The Board view's fields were not customised, and Board is grouped
+by Status by default. Auto-add to project was not configured. Push still not performed.
