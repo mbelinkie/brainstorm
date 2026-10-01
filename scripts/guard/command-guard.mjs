@@ -351,9 +351,74 @@ function checkSegment(tokens, ctx, depth) {
   return null;
 }
 
+// ---- heredocs ----------------------------------------------------------------
+
+// Is the end of `prefix` in a position where `<<` starts a heredoc (command
+// context), rather than inside quotes? Tracks '...', "..." and $(...) nesting.
+function inCommandContext(prefix) {
+  const stack = ["cmd"];
+  for (let i = 0; i < prefix.length; i += 1) {
+    const top = stack[stack.length - 1];
+    const ch = prefix[i];
+    if (top === "sq") { if (ch === "'") stack.pop(); continue; }
+    if (top === "dq") {
+      if (ch === "\\") i += 1;
+      else if (ch === '"') stack.pop();
+      else if (ch === "$" && prefix[i + 1] === "(") { stack.push("sub"); i += 1; }
+      continue;
+    }
+    if (ch === "\\") i += 1;
+    else if (ch === "'") stack.push("sq");
+    else if (ch === '"') stack.push("dq");
+    else if (ch === "$" && prefix[i + 1] === "(") { stack.push("sub"); i += 1; }
+    else if (ch === ")" && top === "sub") stack.pop();
+  }
+  const top = stack[stack.length - 1];
+  return top === "cmd" || top === "sub";
+}
+
+const SHELL_RECEIVER = /(?:^|[;&|(]\s*|\$\(\s*)(?:(?:sudo|env|command|exec|nohup)\s+)*(?:\S*[\\/])?(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)(?:\.exe)?(?:\s[^;&|]*)?$/i;
+
+// Heredoc bodies are data, not shell syntax: an apostrophe in a commit message
+// must not look like an unbalanced quote. Cut them out, but keep the body of one
+// fed to a shell (`bash <<EOF`) so it is checked as commands. A `<<` inside quotes
+// is not a heredoc, and an unterminated heredoc is refused.
+function extractHeredocs(text) {
+  const lines = text.split("\n");
+  const kept = [];
+  const heredocs = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    kept.push(line);
+    const marker = /<<(-?)\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_.-]*))/.exec(line);
+    if (!marker || line[marker.index + 2] === "<" || line[marker.index - 1] === "<") continue;
+    const prefix = line.slice(0, marker.index);
+    if (!inCommandContext(prefix)) continue;
+    const delimiter = marker[2] ?? marker[3] ?? marker[4];
+    const strip = marker[1] === "-";
+    let end = -1;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const candidate = lines[j].replace(/\r$/, "");
+      if ((strip ? candidate.replace(/^\t+/, "") : candidate) === delimiter) { end = j; break; }
+    }
+    if (end === -1) return { ok: false };
+    heredocs.push({ body: lines.slice(i + 1, end).join("\n"), toShell: SHELL_RECEIVER.test(prefix) });
+    kept.push(lines[end]);
+    i = end;
+  }
+  return { ok: true, text: kept.join("\n"), heredocs };
+}
+
 function evaluate(text, ctx, depth) {
   if (depth > 5) return deny("unparseable", "nested too deeply to check");
-  const scanned = scan(String(text));
+  const extracted = extractHeredocs(String(text));
+  if (!extracted.ok) return deny("unparseable", "heredoc with no terminating line");
+  for (const heredoc of extracted.heredocs) {
+    if (!heredoc.toShell) continue;
+    const verdict = evaluate(heredoc.body, ctx, depth + 1);
+    if (verdict) return verdict;
+  }
+  const scanned = scan(extracted.text);
   if (!scanned.ok) return deny("unparseable", "unbalanced quote or substitution");
   for (const sub of scanned.subs) {
     const verdict = evaluate(sub, ctx, depth + 1);

@@ -85,6 +85,71 @@ test("allows ordinary commands, including ones that merely MENTION a refused com
   }
 });
 
+test("heredoc bodies are data: apostrophes in them are fine, and the commit-message pattern is allowed", () => {
+  const allowed = [
+    `git commit -m "$(cat <<'EOF'
+fix: don't break on a heredoc
+
+Co-Authored-By: Someone <noreply@example.test>
+EOF
+)"`,
+    `python - <<'PY'
+text = "it's fine"
+print(text)
+PY`,
+    `cat > notes.txt <<EOF
+git reset --hard is mentioned here as plain text
+EOF`,
+    `cat <<-EOF
+	indented delimiter, don't worry
+	EOF`,
+    `python3 - <<'PY'
+x = "don't"
+PY
+git status`,
+    "echo $((1<<2))",
+  ];
+  for (const command of allowed) {
+    const verdict = decide(command, opts);
+    assert.equal(verdict.allow, true, `should allow: ${JSON.stringify(command)} (${verdict.rule})`);
+  }
+});
+
+test("a heredoc cannot hide a command: shells' bodies are checked, later lines are checked, quoted markers are not heredocs", () => {
+  const refused = [
+    [`bash <<EOF
+git reset --hard
+EOF`, "reset-hard"],
+    [`sh <<'EOF'
+git push --force
+EOF`, "force-push"],
+    [`sudo bash <<EOF
+git clean -fd
+EOF`, "git-clean"],
+    [`cat <<EOF
+harmless
+EOF
+git reset --hard`, "reset-hard"],
+    [`python - <<'PY'
+print(1)
+PY
+git clean -fd`, "git-clean"],
+    [`echo '<<EOF'
+git reset --hard
+EOF`, "reset-hard"],
+    [`echo "<<EOF"
+git clean -fd
+EOF`, "git-clean"],
+    [`cat <<EOF
+no terminating line`, "unparseable"],
+  ];
+  for (const [command, rule] of refused) {
+    const verdict = decide(command, opts);
+    assert.equal(verdict.allow, false, `should refuse: ${JSON.stringify(command)}`);
+    assert.equal(verdict.rule, rule, `${JSON.stringify(command)} fired ${verdict.rule}`);
+  }
+});
+
 test("recursive deletion is allowed only strictly inside a configured scratch directory", () => {
   assert.equal(decide("rm -rf /tmp/scratch/mut", opts).allow, true);
   assert.equal(decide("rm -rf /tmp/scratch/mut", { cwd: "/work/quiz" }).allow, false, "no scratch configured");
