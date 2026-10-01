@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -75,6 +75,29 @@ let hostStateSaveRequest = 0;
 let hostStateSaveFailure = null;
 let hostStateSaveRetrying = false;
 const quizWorkerOrigin = config.workerOrigin || location.origin;
+// Prompt Battle host model test panel (title screen only). Deliberately
+// local UI state, not part of `state`: it never syncs to another tab, is
+// never broadcast, and is never sent to saveHostState, because publicRoomState()
+// is the only allowlisted path to a player or presentation client and this
+// data -- generated image bytes -- must never reach one. See
+// docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 7.5.
+const BATTLE_TEST_MODELS = [
+  { value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" },
+  { value: "@cf/black-forest-labs/flux-2-klein-4b", label: "Flux 2 Klein 4B (Workers AI, free)" },
+  { value: "@cf/black-forest-labs/flux-2-klein-9b", label: "Flux 2 Klein 9B (Workers AI, free)" },
+  { value: "@cf/leonardo/lucid-origin", label: "Lucid Origin (Workers AI, paid)" }
+];
+// Mirrors the Worker's own default (cloudflare-worker.js, BATTLE_TEST_IMAGE_PROMPT)
+// only as a starting point the host can freely edit -- unlike the model
+// menu, the prompt is host-typed free text, sent to the Worker as-is.
+const BATTLE_TEST_DEFAULT_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
+let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null };
+// Prompt Battle pairing panel (host only). Local UI state for the same reason
+// battleTestPanel above is: the pairing maps player names to matchups, which is
+// exactly what a player must not hold during battle_prompt, so it must never be
+// assigned onto `state` where publicRoomState() could forward it.
+// See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
+let battleRoundPanel = { busy: false, error: "", state: null };
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -234,6 +257,11 @@ function publicRoomState() {
     doorPicks: state.doorPicks || [],
     doorResults: state.doorResults || [],
     targetRoundIndex: Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : null,
+    // Prompt Battle position only (slice 3a). Who is paired with whom, and
+    // each matchup's prompt, stay on the host: they are future state.
+    battleRoundIndex: Number.isInteger(state.battleRoundIndex) ? state.battleRoundIndex : null,
+    battleMatchupIndex: Number.isInteger(state.battleMatchupIndex) ? state.battleMatchupIndex : null,
+    battleMatchupCount: Number.isInteger(state.battleMatchupCount) ? state.battleMatchupCount : null,
     intermissionStage: state.intermissionStage || null,
     // Navigation history contains only screen identifiers and score-display
     // data; it never includes answer keys or authored media.
@@ -265,7 +293,8 @@ function setHostQuestion(roundIndex, questionIndex) {
     timerDurationSeconds: null,
     activeClipId: null,
     scoreNotification: null,
-    submitted: {}
+    submitted: {},
+    battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null
   };
   return true;
 }
@@ -360,7 +389,8 @@ async function startFinale() {
     intermissionStage: "final_suspense",
     timerEndsAt: null,
     timerDurationSeconds: null,
-    submitted: {}
+    submitted: {},
+    battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null
   };
   cueFinaleAudio("drumroll");
   await persistHostState(); emit(); render();
@@ -423,6 +453,102 @@ async function openDoorChoice(targetRoundIndex) {
   await persistHostState(); emit(); render();
 }
 
+// Prompt Battle slice 3a. A battle round has no question, so the round-start
+// card is shown without setHostQuestion(). state.question keeps the previous
+// round's question for the fields nothing renders during the battle, but its
+// round number and title are moved to the battle round so the progress bar,
+// round labels and the later round-end card name the right round.
+function enterBattleRound(roundIndex) {
+  const round = hostQuizDefinition.rounds[roundIndex];
+  state = {
+    ...state,
+    phase: "lobby",
+    presentationScreen: "intermission",
+    question: { ...state.question, round: roundIndex + 1, totalRounds: hostQuizDefinition.rounds.length, roundTitle: round.title, questionInRound: 1, questionsInRound: 0 },
+    timerEndsAt: null,
+    timerDurationSeconds: null,
+    activeClipId: null,
+    scoreNotification: null,
+    submitted: {},
+    battleRoundIndex: roundIndex, battleMatchupIndex: null, battleMatchupCount: null
+  };
+  battleRoundPanel = { busy: false, error: "", state: null };
+}
+
+// The host is the only writer of phases (spec decision). open_battle_round()
+// also writes battle_prompt itself; adopting its result here and saving it
+// through set_live_room_state keeps both copies identical instead of letting
+// the next host save silently overwrite the server's (slice 2 review, finding 2).
+async function openBattleRoundFromHost() {
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || state.phase === "battle_prompt" || battleRoundPanel.busy) return;
+  if (hostStateSaveFailure) { battleRoundPanel.error = "The room is not saved on the server yet. Wait for it to reconnect, then open the round."; render(); return; }
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
+  battleRoundPanel.busy = true;
+  battleRoundPanel.error = "";
+  render();
+  let opened = false;
+  try {
+    const pairing = await roomApi.openBattleRound({ roomCode, hostSecret });
+    // open_battle_round pairs the server's current_round_index. If the save
+    // that moved the room onto this round has not landed (two adjacent battle
+    // rounds, a fast second N), its idempotency guard returns the previous
+    // round's pairing. Adopting that would label round A's matchups as B.
+    if (Number(pairing?.roundIndex) !== state.battleRoundIndex) {
+      battleRoundPanel.error = "The room was still saving the new round. Press Open battle round again.";
+    } else {
+      battleRoundPanel.state = pairing;
+      state.phase = "battle_prompt";
+      state.presentationScreen = "battle_prompt";
+      state.intermissionStage = null;
+      state.battleMatchupIndex = 0;
+      state.battleMatchupCount = Array.isArray(pairing?.matchups) ? pairing.matchups.length : 0;
+      opened = true;
+    }
+  } catch (error) {
+    // The RPC's own message is the useful one ("A battle round needs at least
+    // two joined players"), so it is shown as-is.
+    battleRoundPanel.error = error?.message || "The battle round call failed.";
+  } finally {
+    battleRoundPanel.busy = false;
+  }
+  if (opened) await persistHostState();
+  emit();
+  render();
+}
+
+// Temporary in slice 3a: nothing is generated or voted on yet, so the host
+// needs a way out. No points are awarded. Slices 4 and 5 replace this with
+// Review and voting.
+async function endBattleRound() {
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
+  const battleIndex = state.battleRoundIndex;
+  const next = nextPlayablePosition(hostQuizDefinition?.rounds, { roundIndex: battleIndex, questionIndex: 0 });
+  state = { ...state, battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null };
+  battleRoundPanel = { busy: false, error: "", state: null };
+  if (next) await startRoundEnd(next.roundIndex);
+  else await startFinale();
+}
+
+// Host-only. Fills the pairing panel after a reload into battle_prompt.
+async function refreshBattlePairing() {
+  if (view !== "host" || battleRoundPanel.busy) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
+  battleRoundPanel.busy = true;
+  battleRoundPanel.error = "";
+  render();
+  try {
+    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
+    // Same guard as Open: until the save that moved the room onto this round
+    // lands, the server still answers for the previous round.
+    if (Number(result?.roundIndex) === state.battleRoundIndex) { battleRoundPanel.state = result; battleRoundPanel.error = ""; }
+    else battleRoundPanel.error = "The room was still saving the new round. Press Refresh pairing again.";
+  }
+  catch (error) { battleRoundPanel.error = error?.message || "Could not load the pairing."; }
+  finally { battleRoundPanel.busy = false; render(); }
+}
+
 async function startRound(targetRoundIndex = state.targetRoundIndex) {
   if (!Number.isInteger(targetRoundIndex)) return;
   clearRoundStartAdvance();
@@ -443,14 +569,16 @@ async function startRound(targetRoundIndex = state.targetRoundIndex) {
       return;
     }
     if (roundToStart !== targetRoundIndex) console.warn(`Round ${targetRoundIndex + 1} has no questions; starting round ${roundToStart + 1} instead.`);
-    if (!setHostQuestion(roundToStart, 0)) return;
+    if (isBattleRound(hostQuizDefinition.rounds[roundToStart])) enterBattleRound(roundToStart);
+    else if (!setHostQuestion(roundToStart, 0)) return;
   }
   state.targetRoundIndex = roundToStart;
   state.presentationScreen = "round_start";
   state.intermissionStage = "round_start";
   cueBetweenRoundAudio("roundStart");
   await persistHostState(); emit(); render();
-  scheduleRoundStartAdvance();
+  // Pairing fixes the roster, so a battle round waits for the host's Open.
+  if (!Number.isInteger(state.battleRoundIndex)) scheduleRoundStartAdvance();
 }
 
 async function acceptDoorChoice(payload) {
@@ -507,9 +635,13 @@ function rememberCurrentScreen() {
 
 async function showPreviousScreen() {
   clearRoundStartAdvance();
+  // Rewinding out of a battle round would restore a question screen over a
+  // paired round. Not supported in slice 3a.
+  if (Number.isInteger(state.battleRoundIndex)) return;
   const history = Array.isArray(state.screenHistory) ? state.screenHistory : [];
   const previous = history.at(-1);
-  if (!previous) return;
+  // Rewinding into a battle round is not supported in slice 3a; the round is entered forward only.
+  if (!previous || previous.phase === "battle_prompt") return;
   const currentPhase = state.phase;
   const position = previous.questionId ? questionPosition(previous.questionId) : null;
   if (position && !setHostQuestion(position.roundIndex, position.questionIndex)) return;
@@ -546,6 +678,8 @@ async function showNextScreen() {
   }
   if (state.phase === "door_choice") return revealDoorRewards();
   if (state.phase === "door_reveal") return advanceQuestion();
+  // End battle round is a deliberate click in slice 3a, never a stray N.
+  if (state.phase === "battle_prompt") return;
   if (state.phase === "lobby") {
     if (state.presentationScreen === "title") return startRound(0);
     // The end-of-round card reveals its own scoreboard after the hero. Do not
@@ -553,6 +687,9 @@ async function showNextScreen() {
     if (state.presentationScreen === "round_end") return doorBonusEnabled() ? openDoorChoice(Number(state.targetRoundIndex)) : startRound(Number(state.targetRoundIndex));
     // Keep rooms that were saved on the retired intermediate screen movable.
     if (state.presentationScreen === "round_scoreboard") return doorBonusEnabled() ? openDoorChoice(Number(state.targetRoundIndex)) : startRound(Number(state.targetRoundIndex));
+    // On a battle round's start card, "next" is Open. setPhase("open") would
+    // reopen the previous round's last question, which state.question holds.
+    if (Number.isInteger(state.battleRoundIndex)) return openBattleRoundFromHost();
     return setPhase("open");
   }
   // “Next” should match the primary host action: lock, score, and reveal in
@@ -764,6 +901,9 @@ function playerRenderKey(roomState) {
     doorBonus: roomState?.doorBonus,
     doorResults: roomState?.doorResults,
     targetRoundIndex: roomState?.targetRoundIndex,
+    battleRoundIndex: roomState?.battleRoundIndex,
+    battleMatchupIndex: roomState?.battleMatchupIndex,
+    battleMatchupCount: roomState?.battleMatchupCount,
     timerEndsAt: roomState?.timerEndsAt,
     timerDurationSeconds: roomState?.timerDurationSeconds,
     // Scores can change without a phase or question change (for example, a
@@ -845,11 +985,12 @@ function emit() {
 // a queued retry re-sends the screen the host was on when the save was asked
 // for, never a half-updated mix of that and a later one.
 function hostStatePayload() {
-  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete" };
+  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" };
+  const position = hostSavedPosition(state);
   return {
     phase: phaseMap[state.phase] || "lobby",
-    roundIndex: ["door_choice", "door_reveal"].includes(state.phase) && Number.isInteger(state.targetRoundIndex) ? state.targetRoundIndex : Math.max(0, (state.question?.round || 1) - 1),
-    questionIndex: Math.max(0, (state.question?.questionInRound || 1) - 1),
+    roundIndex: position.roundIndex,
+    questionIndex: position.questionIndex,
     publicState: publicRoomState()
   };
 }
@@ -887,7 +1028,7 @@ async function saveHostState(request, hostSecret, payload) {
       // path treats a stale revision as a real conflict, so guessing here
       // would reject answers the server would have accepted.
       state.revision = result.revision;
-      if (hostStateSaveFailure) { hostStateSaveFailure = null; refreshHostSyncNotice(); }
+      if (hostStateSaveFailure) { hostStateSaveFailure = null; refreshHostSyncNotice(); renderBattleAfterSaveRecovered(); }
       return;
     } catch (error) {
       if (attempt < HOST_STATE_SAVE_BACKOFF_MS.length && isTransientSaveError(error)) {
@@ -1046,7 +1187,10 @@ async function connectHostedRoom() {
         const hasSavedQuestion = savedRoom.state?.questionId;
         const savedQuestionPosition = hasSavedQuestion ? questionPosition(savedRoom.state.questionId) : null;
         if (hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex)) {
-          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete" })[savedRoom.phase] || "lobby" };
+          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" })[savedRoom.phase] || "lobby" };
+          // open_battle_round writes only phase and the battle fields, so a
+          // lost Open response leaves the saved screen on round_start.
+          if (state.phase === "battle_prompt") state.presentationScreen = "battle_prompt";
           if (["door_choice", "door_reveal"].includes(state.phase)) {
             state.targetRoundIndex = savedRoom.roundIndex;
             state.doorBonus = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
@@ -1057,6 +1201,7 @@ async function connectHostedRoom() {
           state.presentationScreen = "title";
           await persistHostState();
         }
+        if (view === "host" && state.phase === "battle_prompt") refreshBattlePairing();
         emit();
         render();
         // Un-awaited on purpose: the host screen must paint immediately, and
@@ -1271,6 +1416,13 @@ function refreshHostSyncNotice() {
   if (existing) existing.outerHTML = markup;
   else document.querySelector(".shell")?.insertAdjacentHTML("beforeend", markup);
   attachHostSyncRetry();
+}
+
+// battlePairingPanel() disables Open while a save has failed, and the banner
+// patch above does not touch it. Only the battle screen is re-rendered: the
+// ordinary host screens persist mid-cue and must not be rebuilt (mistakes.md #15).
+function renderBattleAfterSaveRecovered() {
+  if (view === "host" && Number.isInteger(state.battleRoundIndex)) render();
 }
 
 function attachHostSyncRetry() {
@@ -2134,6 +2286,19 @@ function doorChoiceCards({ interactive = false, compact = false } = {}) {
   }).join("")}</div>`;
 }
 
+// Host view for the whole battle round (slice 3a): its start card, with Open,
+// and the battle_prompt screen, with End. Generation arrives in slice 3b.
+function renderHostBattle() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  const count = Number(state.battleMatchupCount) || 0;
+  const opened = state.phase === "battle_prompt";
+  const summary = opened ? `${count} matchup${count === 1 ? "" : "s"} paired. Players are waiting for their prompts.` : "Open the round when everyone has joined. Pairing locks the roster.";
+  const endControl = opened ? '<button class="btn btn-primary" data-battle-end-round>End battle round</button>' : "";
+  const endNote = opened ? '<p class="battle-round-note">Ending the round awards no points yet.</p>' : "";
+  const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+}
+
 function renderHostDoors() {
   const picked = (state.doorPicks || []).length;
   const targetRound = hostQuizDefinition?.rounds?.[state.targetRoundIndex];
@@ -2158,16 +2323,63 @@ function renderHostFinale() {
   app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Finale</span><h1>${title}</h1><p>${copy}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">Finale control</p><h2>${finalStage === "final_suspense" ? "And the winner is…" : finalStage === "final_podium" ? "Celebrate the podium." : "Thanks for playing."}</h2>${audio}${leaderboard()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions">${isHostedRoom ? `<a class="btn btn-secondary" href="${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}" target="_blank" rel="noopener">Open presentation view</a>` : ""}${action}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}</aside></div></main>${shortcutGuide()}`);
 }
 
+// Host-only, title-screen-only: lets the host generate a couple of sample
+// images from the effective model before a Prompt Battle round starts, and
+// see the reported cost, without spending a player's generation budget.
+// Model choice is always a menu built from BATTLE_TEST_MODELS, never a
+// free-text field -- a client-typed model string is exactly what the
+// Worker's deployment allowlist exists to refuse.
+function battleTestImagePanel() {
+  const busy = battleTestPanel.busy;
+  const modelOptions = BATTLE_TEST_MODELS.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === battleTestPanel.model ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("");
+  const result = battleTestPanel.result;
+  const images = result?.images || [];
+  const gallery = images.length ? `<div class="battle-test-gallery">${images.map((image) => `<img class="battle-test-image" src="data:${escapeHtml(image.mimeType)};base64,${image.bytesBase64}" alt="Test generation from ${escapeHtml(battleTestPanel.model)}" />`).join("")}</div>` : "";
+  const partialNotice = result?.partial ? `<p class="battle-test-note" role="status">Only ${images.length} of the requested variants came back — the attempt still counted.</p>` : "";
+  const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
+  const costLine = result ? `<p class="battle-test-cost">Reported cost: ${result.costUsd ? `$${Number(result.costUsd).toFixed(4)}` : "$0 (Workers AI free tier)"}</p>` : "";
+  const errorLine = battleTestPanel.error ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.error)}</p>` : "";
+  // Diagnostic only: raw per-call failure reasons from the provider, so a
+  // zero-image response is legible without opening devtools. Host-only, by
+  // construction -- this whole panel only renders for the host.
+  const providerErrorsNotice = result?.providerErrors?.length
+    ? `<details class="battle-test-note battle-test-note--blocked" open><summary>${images.length === 0 ? "No images came back" : "Some calls failed"} — provider details</summary>${result.providerErrors.map((entry) => `<p>${entry.status ? `[${escapeHtml(String(entry.status))}] ` : ""}${escapeHtml(entry.message)}</p>`).join("")}</details>`
+    : "";
+  return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
+}
+
+// Host-only Prompt Battle pairing panel (slice 2, placed by slice 3a): shown
+// on the battle round's start card with Open, and in battle_prompt with
+// Refresh only. The pairing lives in battleRoundPanel, never on `state`.
+function battlePairingPanel() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  if (!isHostedRoom || !isBattleRound(round)) return "";
+  const busy = battleRoundPanel.busy;
+  const pairing = battleRoundPanel.state;
+  const opened = state.phase === "battle_prompt";
+  const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
+  const matchups = Array.isArray(pairing?.matchups) ? pairing.matchups : [];
+  const pairingView = matchups.length
+    ? `<ol class="battle-pairing">${matchups.map((matchup) => `<li><p class="battle-pairing-prompt">${escapeHtml(matchup.promptText || "")}</p><ul class="battle-pairing-entrants">${(matchup.entrants || []).map((entrant) => `<li>${escapeHtml(entrant.playerName || "")}${entrant.submitted ? " <span>submitted</span>" : ""}${entrant.vetoed ? " <span>vetoed</span>" : ""}</li>`).join("")}</ul>${(matchup.entrants || []).length === 3 ? '<p class="battle-pairing-threeway">Three-way</p>' : ""}</li>`).join("")}</ol>`
+    : opened
+    ? `<p class="battle-round-note" role="status">${busy ? "Loading the pairing…" : "The pairing has not loaded. Press Refresh pairing."}</p>`
+    : `<p class="battle-round-note" role="status">Pairing happens when you open the round. Players who join after that watch and vote but are not paired.</p>`;
+  const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
+  const openButton = opened ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
+  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}<button class="btn btn-secondary" data-battle-refresh-pairing ${busy ? "disabled" : ""}>Refresh pairing</button></div>${errorLine}${seedLine}${pairingView}</div>`;
+}
+
 function renderHost() {
   if (["door_choice", "door_reveal"].includes(state.phase)) { renderHostDoors(); return; }
   if (state.phase === "complete") { renderHostFinale(); return; }
+  if (Number.isInteger(state.battleRoundIndex)) { renderHostBattle(); return; }
   const submittedCount = Object.keys(state.submitted).length;
   const playerUrl = `${location.origin}${location.pathname}?view=player&room=${encodeURIComponent(roomCode)}`;
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
   const demoNotice = !isHostedRoom ? '<div class="host-demo-notice"><strong>Local demo — not a published room.</strong><span>This screen uses sample questions and cannot load your uploaded assets.</span><a class="btn btn-secondary" href="./index.html">Create a hosted room</a></div>' : "";
   const openingTitle = hostQuizDefinition?.titlePage;
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
-  const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>` : "";
+  const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>${battleTestImagePanel()}` : "";
   const intermissionAction = state.presentationScreen === "round_end"
     ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_scoreboard"
@@ -2361,8 +2573,16 @@ function presentationTimerBadge() {
   return readout ? `<div class="presentation-timer-badge" data-presentation-timer-badge>${readout}</div>` : "";
 }
 
+// Presentation during battle_prompt (slice 3a): a strict projection of public
+// state. Never images in this phase (architecture spec section 7).
+function presenterBattlePrompt() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  const count = Number(state.battleMatchupCount) || 0;
+  return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${count} matchup${count === 1 ? "" : "s"} · check your phone for your prompt</p></section>`;
+}
+
 function renderPresenter() {
-  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : "Final standings";
+  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const quizHasVideo = Boolean(hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.video?.mediaAssetId || question.video?.url)));
@@ -2380,6 +2600,8 @@ function renderPresenter() {
     ? roundTransitionCard(state.presentationScreen)
     : ["door_choice", "door_reveal"].includes(state.phase)
     ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Feeling lucky?"}</h2>${state.phase === "door_reveal" ? "" : "<p>Choose your door.</p>"}</div>${doorChoiceCards()}</section>`
+    : state.phase === "battle_prompt"
+    ? presenterBattlePrompt()
     : state.phase === "complete"
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
@@ -2477,6 +2699,12 @@ function renderPlayer() {
     const selectedDoor = doorBonusDefinition()?.doors?.find((door) => door.id === (result?.doorId || selectedPick?.doorId));
     const revealCopy = result ? `<div class="personal-door-result ${Number(result.multiplier) < 1 ? "is-penalty" : "is-boost"}"><span>${doorIconSymbol(selectedDoor?.icon)}</span><div><small>${escapeHtml(selectedDoor?.name || "Your door")}</small><strong>${formatMultiplier(result.multiplier)}</strong><p>This multiplier applies to every automatic point you earn in the next round.</p></div></div>` : `<div class="personal-door-result is-neutral"><span>—</span><div><small>No door selected</small><strong>1×</strong><p>You’ll play the next round at the standard multiplier.</p></div></div>`;
     app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Feeling lucky?"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Choose your door. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
+    return;
+  }
+  // Prompt Battle slice 3a: a phone cannot read its own matchup's prompt until
+  // slice 3b adds a player RPC, so every phone gets the same holding screen.
+  if (state.phase === "battle_prompt") {
+    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>Get ready</h1>${playerIdentityBadge()}</header><section class="player-question"><p>Your prompt is on its way.</p></section></section></main>`, true);
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
@@ -2694,6 +2922,51 @@ function attachEvents() {
     const input = document.querySelector('input[aria-label="Player join link"]');
     try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand("copy"); }
   });
+  document.querySelector("[data-battle-test-model]")?.addEventListener("change", (event) => {
+    battleTestPanel.model = event.currentTarget.value;
+  });
+  // "input", not "change", and no render() call: render() replaces the
+  // whole panel's innerHTML, which would drop focus and cursor position on
+  // every keystroke (mistakes.md #15). The textarea already shows what the
+  // host is typing; this only needs to keep state in sync for the next
+  // time something else triggers a render (e.g. clicking Test).
+  document.querySelector("[data-battle-test-prompt]")?.addEventListener("input", (event) => {
+    battleTestPanel.prompt = event.currentTarget.value;
+  });
+  document.querySelector("[data-battle-test-generate]")?.addEventListener("click", async () => {
+    if (battleTestPanel.busy) return;
+    const hostSecret = getHostSecret();
+    if (!hostSecret) { battleTestPanel.error = "Host authorization is required."; render(); return; }
+    battleTestPanel.busy = true;
+    battleTestPanel.error = "";
+    render();
+    try {
+      const response = await fetch(`${quizWorkerOrigin}/battle/test-image`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret },
+        body: JSON.stringify({ model: battleTestPanel.model, prompt: battleTestPanel.prompt })
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        battleTestPanel.result = null;
+        battleTestPanel.error = body?.error || `Test generation failed (${response.status}).`;
+      } else {
+        battleTestPanel.result = body;
+      }
+    } catch {
+      battleTestPanel.result = null;
+      battleTestPanel.error = "Could not reach the image generator.";
+    } finally {
+      battleTestPanel.busy = false;
+      render();
+    }
+  });
+  // Prompt Battle pairing. Both calls go straight to the host RPCs; the
+  // pairing they return stays in battleRoundPanel and is never merged into
+  // `state`, so it cannot reach publicRoomState().
+  document.querySelector("[data-battle-open-round]")?.addEventListener("click", () => openBattleRoundFromHost());
+  document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => refreshBattlePairing());
+  document.querySelector("[data-battle-end-round]")?.addEventListener("click", () => endBattleRound());
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
     let completed = {};
