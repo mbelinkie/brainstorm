@@ -1,0 +1,16 @@
+{
+  "_comment": "Proposed Claude Code hook for the command guard (issue #6). NOT active: merge the hooks block into .claude/settings.json only after the owner approves, then restart the session.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/guard/pre-command-hook.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
