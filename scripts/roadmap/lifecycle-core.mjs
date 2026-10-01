@@ -150,7 +150,7 @@ export function evaluateRouting(labels, routing) {
 
 // ---- claims ---------------------------------------------------------------
 
-const MARKER = /^\s*<!--\s*(claim|complete|release|block):v1\s+issue=(\d+)\s*-->/;
+const MARKER = /^\s*<!--\s*(claim|complete|release|block|review|verify):v1\s+issue=(\d+)\s*-->/;
 
 // Claims from anyone count as live (fail closed). Only a comment by a trusted
 // author may END a claim, so a stranger on a public issue cannot release it.
@@ -266,3 +266,152 @@ export function latestBlockCause(comments, issueNumber) {
 }
 
 export { oneLine };
+
+// ---- part 2: review, verify, complete, release (issue #45) --------------------
+
+const HEX_COMMIT = /^[0-9a-f]{7,40}$/i;
+const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+export const isCommit = (value) => typeof value === "string" && HEX_COMMIT.test(value.trim());
+const shortCommit = (commit) => commit.trim().toLowerCase().slice(0, 7);
+export const sameCommit = (a, b) => Boolean(a && b) && shortCommit(a) === shortCommit(b);
+
+// Comments of one marker kind for this issue, in order: [{ comment, index }].
+export function markedComments(comments, kind, issueNumber, { authors = null } = {}) {
+  const out = [];
+  (comments ?? []).forEach((comment, index) => {
+    const marker = MARKER.exec(comment.body ?? "");
+    if (!marker || marker[1] !== kind || Number(marker[2]) !== Number(issueNumber)) return;
+    if (authors && !authors.includes(comment.author?.login)) return;
+    out.push({ comment, index });
+  });
+  return out;
+}
+
+const field = (body, label) => new RegExp(`^- ${label}:\\s*(.*)$`, "mi").exec(body ?? "")?.[1]?.trim() ?? "";
+const idIn = (text) => UUID_ANYWHERE.exec(text)?.[0]?.toLowerCase() ?? null;
+const commitIn = (body) => /^- Tested commit:\s*`([0-9a-f]{7,40})`/mi.exec(body ?? "")?.[1]?.toLowerCase() ?? null;
+
+export function renderReviewComment({ number, acceptanceClass, executionId, commit, branch, commands, artifacts, exclusions, outstanding, externalEvidence, nowIso }) {
+  const lines = [
+    `<!-- review:v1 issue=${number} -->`,
+    `**Ready for acceptance (${acceptanceClass}).** My own run is evidence, not independent acceptance.`,
+    "",
+    `- Tested commit: \`${commit.trim().toLowerCase()}\``,
+    `- Execution ID: \`${executionId}\``,
+  ];
+  if (branch) lines.push(`- Branch: \`${oneLine(branch)}\``);
+  lines.push(
+    `- Commands and results: ${oneLine(commands)}`,
+    `- Artifacts: ${oneLine(artifacts) || "none"}`,
+    `- Exclusions: ${oneLine(exclusions)}`,
+    `- Outstanding acceptance steps: ${oneLine(outstanding)}`,
+  );
+  if (externalEvidence) lines.push(`- External evidence: ${oneLine(externalEvidence)}`);
+  lines.push(`- Recorded at: ${nowIso}`);
+  return `${lines.join("\n")}\n`;
+}
+
+export function parseReviewComment(body) {
+  return {
+    commit: commitIn(body),
+    commands: field(body, "Commands and results"),
+    externalEvidence: field(body, "External evidence"),
+    executionId: idIn(field(body, "Execution ID")),
+  };
+}
+
+export function renderVerifyComment({ number, commit, executionId, checks, nowIso }) {
+  return [
+    `<!-- verify:v1 issue=${number} -->`,
+    "**Independent verification**",
+    "",
+    `- Tested commit: \`${commit.trim().toLowerCase()}\``,
+    `- Verifier execution ID: \`${executionId}\``,
+    `- Checks re-run and results: ${oneLine(checks)}`,
+    `- Recorded at: ${nowIso}`,
+    "",
+  ].join("\n");
+}
+
+export function parseVerifyComment(body) {
+  return { commit: commitIn(body), verifier: idIn(field(body, "Verifier execution ID")) };
+}
+
+// An acceptance written by the repository owner after the review, naming the
+// exact tested commit. Wrapper-marked comments and "not accepted" never count.
+// Honest limit: the owner's account is the credential; anything that can post as
+// the owner can type this, which is why a bare self-report is not enough.
+export function findOwnerAcceptance(comments, afterIndex, commit, trustedAuthors) {
+  return (comments ?? []).some((comment, index) => {
+    const body = comment.body ?? "";
+    if (index <= afterIndex || MARKER.test(body)) return false;
+    if (!trustedAuthors.includes(comment.author?.login)) return false;
+    if (!/\baccepted\b/i.test(body) || /\b(?:not|never|un)\s*accepted\b/i.test(body)) return false;
+    return body.toLowerCase().includes(shortCommit(commit));
+  });
+}
+
+// Trusted author, after the review, same commit, and a verifier that is none of
+// the executions that implemented or reviewed the work.
+export function findIndependentVerification(comments, issueNumber, afterIndex, commit, implementingIds, trustedAuthors) {
+  return markedComments(comments, "verify", issueNumber, { authors: trustedAuthors }).some(({ comment, index }) => {
+    if (index <= afterIndex) return false;
+    const parsed = parseVerifyComment(comment.body);
+    return sameCommit(parsed.commit, commit) && parsed.verifier && !implementingIds.includes(parsed.verifier);
+  });
+}
+
+export function renderCompleteComment({ number, acceptanceClass, commit, baseline, how, nowIso }) {
+  return [
+    `<!-- complete:v1 issue=${number} -->`,
+    "**Accepted and completed.**",
+    "",
+    `- Acceptance (${acceptanceClass}): ${oneLine(how)}`,
+    `- Tested commit: \`${commit.trim().toLowerCase()}\`, reachable from \`${baseline}\` (checked through the GitHub compare API)`,
+    "- Closed by the lifecycle wrapper; Status Done and the close are written together and re-read.",
+    `- Recorded at: ${nowIso}`,
+    "",
+  ].join("\n");
+}
+
+export function renderReleaseComment({ number, stoppedExecution, confirmedBy, evidence, nowIso }) {
+  return [
+    `<!-- release:v1 issue=${number} -->`,
+    "**Claim released (operator-confirmed stop)**",
+    "",
+    `- Stopped execution: \`${stoppedExecution}\``,
+    `- Confirmed by: ${oneLine(confirmedBy)}`,
+    `- Evidence the execution stopped: ${oneLine(evidence)}`,
+    "- Age alone was not used as evidence. Status returns to Ready so a new claim can be made.",
+    `- Recorded at: ${nowIso}`,
+    "",
+  ].join("\n");
+}
+
+// The most recent release comment and the execution it released.
+export function latestRelease(comments, issueNumber, trustedAuthors) {
+  const last = markedComments(comments, "release", issueNumber, { authors: trustedAuthors }).at(-1);
+  if (!last) return null;
+  return { stopped: idIn(field(last.comment.body, "Stopped execution")), index: last.index };
+}
+
+// Read-only comparison of issue state, board status and claim records.
+export function staleReport({ issueState, status, claims, completed, nowMs }) {
+  const found = [];
+  const live = claims.live;
+  const add = (code, message) => found.push({ code, message });
+  if (live && ["Inbox", "Backlog", "Ready"].includes(status)) add("CLAIM_STATUS_MISMATCH", `a live claim exists but Status is ${status}`);
+  if (!live && ["In progress", "In review"].includes(status)) add("STATUS_WITHOUT_CLAIM", `Status is ${status} but no live claim is on record`);
+  if (issueState === "CLOSED" && status !== "Done") add("CLOSED_NOT_DONE", `the issue is closed but Status is ${status ?? "none"}`);
+  if (issueState === "OPEN" && status === "Done") add("DONE_BUT_OPEN", "Status is Done but the issue is still open");
+  if (issueState === "CLOSED" && status === "Done" && !completed) add("NO_COMPLETION_RECORD", "closed and Done, but no complete:v1 comment by the owner");
+  const created = live ? Date.parse(live.createdAt) : NaN;
+  return {
+    discrepancies: found,
+    liveClaim: live
+      ? { executionId: live.executionId, commentId: live.commentId, createdAt: live.createdAt, ageHours: Number.isFinite(created) ? Math.round((nowMs - created) / 3_600_000) : null }
+      : null,
+    stopEvidence: false,
+    note: "Age alone is never proof that an execution stopped. Use release with a recorded operator confirmation.",
+  };
+}

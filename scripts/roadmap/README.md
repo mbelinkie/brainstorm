@@ -67,4 +67,13 @@ always inside `gate.session()` so one lock covers the re-check and the writes.
 - Only the repository owner's `complete:v1`/`release:v1` comments end a claim or
   count as a prerequisite's acceptance record; anyone's `claim:v1` counts as live.
 - `block` records a routing change as a proposal; the owner edits the labels.
-- Part 2 (review, complete, stale-claim recovery) is issue #45.
+
+## The lifecycle wrapper, part 2 (issue #45)
+
+`lifecycle-finish.mjs` adds `review`, `verify`, `complete`, `stale` and `release`.
+
+- `review` is recorded by the execution holding the live claim; an External issue also needs `--external-evidence`.
+- `complete` is the only code that closes an issue (a test enforces it). Producer needs the owner's acceptance naming the tested commit after the review; Automated needs a `verify` record from a different execution (or the owner's acceptance); External needs recorded evidence. The commit must be reachable from `main` (GitHub compare API), or from a special branch named in the issue's Starting baseline.
+- Comment, Done and close are written, then re-read; a half-finished completion is reconciled by marker, never replayed.
+- `stale` is read-only. `release` returns a stale claim to Ready only with `--stopped-execution`, `--confirmed-by` and `--evidence`; age alone is never proof.
+- Limit: the owner's acceptance is a comment from the owner account, so anything that can post as that account can type it.

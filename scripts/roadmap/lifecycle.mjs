@@ -13,6 +13,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createGate } from "./gate.mjs";
 import { createGhTransport } from "./github-transport.mjs";
+import { createFinish } from "./lifecycle-finish.mjs";
 import {
   evaluateRouting,
   isRepoName,
@@ -158,8 +159,10 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
     blockers.push(...contract.problems);
 
     const acceptanceText = contract.sections.Acceptance;
+    let acceptanceClass = null;
     if (acceptanceText) {
       const parsed = parseAcceptanceClass(acceptanceText, config.routing.acceptanceClasses);
+      if (parsed.ok) acceptanceClass = parsed.value;
       if (!parsed.ok) blockers.push({ code: "ACCEPTANCE_CLASS", message: parsed.message });
       else if (item && item.acceptance?.name !== parsed.value) {
         blockers.push({ code: "ACCEPTANCE_MISMATCH", message: `the issue says ${parsed.value} but the board's Acceptance field is ${item.acceptance?.name ?? "empty"}` });
@@ -206,6 +209,8 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
       labels,
       routing: { profile: routing.profile, effort: routing.effort, escalation: routing.escalation },
       contractSections: Object.keys(contract.sections),
+      acceptanceClass,
+      startingBaseline: contract.sections["Starting baseline"] ?? "",
       dependencies: { declared, native, prerequisites },
       claims,
       claimHistoryComplete: !node.comments.pageInfo.hasPreviousPage,
@@ -228,9 +233,9 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
   // comment stops before the status write, and a failed status write after a
   // posted comment is reported as PARTIAL_WRITE so a re-run (which re-reads)
   // finishes the status without a second comment.
-  async function commentThenStatus(ops, snap, { body, statusName }) {
+  async function commentThenStatus(ops, snap, { body, statusName, opName = "claim" }) {
     const posted = await addComment(ops, snap, body);
-    if (!posted.ok) return { ...posted, step: "comment", commentPosted: false, nextStep: "re-run claim; it re-reads before writing" };
+    if (!posted.ok) return { ...posted, step: "comment", commentPosted: false, nextStep: `re-run ${opName}; it re-reads before writing` };
     const status = await setStatus(ops, snap, statusName);
     if (!status.ok) {
       return refuse("PARTIAL_WRITE", `the comment was posted but the Status write failed (${status.code}); re-run to finish the status without a second comment`, {
@@ -419,13 +424,16 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
         return { ok: true, op: "block", reconciled: true, status: "Blocked" };
       }
       const body = renderBlockComment({ number, ...facts, nowIso: new Date(now()).toISOString() });
-      const written = await commentThenStatus(ops, snap, { body, statusName: "Blocked" });
-      if (!written.ok) return { ...written, nextStep: written.nextStep?.replace("claim", "block") };
+      const written = await commentThenStatus(ops, snap, { body, statusName: "Blocked", opName: "block" });
+      if (!written.ok) return written;
       return { ok: true, op: "block", status: "Blocked", commentUrl: written.commentUrl };
     });
   }
 
-  return { inspect, ready, claim, block };
+  const finish = createFinish({
+    gate, config, env, now, thisRepo, trusted, evaluate, setStatus, addComment, commentThenStatus
+  });
+  return { inspect, ready, claim, block, ...finish };
 }
 
 // ---- command line -----------------------------------------------------------
@@ -447,6 +455,19 @@ Operations
                   --effort <low|medium|high>   (default: CLAUDE_EFFORT)
                   --worktree <name>   a name such as ../quiz-x, never an absolute path
                   --allow-mismatch <reason>   record a run that differs from the labels
+  review <n>    claim holder records the tested commit, commands, exclusions and
+                outstanding steps (review:v1), then Status In review
+                  --execution-id --commit --commands --exclusions --outstanding
+                  [--artifacts] [--branch] [--external-evidence (required for External)]
+  verify <n>    an execution other than the implementer records an independent check
+                  --execution-id --commit --checks
+  complete <n>  verify acceptance for the issue's class, check the commit is reachable
+                from main (or a special branch recorded on the issue), then write the
+                complete:v1 comment, Done and the close together, and re-read
+                  [--special-branch <name>]
+  stale <n>     read-only: compare issue state, board status and claim records
+  release <n>   restart a stale claim ONLY on recorded operator evidence (age is never proof)
+                  --stopped-execution <id> --confirmed-by <name> --evidence <text>
   block <n>     post a block:v1 comment and set Blocked; scope and priority untouched
                   --cause <text> --needs <text>
                   --routing-change <label> with --attempted-checks --failure
@@ -460,7 +481,8 @@ Honest limits
   A lock plus a re-read is not an atomic claim across hosts. The lock covers
   cooperating processes on one host only. With several people or hosts, use one
   dispatcher (see docs/PROJECT_OPERATING_PLAYBOOK.md section 4 and issue #4).
-  Stale-claim reconciliation, review and complete are issue #45.
+  Acceptance by the owner is a comment from the owner account; anything that can post
+  as that account can type it, so a bare self-report is never accepted as verification.
 `;
 }
 
@@ -513,6 +535,11 @@ function render(result, json) {
     ];
     return lines.join("\n");
   }
+  if (result.op === "stale") {
+    const claim = result.liveClaim ? `${result.liveClaim.executionId ?? "unreadable id"} (age ${result.liveClaim.ageHours ?? "?"}h, not evidence)` : "none live";
+    const found = result.discrepancies.length === 0 ? "discrepancies: none" : ["discrepancies:", ...result.discrepancies.map((d) => `  - ${d.code}: ${d.message}`)].join("\n");
+    return [`claim: ${claim}`, found, result.note].join("\n");
+  }
   return `OK ${JSON.stringify(result)}`;
 }
 
@@ -524,8 +551,8 @@ export async function runCli(argv, { lifecycle, env = process.env, out = (s) => 
     return op || flags.help ? 0 : 2;
   }
   const number = Number(rawNumber);
-  if (!["inspect", "ready", "claim", "block"].includes(op) || !Number.isInteger(number) || number < 1) {
-    out(`usage error: expected <inspect|ready|claim|block> <issue number>\n\n${helpText()}`);
+  if (!["inspect", "ready", "claim", "block", "review", "verify", "complete", "stale", "release"].includes(op) || !Number.isInteger(number) || number < 1) {
+    out(`usage error: expected <inspect|ready|claim|block|review|verify|complete|stale|release> <issue number>\n\n${helpText()}`);
     return 2;
   }
   const effort = flags.effort ?? env.CLAUDE_EFFORT;
@@ -537,6 +564,19 @@ export async function runCli(argv, { lifecycle, env = process.env, out = (s) => 
       executionId: flags["execution-id"], branch: flags.branch, startCommit: flags["start-commit"], model: flags.model,
       effort, worktree: flags.worktree, owner: flags.owner, allowMismatch: flags["allow-mismatch"],
     });
+  } else if (op === "review") {
+    result = await lifecycle.review(number, {
+      executionId: flags["execution-id"], commit: flags.commit, commands: flags.commands, artifacts: flags.artifacts,
+      exclusions: flags.exclusions, outstanding: flags.outstanding, externalEvidence: flags["external-evidence"], branch: flags.branch,
+    });
+  } else if (op === "verify") {
+    result = await lifecycle.verify(number, { executionId: flags["execution-id"], commit: flags.commit, checks: flags.checks });
+  } else if (op === "complete") {
+    result = await lifecycle.complete(number, { specialBranch: flags["special-branch"] });
+  } else if (op === "stale") {
+    result = await lifecycle.stale(number);
+  } else if (op === "release") {
+    result = await lifecycle.release(number, { stoppedExecution: flags["stopped-execution"], confirmedBy: flags["confirmed-by"], evidence: flags.evidence });
   } else {
     result = await lifecycle.block(number, {
       cause: flags.cause, needs: flags.needs, executionId: flags["execution-id"], routingChange: flags["routing-change"],
