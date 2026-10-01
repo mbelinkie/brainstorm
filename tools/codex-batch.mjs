@@ -129,7 +129,8 @@ export function createBatch({
 
   async function discoverRepo() {
     const top = await git(["rev-parse", "--show-toplevel"]);
-    return { top: path.resolve(top) };
+    const shared = await git(["rev-parse", "--git-common-dir"]);
+    return { top: path.resolve(top), shared: path.resolve(shared) };
   }
 
   async function scanIssues(numbers) {
@@ -213,7 +214,8 @@ export function createBatch({
     const before = await balance(key);
     if (!before.ok) return { stopped: true, reason: before.reason };
 
-    const top = (await discoverRepo()).top;
+    const repoInfo = await discoverRepo();
+    const top = repoInfo.top;
     const runNumber = (existing?.attempts ?? 0) + 1;
     const branch = branchName(number, runNumber);
     const worktree = worktreeName(number, runNumber);
@@ -229,7 +231,7 @@ export function createBatch({
       number, title: ticket.title, body: ticket.body, branch, worktree, startCommit: "origin/main",
       modelId: routing.modelId, effectiveEffort: routing.effectiveEffort,
     });
-    const worker = await run("codex", ["exec", "-p", "deepseek", "--model", routing.modelId, "--json"], {
+    const worker = await run("codex", ["exec", "-p", "deepseek", "--model", routing.modelId, "-c", "approval_policy=never", "--add-dir", repoInfo.shared, "--json"], {
       cwd: treePath, input: workerPrompt, env: { DEEPSEEK_API_KEY: key },
     });
     log({ op: "worker", issue: number, status: worker.status, stdoutTail: String(worker.stdout ?? "").slice(-400) });

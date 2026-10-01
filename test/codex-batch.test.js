@@ -95,7 +95,10 @@ test("the worker gets the key in its environment only; Sol gets no deepseek and 
   const sol = invocations.find((i) => i.command === "codex" && i.args.includes("gpt-6.1-sol"));
   assert.ok(worker, "a DeepSeek worker was launched");
   assert.ok(sol, "a Sol reviewer was launched");
-  assert.deepEqual(worker.args, ["exec", "-p", "deepseek", "--model", "deepseek-v4-pro", "--json"]);
+  assert.deepEqual(worker.args.slice(0, 5), ["exec", "-p", "deepseek", "--model", "deepseek-v4-pro"]);
+  assert.ok(worker.args.includes("-c") && worker.args.includes("approval_policy=never"), "worker must be launched approval-policy never");
+  assert.ok(worker.args.includes("--add-dir"), "worker must get the git shared dir writable");
+  assert.ok(worker.args.includes("--json"));
   assert.equal(worker.env.DEEPSEEK_API_KEY, key);
   assert.ok(!worker.input.includes(key), "the key must never appear in the worker prompt");
   assert.deepEqual(sol.args, ["exec", "--model", "gpt-6.1-sol", "--json"]);
