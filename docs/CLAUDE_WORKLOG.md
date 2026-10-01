@@ -1956,3 +1956,20 @@ modified.
 **Unproven / outstanding:** no live release was attempted; the existing #51
 claim remains live. Publication, Sol review, merge and completion remain with
 the owner/dispatcher.
+
+## 2026-10-01 — Verified native workflow lessons
+
+Branch: `codex/native-workflow-lessons`. Author: Codex orchestrator
+(documentation only; product implementation remains Luna-owned).
+
+**Slice:** updated the existing ticket guide with the completed #51/#52
+rehearsal evidence, authentic native child identity handling, exact published
+commit verification, safe recovery notes, strict boundary-field normalization,
+and the distinction between repository checks and existing deployment failures.
+Recorded only observed behavior; added no runner or scheduler.
+
+**Files:** `docs/roadmap/WORKING_A_TICKET.md` and this worklog.
+**Verification:** live lifecycle completion returned completed, then
+alreadyCompleted; stale confirmed CLOSED/Done, no live claim and no discrepancy.
+Sol and integrated main each passed 554 tests at the recorded rehearsal SHAs.
+`git diff --check` passed for this documentation change. No product code changed.
