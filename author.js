@@ -329,7 +329,7 @@ function battleField(label, path, value, errors, options = {}) {
   const control = options.textarea
     ? `<textarea data-battle-field="${path}" aria-label="${label}" ${options.maxlength ? `maxlength="${options.maxlength}"` : ""}>${escapeHtml(value)}</textarea>`
     : `<input data-battle-field="${path}" aria-label="${label}" type="${options.type || "text"}" value="${escapeHtml(value)}" />`;
-  return `<div class="field"><label>${label}</label>${control}${errors[path] ? `<small class="health-warning" role="status">${escapeHtml(errors[path])}</small>` : ""}</div>`;
+  return `<div class="field"><label>${label}</label>${control}${`<small class="health-warning" role="status" data-battle-error="${path}"${errors[path] ? "" : " hidden"}>${errors[path] ? escapeHtml(errors[path]) : ""}</small>`}</div>`;
 }
 
 function renderPromptBattleEditor(round) {
@@ -338,9 +338,9 @@ function renderPromptBattleEditor(round) {
   const engine = round.engine && typeof round.engine === "object" && !Array.isArray(round.engine) ? round.engine : {};
   const scoring = round.scoring && typeof round.scoring === "object" && !Array.isArray(round.scoring) ? round.scoring : {};
   return `<section class="section"><span class="section-label">Round details</span>${battleField("Round title", "title", round.title || "", errors)}</section>
-    <section class="section"><div class="section-head"><span class="section-label">Battle prompts</span><button class="button button-quiet" data-add-battle-prompt type="button">+ Add prompt</button></div>${errors.prompts ? `<small class="health-warning" role="status">${escapeHtml(errors.prompts)}</small>` : ""}${prompts}</section>
-    <section class="section"><span class="section-label">Image engine</span>${errors.engine ? `<small class="health-warning" role="status">${escapeHtml(errors.engine)}</small>` : ""}<div class="field-grid">${battleField("Default provider", "engine.defaultProvider", engine.defaultProvider || "", errors)}${battleField("Default model", "engine.defaultModel", engine.defaultModel || "", errors)}${battleField("Permitted models (one per line)", "engine.permittedModels", (engine.permittedModels || []).join("\n"), errors, { textarea: true })}${battleField("Variants", "engine.variants", engine.variants ?? "", errors, { type: "number" })}${battleField("Attempt budget", "engine.attemptBudget", engine.attemptBudget ?? "", errors, { type: "number" })}${battleField("Steps (optional)", "engine.steps", engine.steps ?? "", errors, { type: "number" })}${battleField("Resolution (optional)", "engine.resolution", engine.resolution || "", errors)}${battleField("Output format (optional)", "engine.outputFormat", engine.outputFormat || "", errors)}${battleField("Spend cap USD (optional)", "engine.maxSessionSpendUsd", engine.maxSessionSpendUsd ?? "", errors, { type: "number" })}${battleField("Generation cap (optional)", "engine.maxSessionGenerations", engine.maxSessionGenerations ?? "", errors, { type: "number" })}</div></section>
-    <section class="section"><span class="section-label">Scoring</span>${errors.scoring ? `<small class="health-warning" role="status">${escapeHtml(errors.scoring)}</small>` : ""}<div class="field-grid">${battleField("Winner points", "scoring.winnerPoints", scoring.winnerPoints ?? "", errors, { type: "number" })}${battleField("Voter points", "scoring.voterPoints", scoring.voterPoints ?? "", errors, { type: "number" })}</div></section>`;
+    <section class="section"><div class="section-head"><span class="section-label">Battle prompts</span><button class="button button-quiet" data-add-battle-prompt type="button">+ Add prompt</button></div>${`<small class="health-warning" role="status" data-battle-error="prompts"${errors.prompts ? "" : " hidden"}>${errors.prompts ? escapeHtml(errors.prompts) : ""}</small>`}${prompts}</section>
+    <section class="section"><span class="section-label">Image engine</span>${`<small class="health-warning" role="status" data-battle-error="engine"${errors.engine ? "" : " hidden"}>${errors.engine ? escapeHtml(errors.engine) : ""}</small>`}<div class="field-grid">${battleField("Default provider", "engine.defaultProvider", engine.defaultProvider || "", errors)}${battleField("Default model", "engine.defaultModel", engine.defaultModel || "", errors)}${battleField("Permitted models (one per line)", "engine.permittedModels", (engine.permittedModels || []).join("\n"), errors, { textarea: true })}${battleField("Variants", "engine.variants", engine.variants ?? "", errors, { type: "number" })}${battleField("Attempt budget", "engine.attemptBudget", engine.attemptBudget ?? "", errors, { type: "number" })}${battleField("Steps (optional)", "engine.steps", engine.steps ?? "", errors, { type: "number" })}${battleField("Resolution (optional)", "engine.resolution", engine.resolution || "", errors)}${battleField("Output format (optional)", "engine.outputFormat", engine.outputFormat || "", errors)}${battleField("Spend cap USD (optional)", "engine.maxSessionSpendUsd", engine.maxSessionSpendUsd ?? "", errors, { type: "number" })}${battleField("Generation cap (optional)", "engine.maxSessionGenerations", engine.maxSessionGenerations ?? "", errors, { type: "number" })}</div></section>
+    <section class="section"><span class="section-label">Scoring</span>${`<small class="health-warning" role="status" data-battle-error="scoring"${errors.scoring ? "" : " hidden"}>${errors.scoring ? escapeHtml(errors.scoring) : ""}</small>`}<div class="field-grid">${battleField("Winner points", "scoring.winnerPoints", scoring.winnerPoints ?? "", errors, { type: "number" })}${battleField("Voter points", "scoring.voterPoints", scoring.voterPoints ?? "", errors, { type: "number" })}</div></section>`;
 }
 
 function renderEditor() {
@@ -349,7 +349,7 @@ function renderEditor() {
   const battle = round?.type === "prompt_battle";
   const questionActions = ["move-question-up", "move-question-down", "duplicate-question", "delete-question"];
   questionActions.forEach((id) => { $(`#${id}`).hidden = battle; });
-  $(".editor-column > .add-row").hidden = battle;
+  ['add-question','add-question-template'].forEach(id => document.getElementById(id).hidden = battle);
   if (battle) {
     $("#question-location").textContent = `${round.title} · Prompt Battle`;
     $("#editor-title").textContent = "Prompt Battle round";
@@ -402,9 +402,20 @@ function updateField(key, value) {
 function bindEditorEvents() {
   if (selectedRound()?.type === "prompt_battle") {
     document.querySelectorAll("[data-battle-field]").forEach((input) => {
-      const commit = () => { setPromptBattleField(selectedRound(), input.dataset.battleField, input.value); markChanged(); renderNav(); renderQuizHealth(); };
-      input.addEventListener(input.type === "number" ? "change" : "input", commit);
-      input.addEventListener("change", () => renderEditor());
+      const commit = () => {
+        setPromptBattleField(selectedRound(), input.dataset.battleField, input.value);
+        markChanged();
+        renderNav();
+        renderQuizHealth();
+        renderPreview();
+        const errors = promptBattleErrorsByField(selectedRound(), selection.roundIndex);
+        document.querySelectorAll('[data-battle-error]').forEach(marker => {
+          const message = errors[marker.dataset.battleError] || "";
+          marker.textContent = message;
+          marker.hidden = !message;
+        });
+      };
+      input.addEventListener("input", commit);
     });
     document.querySelectorAll("[data-add-battle-prompt]").forEach((button) => button.addEventListener("click", () => { addPromptToBattleRound(selectedRound(), `prompt-${crypto.randomUUID().slice(0, 8)}`); markChanged(); render(); }));
     document.querySelectorAll("[data-remove-battle-prompt]").forEach((button) => button.addEventListener("click", () => { removePromptFromBattleRound(selectedRound(), Number(button.dataset.removeBattlePrompt)); markChanged(); render(); }));

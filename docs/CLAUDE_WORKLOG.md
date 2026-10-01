@@ -2067,3 +2067,18 @@ Full `npm test` passed 605/605, zero failures/skips; `git diff --check` passed.
 Publication, independent Sol and integrated main evidence follows in the PR. Shared API balance observed $18.41 then $18.39; billing lag/cent
 precision prevents assigning a final invoice cost to this setup. Codex allowance
 is separate. No production services, deployment or migration application.
+
+
+### 2026-10-01 — issue42 DeepSeek repair checkpoint (Sol orchestration)
+
+Preserved the historical Luna editor work on `codex/pb-editor-luna-42` and merged accepted main `c21efc60c882749fa5f487ead0a8e808f552e1ed` without conflicts. The stopped Luna claim was released with app-confirmed interrupted execution evidence; a genuine Sol coordinator now owns the ticket.
+
+DeepSeek Pro authored stable adjacent validator message nodes and input persistence without form remounts (`e633980a-c622-461a-9f6a-cc240914ae17`, `974054ea-615f-4cc5-b9d1-472db7fdf516`). Every field saves before blur and updates the shared validator and preview in place. Under Matthew's explicit Flash-trial instruction, DeepSeek Flash authored the scoped hidden-control change (`195af9cc-7fa5-45b8-8e6f-d31d4ad4ebff`, `7e125bd6-1cba-41d8-9f1c-4672d070441a`). Sol corrected its initial shared-row assumption: question and round controls share one row, so only Add question and its template select are hidden; round actions remain usable. All artifacts applied verbatim after whole-response/schema/path/unique-match validation. No OpenAI product implementation.
+
+Sol's isolated Chrome check used empty backend configuration, loopback serving and aborted all cross-origin requests. The baseline reproduced variants3->7 restoring3 on refresh and a lost first Add prompt click. Repaired source passes scratch-round validation, full-field save/reload, numeric persistence, first-click prompt addition, exact adjacent validator error updates while preserving focus, preview updates, question-control visibility, real round reorder/delete with neighboring drafts unchanged, and both fixture validation/import checks. No page errors. Existing editor normalization adds empty finale audio when opening question fixtures; that behavior predates this ticket and fixture file bytes remain unchanged. Focused existing editor/guard tests12/12 pass; full checks and independent published-commit review are recorded in the ticket, never inferred from this prose.
+
+The combined repair request `366f60fb-dfdb-4561-bfd2-6a52ce036231` exhausted16384 output tokens and was rejected without edits. Pro's shipped regression generation then exhausted the same budget twice (`fd490096-28a5-43f2-ae88-256defd51947`, `1e47e56a-928b-4e46-b93c-69adeca0b654`); no partial test was accepted. The step was blocked and unrelated issue16 work resumed. All failed calls remain in spending/evaluation evidence.
+
+Process lessons: make source transformations smaller than combined implementation/test design; preserve complete private failing evidence before dispatch; source regex tests can pass while browser input events lose drafts/clicks. Inspect the actual parent DOM before hiding a container. Retain same-element/focus checks and actual first-click/reload/reorder tests. High thinking can consume the entire output limit even on a small test packet; record a failed request and re-scope/reroute explicitly instead of applying truncated code or claiming tests passed.
+
+Outstanding: shipped numeric-input regression, separate Sol review of the published commit, authorized actual local-room pairing-panel rehearsal and Producer acceptance. This rehearsal uses production Supabase, and no production writes, provider-image calls, migrations or deployment occurred.
