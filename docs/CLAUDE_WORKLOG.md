@@ -1743,6 +1743,50 @@ replaced); only 'Auto-add sub-issues' is On. Created a Board view and renamed Vi
 via the GraphQL view `fields`). The Board view's fields were not customised, and Board is grouped
 by Status by default. Auto-add to project was not configured. Push still not performed.
 
+## 2026-09-30 — Prompt Battle MVP ticket set
+
+Branch: `claude/prompt-battle-tickets` (from `origin/main` at `f5be228`). Model: Sonnet 5.5.
+
+**Slice:** break the Prompt Battle MVP (Gemini via Kaplan's Cloud Run proxy) into bounded GitHub
+issues with explicit dependencies, so they can be spun up one at a time.
+
+**Merged first:** PR #9 (ticketing setup) into `main` at Matthew's request.
+
+**Read:** the Prompt Battle architecture spec, base design and slice 3a design (from
+`claude/prompt-battle-3a`; they are not on `main` yet), and Kaplan's approval ServiceNow
+RITM0207043 (read-only, in Chrome).
+
+**Created on GitHub (mbelinkie/brainstorm):** issues #10-#44 — two goals (#10 MVP, #11 post-MVP)
+and 33 work issues, all in Backlog on Project #4 with Priority, Size, Workstream, Acceptance,
+`model:`/`effort:` labels, native blocked-by links and sub-issue links. #12 (merge the Prompt
+Battle branch) gates almost everything because slices 1-3a exist only on an unmerged branch.
+
+**Facts from the approval now in the issues:** project `quiz-platform-image-generation`, model
+`gemini-3.1-flash-image`, Sandbox / Internal, $75/month budget (an alert, not a hard cap),
+internal Kaplan activities only, no data stored in GCP. Gaps flagged in the issues: the service
+account's `roles/aiplatform.user` is requested but not confirmed granted; no per-image prices;
+no region stated.
+
+**Incident:** the generator hit a GitHub 504 on `project item-add` for #36, leaving the issue
+created but not on the board or in the local state file. Reconciled by hand (item added, state
+repaired) before resuming, so no duplicates. The generator now retries idempotent calls and never
+retries issue creation.
+
+**Commands run:** `gh issue create/view`, `gh project item-add/item-edit`, GraphQL
+`addBlockedBy` / `addSubIssue`, `gh issue edit`. Final checks: 35 issues > #8, 0 duplicate
+titles, 0 `#?` placeholders, board shows Backlog 35.
+
+**Not done / unproven:** no issue is Ready (the lifecycle wrapper, #3, is still unbuilt; gates are
+manual). Migration numbers are deliberately unassigned. Per-image Vertex prices and the SA role
+are unverified. The generator script lives only in the session scratchpad (not committed); the
+issues themselves are the source of truth.
+
+Follow-up (same day): spun up #12 and wrote the #3/#4 contracts.
+
+- **#12 (merge Prompt Battle branch):** Ready gates checked by hand against live state, claimed (comment on the issue, Status In progress), merge prepared on `claude/merge-prompt-battle` as `2f30bcd` (parents `f5be228`, `df700f1`). `npm test` on the merged tree: 396/396. Only conflict was `docs/CLAUDE_WORKLOG.md`, union-resolved in date order. Status In review; Claude did NOT merge into `main` or push; Matthew accepts by merging.
+- **#4 (API gate) and #3 (lifecycle wrapper):** replaced the Inbox placeholders with full contracts, `model:standard`/`effort:high`, Backlog. Split the wrapper into #3 (inspect, ready, claim, block) and new #45 (review, complete, stale-claim recovery). Order is #4, then #3, then #45, because the playbook requires all GitHub traffic to go through the gate. Native blocked-by links set. #5-#7 left in Inbox as agreed.
+- **Unproven:** no wrapper or gate code exists yet; every gate is still manual. #12 is not Done until Matthew accepts.
+
 ## 2026-10-01 — Roadmap API gate (issue #4)
 
 Branch: `claude/roadmap-api-gate` (from `origin/main` at `f5be228`). Model: Sonnet 5.5.
@@ -1782,3 +1826,14 @@ Branch: `claude/lifecycle-wrapper-2` (from local `main` at `cd15757`, which is #
 **Commands run:** `node --test` on both lifecycle files (89/89); `npm test` (527/527, was 497); mutation check on a scratch copy of six breakages (self-verification allowed, reachability skipped, Automated bare self-report accepted, no re-read check, release without evidence, recorded-completion check removed), each failing the intended tests, control 30/30.
 
 **Unproven at this point:** the live `[SETUP TEST]` run and the Producer confirmation; `complete` against the real compare API; the commit must be pushed before #45 itself can be completed.
+
+## 2026-10-01 — Accepting and merging #12 and #4; contributor guide
+
+Branch: `claude/roadmap-docs` (worktree `../quiz-roadmap-docs`, from `main` at `eace950`). Model: Sonnet 5.5.
+
+- **Accepted by Matthew in chat and merged:** #12 via PR #46, #4 via PR #47. `npm test` on `main` after both: 438/438. Both issues closed with `complete:v1` comments and set Done by hand (the lifecycle wrapper does not exist yet). PR bodies deliberately avoid `Closes #N` so only the acceptance step closes roadmap issues.
+- **Added** `docs/roadmap/WORKING_A_TICKET.md`: how a person or session on another machine finds an eligible ticket, claims it, branches into a worktree, works, reports and stops. Every command in it was run against the live repo (the status helper only as an idempotent no-op on #12).
+- **Backfilled** the two work-log entries from the unpushed `claude/prompt-battle-tickets` branch (ticket set; spin-up of #12 and scoping of #3/#4) in date order. That branch can now be deleted once nobody needs it.
+- **Mistake to record:** I ran `git switch -c` in the main checkout while another session had `claude/lifecycle-wrapper-1` checked out there, which briefly changed its branch. Restored within seconds (tree was clean, branch had no commits). Lesson, now in the guide: check `git worktree list` and `git status` before any branch switch, and use a worktree per session.
+- **Updated after #3 and #45 landed on `main`:** rewrote the guide around `scripts/roadmap/lifecycle.mjs` (inspect, ready, claim, block, review, verify, complete, stale, release); removed the hand-written comment templates and the manual status helper. Ran the read-only commands against live issues (`inspect 13`, `ready 13 --dry-run`, `ready 19 --dry-run` refused with PREREQ_* codes, `stale 12`, and a `claim` with no session id refused with EXECUTION_ID_MISSING before any write). No claim, review or completion was performed. Pushed and merged through a PR at Matthew's request.
+- **Open question for Matthew:** the wrapper identifies a run by `CLAUDE_CODE_SESSION_ID`, so a person at a plain terminal cannot claim. The guide says to work through a Claude Code session or ask him; whether to allow a self-asserted ID is his call.
