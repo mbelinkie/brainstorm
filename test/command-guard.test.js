@@ -122,6 +122,8 @@ test("the hook denies a refused Bash or PowerShell command with the rule named, 
 test("the hook ignores other tools but fails closed on a shell call it cannot read", () => {
   assert.equal(evaluateHookInput({ tool_name: "Read", tool_input: { file_path: "x" } }, opts).allow, true);
   assert.equal(evaluateHookInput({ tool_name: "Bash", tool_input: {} }, opts).allow, false);
+  assert.equal(evaluateHookInput({ tool_name: "SomeNewShellTool", tool_input: { command: "git reset --hard" } }, opts).allow, false, "an unknown tool name that carries a command is still checked");
+  assert.equal(evaluateHookInput({ tool_name: "SomeNewShellTool", tool_input: { command: "git status" } }, opts).allow, true);
   assert.equal(evaluateHookInput({ tool_name: "Bash" }, opts).allow, false);
   assert.equal(evaluateHookInput(null, opts).allow, false);
   assert.equal(evaluateHookInput({ tool_name: "Bash", tool_input: { command: 42 } }, opts).allow, false);

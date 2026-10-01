@@ -28,8 +28,10 @@ export function defaultScratchDirs(env = process.env) {
 
 export function evaluateHookInput(input, { scratchDirs = defaultScratchDirs(), cwd } = {}) {
   if (!input || typeof input !== "object") return denial("command guard: the hook input could not be read, so the command is refused");
-  if (!SHELL_TOOLS.has(input.tool_name)) return { allow: true, output: null };
   const command = input.tool_input?.command;
+  // The PowerShell tool's tool_name is not documented, so any call that carries a
+  // `command` is checked, whatever the tool is called.
+  if (!SHELL_TOOLS.has(input.tool_name) && command === undefined) return { allow: true, output: null };
   if (typeof command !== "string" || command.trim() === "") {
     return denial("command guard: the shell call had no readable command, so it is refused");
   }

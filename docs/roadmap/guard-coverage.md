@@ -49,6 +49,7 @@ Be honest about these before relying on it:
 - **Another tool.** The guard hooks the Bash and PowerShell tools only. Edit, Write, MCP tools and a browser can still change or delete things.
 - **A human shell, or another agent runner.** A terminal you type in, an IDE button, a GUI such as GitHub Desktop, and any runner that does not load this hook are not protected.
 - **Allowed but sensitive commands.** Plain `git push`, `merge`, `rebase`, `commit --amend`, `git tag -d` and `rm` of a single file are allowed; CLAUDE.md's rules about asking first still apply to them.
+- **PowerShell tool name.** Claude Code's documentation does not state the `tool_name` the PowerShell tool reports. The hook therefore checks every tool call that carries a `command`, but this has not been seen in a live PowerShell session.
 - **Hook not loaded.** If `.claude/settings.json` does not load the hook, or the session was not started from the repository root, nothing is guarded. A hook that crashes before it can answer does not block the command (Claude Code treats most hook errors as non-blocking); the adapter catches its own errors and refuses instead, but a broken `node` or a missing script path cannot be caught by the script itself.
 - **Backups.** This is not a backup. Git history, worktrees and immutable snapshots are not independent backups (issue #7 covers backups).
 
