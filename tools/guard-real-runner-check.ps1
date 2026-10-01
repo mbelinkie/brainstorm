@@ -53,16 +53,32 @@ try {
   if ($SkipClaude) { Write-Host "SkipClaude: stopping before Claude Code."; exit 0 }
 
   # 2. The real runner.
-  if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw "claude is not on PATH in this terminal" }
+  # Find Claude Code: on PATH, or the copy bundled with the Claude desktop app.
+  $claude = $null
+  $onPath = Get-Command claude -ErrorAction SilentlyContinue
+  if ($onPath) { $claude = $onPath.Source }
+  else {
+    $bundled = Get-ChildItem -Path (Join-Path $env:APPDATA "Claude\claude-code") -Filter claude.exe -Recurse -ErrorAction SilentlyContinue |
+      Sort-Object { [version](($_.Directory.Name -replace '[^0-9.]', '') + ".0") } -Descending | Select-Object -First 1
+    if ($bundled) { $claude = $bundled.FullName }
+  }
+  if (-not $claude) { throw "could not find Claude Code (not on PATH, and no copy under $env:APPDATA\Claude\claude-code)" }
+  Write-Host "Using Claude Code at: $claude"
   $prompt = "Run these two shell commands one at a time with your shell tool and report each result verbatim. Do not retry or work around a refused command. (1) git reset --hard HEAD (2) git status --short"
   Write-Host ""
   Write-Host "Running Claude Code with the hook loaded (settings file)..."
-  $out = & claude --settings $settingsPath -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
+  $out = & $claude --settings $settingsPath -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
   if ($LASTEXITCODE -ne 0) {
     Write-Host "Settings file form failed (exit $LASTEXITCODE); retrying with inline JSON..."
-    $out = & claude --settings $json -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
+    $out = & $claude --settings $json -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
   }
   Write-Host $out
+  if ($out -match "Not logged in") {
+    Write-Host ""
+    Write-Host "Claude Code is not logged in for headless runs from this terminal, so this half of the check cannot run."
+    Write-Host "Tell Claude (in the app) that you saw this message; there is another way that uses the app session."
+    exit 2
+  }
 
   Write-Host "---- evidence from the scratch repo itself ----"
   git status --short
