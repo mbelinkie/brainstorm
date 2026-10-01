@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-10-01
+
+- Added Prompt Battle round authoring: create, edit, reorder, duplicate, and delete battle rounds and their prompts, engine settings, and scoring in the question-bank editor. Existing battle rounds now remain editable through import, raw JSON, and browser draft recovery.
+
 ## 2026-09-23
 
 - Fixed the question-bank editor losing a saved draft when given a quiz containing a Prompt Battle round. Applying or importing such a quiz overwrote the browser draft, then broke the editor, reported "Not applied", and discarded the draft on the next refresh. The editor cannot edit Prompt Battle rounds yet, so it now refuses the quiz up front with a message naming the round, and leaves the open quiz and the saved draft untouched.

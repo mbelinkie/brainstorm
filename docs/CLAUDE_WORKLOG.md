@@ -1956,3 +1956,11 @@ modified.
 **Unproven / outstanding:** no live release was attempted; the existing #51
 claim remains live. Publication, Sol review, merge and completion remain with
 the owner/dispatcher.
+
+## 2026-10-01 — Add Prompt Battle round authoring
+- **Branch:** `codex/pb-editor-luna-42`; execution `01a0f768-10ae-7691-b6d8-3d3b6ae95036` (GPT-6 Luna, logical medium / effective high).
+- **Slice:** Added editor support for Prompt Battle rounds and prompts, including engine/scoring fields, validator messages beside fields, round reorder/duplicate/delete, import/raw JSON acceptance, and draft recovery. Existing question rounds and validation rules are unchanged. `prepare-deploy.mjs` now includes the new editor helper module.
+- **Files:** `author.js`, `author.css`, `prompt-battle-editor.js`, `quiz-validation.js`, `prepare-deploy.mjs`, `test/author-battle-round-guard.test.js`, `test/author-prompt-battle-editor.test.js`, `test/reliability-contract.test.js`, `CHANGELOG.md`, and this work log.
+- **Commands and results:** `node --test test/author-prompt-battle-editor.test.js test/author-battle-round-guard.test.js test/quiz-validation.test.js test/quiz-fixtures.test.js test/reliability-contract.test.js test/deploy-manifest.test.js` (85/85); `node --check author.js`; `node --check prompt-battle-editor.js`; `git diff --check`; `env -i PATH="$PATH" CI=1 npm test` (559/559).
+- **Manual check:** Loaded the editor in a local preview with an empty `QUIZ_PLATFORM_CONFIG` and saw the new battle-round form, its prompt/engine/scoring controls, and existing validator messages. No sign-in, room, or service calls were made. The temporary preview server stopped during reload, so the final preview/round-trip was not visually rechecked after the last render adjustment.
+- **Unproven:** Producer acceptance remains outstanding: author a valid round in the editor and load it into a local room to inspect the slice 3a pairing panel. Do not rehearse against the configured production Supabase without Matthew's approval. No migration or deploy was performed.
