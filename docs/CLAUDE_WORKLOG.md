@@ -1756,3 +1756,17 @@ Branch: `claude/roadmap-api-gate` (from `origin/main` at `f5be228`). Model: Sonn
 **Commands run:** `node --test` on the three new files (42/42); `npm test` (342/342, was 300 on main); mutation check on a scratch copy: five deliberate breakages (missing-quota allowed, live lock evicted, null coerced to 0, no mutation spacing, body text as throttle) each failed the intended test; one allowed live probe (`gh api graphql --include` rateLimit, then `node scripts/roadmap/probe.mjs`): gate reading 4020 vs raw 4021, consistent with the one point its own call spent.
 
 **Unproven / limits:** the lock is host-local only (two recoverers of one dead lock have a narrow race; PID reuse reads as alive, the safe direction); the real transport was exercised live only for the rate-limit read and `/rate_limit`, not for mutations (those run against #3/#45); no caller exists yet besides `probe.mjs`. About 980 of 5000 GraphQL points were already spent this hour by ad-hoc ticket creation, which the gate could not see.
+
+## 2026-10-01 — Lifecycle wrapper part 1 (issue #3)
+
+Branch: `claude/lifecycle-wrapper-1` (from `origin/main` at `eace950`). Model: Sonnet 5.5 (`claude-sonnet-5-5`); session `CLAUDE_EFFORT` read `medium` against the `effort:high` label (recorded on the claim).
+
+**Slice:** `inspect`, `ready`, `claim`, `block` on top of the #4 gate. Spin-up was by hand (the wrapper did not exist): read live state, set Ready, posted the `claim:v1` comment, set In progress.
+
+**Files:** added `scripts/roadmap/lifecycle.mjs`, `scripts/roadmap/lifecycle-core.mjs`, `test/roadmap-lifecycle.test.js`; edited `docs/roadmap/config.json` (additive `routing` block only), `scripts/roadmap/README.md`, `docs/roadmap/transport-inventory.md`. No package.json change; no CHANGELOG line (tooling).
+
+**Judgment calls (flag for Matthew):** `model:economy` is mapped to efforts low/medium only (routing.md is silent; `ROUTING_UNSUPPORTED` fires on economy+high). Execution ID = explicit `--execution-id` that must equal `CLAUDE_CODE_SESSION_ID` and differ from any parent-session variable. Claims by anyone count as live; only owner comments end a claim or prove acceptance (public repo). A worktree must be a name, never an absolute local path. `block` records routing changes as proposals and does not edit labels.
+
+**Commands run:** `node --test test/roadmap-lifecycle.test.js` (59/59); `npm test` (497/497, was 438); read-only live `lifecycle.mjs inspect 12` and `ready 12 --dry-run` (refused ISSUE_CLOSED, no write); mutation check on a scratch copy: removed the duplicate-claim guard, the prerequisite-Done check, the partial-write reconcile, and the dependency-mismatch check; each failed the intended tests, control 59/59.
+
+**Unproven:** the real transport has not yet performed these mutations live (ready/claim/block writes are covered only by the fake); the execution-id check cannot tell a child from its parent if the runner exposes no parent variable; lock is host-local; stale-claim recovery, review and complete are #45.

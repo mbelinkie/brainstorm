@@ -18,7 +18,8 @@ accounting, throttle handling, paging bounds and the sanitized log.
 ## Callers (all through the gate)
 
 - `scripts/roadmap/probe.mjs`: read-only budget diagnostic.
-- Future: the lifecycle wrapper (#3, #45) and the progress view (#5).
+- `scripts/roadmap/lifecycle.mjs` (+ `lifecycle-core.mjs`, pure): inspect, ready, claim, block (#3). Uses `gate.session()` only.
+- Future: lifecycle part 2 (#45) and the progress view (#5).
 
 ## Not covered, and why
 

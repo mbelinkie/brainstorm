@@ -53,3 +53,18 @@ itself.
 - Process IDs can be reused, and two processes recovering the same dead lock at
   the same instant have a narrow race. Both are acceptable for one person on one
   machine and are noted in `lock.mjs`.
+
+## The lifecycle wrapper, part 1 (issue #3)
+
+`node scripts/roadmap/lifecycle.mjs <inspect|ready|claim|block> <issue> [--json]`
+(run with `help` for flags). `lifecycle-core.mjs` is the pure logic (contract,
+routing, dependency and claim parsing); `lifecycle.mjs` does the reads and writes,
+always inside `gate.session()` so one lock covers the re-check and the writes.
+
+- `inspect` never writes. `ready --dry-run` verifies and reports without writing.
+- `claim` needs `--execution-id`, which must equal the runner's own
+  `CLAUDE_CODE_SESSION_ID` and must not equal a parent-session variable.
+- Only the repository owner's `complete:v1`/`release:v1` comments end a claim or
+  count as a prerequisite's acceptance record; anyone's `claim:v1` counts as live.
+- `block` records a routing change as a proposal; the owner edits the labels.
+- Part 2 (review, complete, stale-claim recovery) is issue #45.
