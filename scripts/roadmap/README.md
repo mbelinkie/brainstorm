@@ -82,3 +82,12 @@ always inside `gate.session()` so one lock covers the re-check and the writes.
 - Comment, Done and close are written, then re-read; a half-finished completion is reconciled by marker, never replayed.
 - `stale` is read-only. `release` returns a stale claim to Ready only with `--stopped-execution`, `--confirmed-by` and `--evidence`; age alone is never proof.
 - Limit: the owner's acceptance is a comment from the owner account, so anything that can post as that account can type it.
+
+## The progress view (issue #5)
+
+`node scripts/roadmap/progress.mjs [--html <file>] [--max-age <seconds>] [--fresh]` prints a read-only Markdown snapshot of Project 4 (and a local HTML page with `--html`). It reads only through `gate.readAll`/`gate.read` and has no write path (a test enforces both).
+
+- Executable work = issues that are not Inbox, `setup-test`, goals (label `goal`/`parent` or a `GOAL:` title) or drafts. Inbox placeholders, unknown sizes and excluded issues are listed, not hidden.
+- A paging bound prints a **PARTIAL** snapshot (exit 3); a gate refusal or truncated nested data prints the refusal (exit 1) and writes nothing.
+- The last complete snapshot is kept in the OS temp directory and reused inside `--max-age` (default 60s) with its timestamp; `--fresh` always reads; a partial snapshot is never reused.
+- Issue counts are not an estimate of effort or a delivery date.
