@@ -2013,3 +2013,42 @@ Branch: `codex/deepseek-trial-17`, accepted base `bc8a6764f809619519e86ae3163e3f
 **Cost and limits:** official USD balance before calls $18.47; observed after workers $18.45. Per-response readings initially lagged the charge, so the observed $0.02 decrease is at the endpoint's cent precision and may not be final billing. Across the three calls, 23,775 prompt tokens and 22,177 completion tokens (17,795 reasoning tokens included). Sol and orchestration use separate Codex allowance.
 
 **Unproven/excluded:** no real room, publishing through the app, image generation, deployment or migration application. The runbook distinguishes the unmerged editor support (#42) and pending Kaplan adapter/Worker wiring from current Workers AI host testing. This fixture/doc trial provides no evidence about autonomous recovery, permission-sensitive work, or production generation.
+
+## 2026-10-01 — DeepSeek Flash/Pro sliced implementation routing
+
+Branch: `codex/deepseek-sliced-routing`, base
+`f1cdf3f83f207c0e8d968dac2cec19d2cc040b65`. Matthew requested new DeepSeek
+instructions after #17, then explicitly requested a Flash trial. This is setup;
+no product ticket/batch was launched and paused live claims remain preserved.
+
+**Authorship:** DeepSeek Flash authored the routing config and exact test edits.
+The Codex orchestrator authored operating docs and this evidence; the user’s
+local guide/research were copied into this branch and extended for the adopted
+workflow. The original checkout/untracked source files were preserved.
+
+**Slices and limits:** initial `deepseek-flash` high-thinking request
+`f81030ce-9e6d-465b-85b7-319777aa38bc` ended `length`: 32,461 prompt tokens,
+16,384 completion (15,644 reasoning). No incomplete edits were applied. Scope
+was reduced to two transformations, both thinking enabled/low: config request
+`79b48fdf-ce76-4d2f-abab-6c554be2928b` (5.5s, 1,274 prompt/1,562 completion,
+338 reasoning), test request `3a5bea36-ba69-4be9-a3d6-38cb532a9c5a` (32.6s,
+5,802 prompt/9,522 completion, 7,497 reasoning). Returned model `deepseek-flash`,
+fingerprint `aeb56401ca74e127821c4f9126dcb669`. Artifacts applied verbatim
+within their allowlist; no implementation repair/fallback. No tools were given;
+DeepSeek correctly marked its checks unrun.
+
+**Behavior:** economy uses Flash, standard Pro; logical low/medium/high maps to
+low/high/high. A Sol coordination profile allows honest native claim identity
+with explicit mismatch evidence; provider request IDs never substitute for
+Codex IDs. Independent Sol review remains separate. Batch instructions retain
+one dispatcher/session, eight hours, $10 observed spend, published PR per ticket,
+exact-commit merge/integrated checks, and Producer/External/production boundaries.
+
+**Checks:** clean starting main `npm ci` exit 0, baseline `npm test` 603/603.
+Focused `node --test test/roadmap-lifecycle.test.js
+ test/roadmap-lifecycle-finish.test.js test/codex-batch.test.js` passed 112/112.
+Non-routing config data compared unchanged; lifecycle production source unchanged.
+Full `npm test` passed 605/605, zero failures/skips; `git diff --check` passed.
+Publication, independent Sol and integrated main evidence follows in the PR. Shared API balance observed $18.41 then $18.39; billing lag/cent
+precision prevents assigning a final invoice cost to this setup. Codex allowance
+is separate. No production services, deployment or migration application.

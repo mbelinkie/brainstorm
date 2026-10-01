@@ -436,7 +436,7 @@ test("release records the confirmation, ends the claim, and returns the issue to
   assert.equal(statusOf(world), "Ready");
   assert.equal(parseClaims(world.issues[3].comments, 3, { endAuthors: ["mbelinkie"] }).live, null);
   const next = setup({ world, env: { CLAUDE_CODE_SESSION_ID: VERIFIER } });
-  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "codex/x", startCommit: COMMIT, model: "gpt-6-luna", effort: "high" });
+  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "codex/x", startCommit: COMMIT, model: "deepseek-v4-pro", effort: "high" });
   assert.equal(claimed.ok, true);
 });
 

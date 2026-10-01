@@ -187,7 +187,7 @@ const claimOpts = (extra = {}) => ({
   executionId: SELF,
   branch: "codex/lifecycle-wrapper-1",
   startCommit: BASE_OID,
-  model: "gpt-6-luna",
+  model: "deepseek-v4-pro",
   effort: "high",
   worktree: "../quiz-lifecycle",
   ...extra,
@@ -225,8 +225,15 @@ test("the config routing block mirrors docs/roadmap/routing.md", () => {
   for (const [logical, effective] of Object.entries(config.routing.effectiveEfforts)) {
     assert.ok(md.includes(`| \`${logical}\` | \`${effective}\` |`), `routing.md maps ${logical} -> ${effective}`);
   }
-  assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["economy", "standard"]);
-  assert.deepEqual(Object.values(config.routing.profiles).map((profile) => profile.modelId), ["gpt-6-luna", "gpt-6-luna"]);
+  assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["coordinator", "economy", "standard"]);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(config.routing.profiles).map(([name, profile]) => [name, profile.model])),
+    { coordinator: "Sol coordinator (not implementation)", economy: "DeepSeek Flash", standard: "DeepSeek Pro" },
+  );
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(config.routing.profiles).map(([name, profile]) => [name, profile.modelId])),
+    { coordinator: "gpt-6.1-sol", economy: "deepseek-flash", standard: "deepseek-v4-pro" },
+  );
 });
 
 test("config.json only gained the routing block; no id or field changed", () => {
@@ -286,10 +293,10 @@ test("evaluateRouting enforces exactly one model, one effort and a supported pai
   assert.deepEqual(codes(["escalation:opus", "effort:high"]), ["MODEL_LABEL_COUNT"]);
 });
 
-test("effectiveEffort follows the configured runner mapping, including max", () => {
-  assert.equal(effectiveEffort("low", config.routing), "medium");
+test("effectiveEffort follows the configured runner mapping", () => {
+  assert.equal(effectiveEffort("low", config.routing), "low");
   assert.equal(effectiveEffort("medium", config.routing), "high");
-  assert.equal(effectiveEffort("high", config.routing), "max");
+  assert.equal(effectiveEffort("high", config.routing), "high");
   assert.equal(effectiveEffort("extreme", config.routing), null);
 });
 
@@ -763,12 +770,55 @@ test("claim refuses a model or effort that does not match the issue's labels unl
 });
 
 test("claim refuses an unsupported coding model even with --allow-mismatch", async () => {
-  for (const model of ["deepseek-v4-pro", "gpt-6.1-sol"]) {
+  for (const model of ["gpt-6-luna", "claude-sonnet-5-5"]) {
     const { lifecycle, transport } = setup({ world: readyWorld() });
     const result = await lifecycle.claim(3, claimOpts({ model, allowMismatch: "deliberate" }));
     assert.equal(result.code, "MODEL_UNSUPPORTED", model);
     assertNoWrites(transport);
   }
+});
+
+test("coordinator: Sol is accepted only with a written mismatch reason, never as the DeepSeek implementation", async () => {
+  const refusedWorld = readyWorld();
+  const refusedSetup = setup({ world: refusedWorld });
+  const refused = await refusedSetup.lifecycle.claim(3, claimOpts({ model: "gpt-6.1-sol", effort: "medium" }));
+  assert.equal(refused.code, "ROUTING_MISMATCH");
+  assertNoWrites(refusedSetup.transport);
+
+  const world = readyWorld();
+  const { lifecycle, transport } = setup({ world });
+  const accepted = await lifecycle.claim(3, claimOpts({
+    model: "gpt-6.1-sol",
+    effort: "medium",
+    allowMismatch: "Sol coordinates; DeepSeek implements all slices",
+  }));
+  assert.equal(accepted.ok, true);
+  const [comment] = world.issues[3].comments;
+  assert.ok(comment.body.includes(SELF), "the coordinator records its own genuine execution ID");
+  assert.ok(comment.body.includes("gpt-6.1-sol"), "the coordinator records its actual Sol model");
+  assert.ok(comment.body.includes("effort `medium`"), "the coordinator records its logical effort");
+  assert.ok(comment.body.includes("effective `high`"), "the coordinator records its effective effort");
+  assert.ok(comment.body.includes("Sol coordinates; DeepSeek implements all slices"), "the comment records the written reason");
+  assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
+});
+
+test("economy: a supplied effective effort outside the ladder is refused before any request, and Flash claims record effective low", async () => {
+  const refusedWorld = readyWorld();
+  refusedWorld.issues[3].labels = ["model:economy", "effort:low"];
+  const refusedSetup = setup({ world: refusedWorld });
+  const refused = await refusedSetup.lifecycle.claim(3, claimOpts({ model: "deepseek-flash", effort: "low", effectiveEffort: "medium" }));
+  assert.equal(refused.code, "EFFECTIVE_EFFORT_MISMATCH");
+  assert.deepEqual(refusedSetup.transport.calls, [], "refused before any request");
+  assertNoWrites(refusedSetup.transport);
+
+  const world = readyWorld();
+  world.issues[3].labels = ["model:economy", "effort:low"];
+  const { lifecycle } = setup({ world });
+  const accepted = await lifecycle.claim(3, claimOpts({ model: "deepseek-flash", effort: "low", effectiveEffort: "low" }));
+  assert.equal(accepted.ok, true);
+  const [comment] = world.issues[3].comments;
+  assert.ok(comment.body.includes("deepseek-flash"), "the claim records the Flash model");
+  assert.ok(comment.body.includes("effective `low`"), "the claim records the effective low effort");
 });
 
 // ---- claim: success, idempotency, partial writes --------------------------
@@ -782,7 +832,7 @@ test("claim posts the marked comment, then sets In progress, under a single lock
   const [comment] = world.issues[3].comments;
   assert.ok(comment.body.startsWith("<!-- claim:v1 issue=3 -->\n"), "exact marker on the first line");
   for (const needle of [
-    "mbelinkie/brainstorm #3", SELF, "codex/lifecycle-wrapper-1", BASE_OID, "gpt-6-luna", "`effort:high`", "effective `max`", "../quiz-lifecycle", "Owner: mbelinkie",
+    "mbelinkie/brainstorm #3", SELF, "codex/lifecycle-wrapper-1", BASE_OID, "deepseek-v4-pro", "`effort:high`", "effective `high`", "../quiz-lifecycle", "Owner: mbelinkie",
   ]) assert.ok(comment.body.includes(needle), `claim comment should contain ${needle}`);
   assert.equal(world.issues[3].items[0].status, "In progress");
   assert.equal(transport.mutations()[1].variables.option, STATUS_OPTIONS["In progress"]);
