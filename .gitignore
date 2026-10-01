@@ -1,5 +1,12 @@
 .env.local
 .env.*.local
+# wrangler's local-secret mechanism for `wrangler dev` (SUPABASE_SERVICE_ROLE_KEY
+# et al.) -- same sensitivity as .env.local above, must never be committed.
+.dev.vars
+.dev.vars.*
+# Leftover from a Finder save attempt that couldn't use a leading dot -- same
+# sensitivity as .dev.vars above. Delete the file itself once confirmed unused.
+dev.vars.txt
 .DS_Store
 
 # Dependencies and generated deploy/runtime files
@@ -21,3 +28,6 @@ local-reference/
 
 # Agent worktrees and local session state.
 .claude/
+
+# Supabase CLI local cache
+supabase/.temp/

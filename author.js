@@ -1,6 +1,6 @@
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { cropRect, panCrop } from "./image-crop.js";
-import { validateQuiz } from "./quiz-validation.js";
+import { validateQuiz, editorUnsupportedRounds } from "./quiz-validation.js";
 import { parseAss, parseSrt } from "./subtitle-core.js";
 import { MAX_VIDEO_BYTES, audioSourceFileError, resolveAudioClipProcessing, clampManualAudioVolumePercent, DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT } from "./video-utils.js";
 
@@ -1493,8 +1493,8 @@ $("#move-round-down").addEventListener("click", () => moveRound(1));
 $("#duplicate-round").addEventListener("click", duplicateRound);
 $("#delete-round").addEventListener("click", deleteRound);
 $("#delete-question").addEventListener("click", () => { const round = selectedRound(); if (round.questions.length <= 1 || !confirm("Delete this question? This cannot be undone in the editor.")) return; round.questions.splice(selection.questionIndex, 1); selection.questionIndex = Math.max(0, selection.questionIndex - 1); markChanged(); render(); });
-$("#apply-raw").addEventListener("click", () => { try { const candidate = JSON.parse($("#raw-json").value); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; $("#raw-status").textContent = "Applied and validated."; markChanged(); render(); } catch (error) { $("#raw-status").textContent = `Not applied: ${error.message}`; } });
-$("#import-file").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const candidate = JSON.parse(await file.text()); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; markChanged(); $("#save-state").textContent = `Imported and validated ${file.name} — saved in this browser`; render(); } catch (error) { alert(`Could not import this JSON: ${error.message}`); } finally { event.target.value = ""; } });
+$("#apply-raw").addEventListener("click", () => { try { const candidate = JSON.parse($("#raw-json").value); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); const unsupported = editorUnsupportedRounds(candidate); if (unsupported.length) throw new Error(unsupported[0]); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; $("#raw-status").textContent = "Applied and validated."; markChanged(); render(); } catch (error) { $("#raw-status").textContent = `Not applied: ${error.message}`; } });
+$("#import-file").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const candidate = JSON.parse(await file.text()); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); const unsupported = editorUnsupportedRounds(candidate); if (unsupported.length) throw new Error(unsupported[0]); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; markChanged(); $("#save-state").textContent = `Imported and validated ${file.name} — saved in this browser`; render(); } catch (error) { alert(`Could not import this JSON: ${error.message}`); } finally { event.target.value = ""; } });
 
 window.addEventListener("keydown", (event) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;

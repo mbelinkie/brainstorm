@@ -4,6 +4,14 @@ Status: approved design, not yet planned or implemented.
 Date: 2026-08-17
 Branch: `claude/prompt-battle-spec`
 
+> **Superseded where they differ.** The current source of truth is
+> `2026-08-26-prompt-battle-architecture.md`. Migration numbering, the
+> Vertex/Kaplan credential path, and the adapter contract have all changed
+> since this was written. Read this for rationale, that for what is true.
+
+Amended by `2026-08-24-prompt-battle-free-engine-addendum.md`, which adds a
+zero-credential Workers AI provider and corrects the adapter contract in §7.3.
+
 ## 1. Purpose
 
 A new round type for the live quiz platform. Players are paired, each pair
@@ -168,6 +176,12 @@ ordinary Supabase RPCs called from the browser, exactly like `submitAnswer`.
    URLs" invariant is preserved without amendment.
 
 ### 7.3 Adapter interface
+
+> **Superseded in part.** The singular `buildRequest` / `parseResponse` pair
+> below cannot express a provider that needs N calls for N variants. See
+> `2026-08-24-prompt-battle-free-engine-addendum.md` §2 for the corrected
+> plural contract. The purity requirement stated here still holds and is the
+> reason for that correction.
 
 New module `image-engine.js`, alongside `quiz-core.js`. Pure functions, no
 fetching, so tests cover it from fixtures and never call a live provider —
