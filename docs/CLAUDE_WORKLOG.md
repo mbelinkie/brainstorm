@@ -1791,6 +1791,6 @@ Branch: `claude/progress-view` (from `main` = `origin/main` at `3447913`, which 
 
 **Judgment calls:** executable denominator excludes Inbox placeholders, `setup-test`, goals (label `goal`/`parent` or a `GOAL:` title; the live board has #10/#11 titled that way with no label) and drafts. Snapshot reuse is a temp-dir JSON file (default 60s), never for a partial fetch. Block reasons come from one batched read of the latest `block:v1` comment for up to 20 blocked issues in this repo.
 
-**Commands run:** `node --test test/roadmap-progress.test.js` (15/15); `npm test` (541/541, was 527); mutation check on a scratch copy of four breakages (setup-test counted, partial shown as complete, partial snapshot reused, nested truncation tolerated), each failed the intended tests; one read-only live `node scripts/roadmap/progress.mjs --fresh --html <file>`: Done 4 of 40 executable, 2 Inbox placeholders, 4 setup-test excluded, exit 0.
+**Commands run:** `node --test test/roadmap-progress.test.js` (15/15); `npm test` (542/542, was 527); mutation check on a scratch copy of four breakages (setup-test counted, partial shown as complete, partial snapshot reused, nested truncation tolerated), each failed the intended tests; one read-only live `node scripts/roadmap/progress.mjs --fresh --html <file>`: Done 4 of 40 executable, 2 Inbox placeholders, 4 setup-test excluded, exit 0.
 
 **Unproven:** the HTML page was not opened in a browser; organization-owned Projects are untested (this one is user-owned); block-reason lookups only cover this repository.
