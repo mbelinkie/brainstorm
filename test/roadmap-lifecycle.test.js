@@ -185,9 +185,9 @@ function setup({ world = makeWorld(), env = { CLAUDE_CODE_SESSION_ID: SELF }, lo
 
 const claimOpts = (extra = {}) => ({
   executionId: SELF,
-  branch: "claude/lifecycle-wrapper-1",
+  branch: "codex/lifecycle-wrapper-1",
   startCommit: BASE_OID,
-  model: "deepseek-v4-pro",
+  model: "gpt-6-luna",
   effort: "high",
   worktree: "../quiz-lifecycle",
   ...extra,
@@ -226,6 +226,7 @@ test("the config routing block mirrors docs/roadmap/routing.md", () => {
     assert.ok(md.includes(`| \`${logical}\` | \`${effective}\` |`), `routing.md maps ${logical} -> ${effective}`);
   }
   assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["economy", "standard"]);
+  assert.deepEqual(Object.values(config.routing.profiles).map((profile) => profile.modelId), ["gpt-6-luna", "gpt-6-luna"]);
 });
 
 test("config.json only gained the routing block; no id or field changed", () => {
@@ -285,10 +286,10 @@ test("evaluateRouting enforces exactly one model, one effort and a supported pai
   assert.deepEqual(codes(["escalation:opus", "effort:high"]), ["MODEL_LABEL_COUNT"]);
 });
 
-test("effectiveEffort maps logical medium/high to the runner's high, low stays low", () => {
-  assert.equal(effectiveEffort("low", config.routing), "low");
+test("effectiveEffort follows the configured runner mapping, including max", () => {
+  assert.equal(effectiveEffort("low", config.routing), "medium");
   assert.equal(effectiveEffort("medium", config.routing), "high");
-  assert.equal(effectiveEffort("high", config.routing), "high");
+  assert.equal(effectiveEffort("high", config.routing), "max");
   assert.equal(effectiveEffort("extreme", config.routing), null);
 });
 
@@ -307,6 +308,14 @@ test("parseClaims reads the claims already on #12 and #4, and ends a claim on a 
   assert.equal(other.claims.length, 0, "a claim marker for another issue is not this issue's claim");
   const unreadable = parseClaims([{ id: "C3", body: "<!-- claim:v1 issue=4 -->\nno id here", createdAt: "x" }], 4);
   assert.equal(unreadable.live?.executionId, null, "a claim with no readable execution ID still counts as live");
+});
+
+test("parseClaims keeps retired Claude and DeepSeek model claims readable", () => {
+  const comments = ["claude-sonnet-5-5", "deepseek-v4-pro", "deepseek-flash"].map((model, index) => ({
+    id: `C_legacy_${index}`,
+    body: `<!-- claim:v1 issue=51 -->\n- Execution ID: \`${OTHER}\`\n- Model / effort: \`${model}\` / effort \`high\``,
+  }));
+  assert.equal(parseClaims(comments, 51).live.executionId, OTHER);
 });
 
 // ---- execution id ---------------------------------------------------------
@@ -432,7 +441,7 @@ test("ready refuses zero effort labels", () =>
 test("ready refuses two effort labels", () =>
   readyRefused((w) => { w.issues[3].labels = ["model:standard", "effort:low", "effort:high"]; }, ["EFFORT_LABEL_COUNT"]));
 
-test("ready accepts economy plus a high logical effort (runner maps it to high)", async () => {
+test("ready accepts economy plus a high logical effort", async () => {
   const world = makeWorld();
   world.issues[3].labels = ["model:economy", "effort:high"];
   world.issues[3].items[0].status = "Backlog";
@@ -754,10 +763,12 @@ test("claim refuses a model or effort that does not match the issue's labels unl
 });
 
 test("claim refuses an unsupported coding model even with --allow-mismatch", async () => {
-  const { lifecycle, transport } = setup({ world: readyWorld() });
-  const result = await lifecycle.claim(3, claimOpts({ model: "gpt-6.1-sol", allowMismatch: "deliberate" }));
-  assert.equal(result.code, "MODEL_UNSUPPORTED");
-  assertNoWrites(transport);
+  for (const model of ["deepseek-v4-pro", "gpt-6.1-sol"]) {
+    const { lifecycle, transport } = setup({ world: readyWorld() });
+    const result = await lifecycle.claim(3, claimOpts({ model, allowMismatch: "deliberate" }));
+    assert.equal(result.code, "MODEL_UNSUPPORTED", model);
+    assertNoWrites(transport);
+  }
 });
 
 // ---- claim: success, idempotency, partial writes --------------------------
@@ -771,7 +782,7 @@ test("claim posts the marked comment, then sets In progress, under a single lock
   const [comment] = world.issues[3].comments;
   assert.ok(comment.body.startsWith("<!-- claim:v1 issue=3 -->\n"), "exact marker on the first line");
   for (const needle of [
-    "mbelinkie/brainstorm #3", SELF, "claude/lifecycle-wrapper-1", BASE_OID, "deepseek-v4-pro", "`effort:high`", "effective `high`", "../quiz-lifecycle", "Owner: mbelinkie",
+    "mbelinkie/brainstorm #3", SELF, "codex/lifecycle-wrapper-1", BASE_OID, "gpt-6-luna", "`effort:high`", "effective `max`", "../quiz-lifecycle", "Owner: mbelinkie",
   ]) assert.ok(comment.body.includes(needle), `claim comment should contain ${needle}`);
   assert.equal(world.issues[3].items[0].status, "In progress");
   assert.equal(transport.mutations()[1].variables.option, STATUS_OPTIONS["In progress"]);

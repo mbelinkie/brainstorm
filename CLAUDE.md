@@ -47,16 +47,16 @@ Before creating, promoting, claiming, reviewing, or completing roadmap work,
 read `docs/PROJECT_OPERATING_PLAYBOOK.md`, `docs/roadmap/config.json` and
 `docs/roadmap/routing.md`. The live board is the "Brainstorm Roadmap" Project
 (user project #4). Preserve explicit dependencies, bounded scope, exact routing
-(routing is DeepSeek: `model:standard` = `deepseek-v4-pro`, `model:economy` =
-`deepseek-flash`; `medium` and `high` efforts both run at effective `high`, and
-there is no active Opus escalation), acceptance class, and private-data
-boundaries. Use the shared lifecycle wrapper (`scripts/roadmap/lifecycle.mjs`,
-issues #3 and #45) through the API gate (`scripts/roadmap/gate.mjs`, issue #4).
-Execution identity is the run's own `CODEX_THREAD_ID` (or the legacy
-`CLAUDE_CODE_SESSION_ID`). The DeepSeek batch dispatcher is
-`tools/codex-batch.mjs`; read `docs/roadmap/WORKING_A_TICKET.md` before working a
-ticket. Report missing capabilities or conflicting evidence instead of bypassing
-the gates.
+(both `model:standard` and `model:economy` use native Luna subagents with model
+ID `gpt-6-luna`; logical `low`/`medium`/`high` maps to effective
+`medium`/`high`/`max`; independent review uses `gpt-6.1-sol`), acceptance class,
+and private-data boundaries. Use the shared lifecycle wrapper
+(`scripts/roadmap/lifecycle.mjs`, issues #3 and #45) through the API gate
+(`scripts/roadmap/gate.mjs`, issue #4). Execution identity is the run's own
+`CODEX_THREAD_ID` (or the legacy `CLAUDE_CODE_SESSION_ID`). The Codex
+orchestrator launches native subagents; read
+`docs/roadmap/WORKING_A_TICKET.md` before working a ticket. Report missing
+capabilities or conflicting evidence instead of bypassing the gates.
 
 ## Attribution: distinguishing Claude's work
 

@@ -476,7 +476,7 @@ Operations
                                         CLAUDE_CODE_SESSION_ID when no Codex id is set)
                   --branch <name> --start-commit <sha> --model <id>
                   --effort <low|medium|high>   (default: CLAUDE_EFFORT)
-                  --effective-effort <low|high>  the runner's real effort; validated
+                  --effective-effort <value>     the runner's real effort; validated
                                         against the mapping and recorded separately
                   --worktree <name>   a name such as ../quiz-x, never an absolute path
                   --allow-mismatch <reason>   record a run that differs from the labels

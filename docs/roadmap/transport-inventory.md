@@ -20,7 +20,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 - `scripts/roadmap/probe.mjs`: read-only budget diagnostic.
 - `scripts/roadmap/lifecycle.mjs` (+ `lifecycle-core.mjs`, pure): inspect, ready, claim, block (#3). Uses `gate.session()` only.
 - `scripts/roadmap/lifecycle-finish.mjs`: review, verify, complete, stale, release (#45). Uses `gate.session()` and `ops.rest` only.
-- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): the DeepSeek batch dispatcher (#51). Uses `gate.read` for the project scan and `gate.rest` for PR lookup/creation and merge; it never starts `gh`. It spawns `git`, `npm` and `codex` (allowed under `tools/`, which the bypass check does not scan), which is the git transport plus the provider, not the GitHub API.
+- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): the legacy subprocess dispatcher from #51. It remains temporarily pending separate removal and is not the supported path for new work. The Codex orchestrator launches native Luna coding subagents and an independent Sol reviewer directly; lifecycle and GitHub state still use the adapters above.
 - Future: the progress view (#5).
 
 ## Not covered, and why
@@ -28,7 +28,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 These exist but are outside what an in-repo test can see. They share the same
 GitHub quota, so the gate cannot account for them:
 
-- `gh` commands typed by a person or run by a Claude session in a terminal.
+- `gh` commands typed by a person or run by an agent in a terminal.
 - Throwaway scripts kept outside the repository (for example in a session
   scratchpad). They do not run through the gate.
 - The GitHub web UI and the Projects UI.

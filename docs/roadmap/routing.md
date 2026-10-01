@@ -5,16 +5,19 @@ Implements playbook §3. Every executable issue carries **exactly one**
 
 ## Model profiles
 
-Work is executed through the Codex **DeepSeek** profile. The model IDs below are
-the provider model IDs passed to the runner (`codex exec -p deepseek --model <id>`).
+The Codex orchestrator launches native Luna coding subagents and an independent
+Sol reviewer. Both coding labels currently select the same exact model; the
+labels remain distinct for existing issue contracts and history.
 
-| Label | Model | Provider model ID | Notes |
+| Label | Model | Model ID | Notes |
 | --- | --- | --- | --- |
-| `model:economy` | DeepSeek Flash | `deepseek-flash` | Mechanical, well-specified edits, docs, test scaffolding. |
-| `model:standard` | DeepSeek V4 Pro | `deepseek-v4-pro` | Default for real feature and bug work. |
+| `model:economy` | GPT-6 Luna | `gpt-6-luna` | Mechanical, well-specified edits and bounded coding work. |
+| `model:standard` | GPT-6 Luna | `gpt-6-luna` | Default for real feature and bug work. |
 
-Choose the cheapest profile that safely fits. Authorization, data-loss, and
-scoring work prefer `model:standard`.
+The labels do not select different model capabilities today. Use
+`model:standard` for the normal coding route; retain `model:economy` where
+existing contracts or future triage use it. The independent reviewer uses
+`gpt-6.1-sol` and verifies the change without taking over coding work.
 
 ## Effort levels
 
@@ -26,27 +29,32 @@ Effort labels are **logical** and remain `low`, `medium` and `high`:
 | `effort:medium` | Normal bug fix or slice; some cross-module reasoning. |
 | `effort:high` | Authorization, scoring, migrations, or hard cross-system state. |
 
-The runner maps the logical label to its **effective** effort:
+The Codex runner maps the logical label to its **effective** effort:
 
-| Logical label | Runner effective effort |
+| Logical label | Luna effective effort |
 | --- | --- |
-| `low` | `low` |
+| `low` | `medium` |
 | `medium` | `high` |
-| `high` | `high` |
+| `high` | `max` |
 
-The claim records both the logical label and the runner's effective effort, so a
-`medium` ticket is never misread as having run at a lower provider effort.
-Unsupported effort/model mappings are resolved explicitly, never translated
-silently. Split large issues instead of routing them upward.
+The claim records both the logical label and the effective effort used by the
+Luna subagent. Unsupported effort/model mappings are resolved explicitly, never
+translated silently. Split large issues instead of routing them upward.
 
 ## Evidence
 
-Execution evidence records the exact provider model ID and effective effort
-actually used, not just the label.
+Execution evidence records the exact model ID and effective effort actually
+used, not just the label.
+
+The orchestrator and lifecycle tools manage claims and GitHub state. The
+temporary subprocess dispatcher remains in the repository until its separately
+tracked removal; it is not the supported execution path for this policy. The
+native Luna/Sol rehearsal has not yet been recorded as complete.
 
 ## Historical records
 
-Older issues may still carry `model:standard`/`model:economy` meaning the retired
-Claude profiles, and a few carry `escalation:opus`. Those are historical evidence
-and remain readable; they never change a new run's routing. There is no active
-Opus coding escalation in the current workflow.
+Older issues and claim records may name Claude or DeepSeek model IDs, and some
+carry `escalation:opus`. They remain readable as historical evidence. New claims
+must use a currently configured model; `--allow-mismatch` cannot authorize a
+retired or otherwise unsupported coding model. There is no active Opus coding
+escalation in the current workflow.

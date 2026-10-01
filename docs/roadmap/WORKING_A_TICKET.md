@@ -1,6 +1,6 @@
 # Working a ticket: instructions for a new machine
 
-For anyone (a person, or a Codex DeepSeek session) picking up work on the Brainstorm
+For anyone (a person, or a Codex session) picking up work on the Brainstorm
 quiz platform from a machine that has access to `mbelinkie/brainstorm`. It covers
 finding a ticket you may work, claiming it, doing the work, reporting it, and
 stopping at the right place.
@@ -32,12 +32,12 @@ format it can read back.
 6. **Public repo.** No tokens, passwords, `.env.local` contents, private
    recordings, personal data or absolute local paths in issues, comments, commits
    or logs.
-7. **Routing is DeepSeek.** `model:standard` means DeepSeek V4 Pro
-   (`deepseek-v4-pro`), `model:economy` means DeepSeek Flash (`deepseek-flash`).
-   Effort labels stay `low`/`medium`/`high`, but the runner runs `medium` and
-   `high` both at effective effort `high`; the claim records the effective effort
-   separately so a `medium` ticket is not misread. There is no active Opus
-   escalation (`docs/roadmap/routing.md`).
+7. **Routing uses native Luna subagents.** Both `model:standard` and
+   `model:economy` mean `gpt-6-luna`. Logical `low`/`medium`/`high` effort maps
+   to effective `medium`/`high`/`max`. The independent reviewer uses
+   `gpt-6.1-sol` and checks the change without taking over coding. Historical
+   Claude and DeepSeek claims remain readable; unsupported models are refused
+   for new claims, including with `--allow-mismatch` (`docs/roadmap/routing.md`).
 8. **The wrapper does not replace judgment.** If it refuses, read the reason. Do
    not work around a refusal; fix its cause or ask.
 
@@ -156,9 +156,9 @@ node scripts/roadmap/lifecycle.mjs claim N \
   --execution-id "$CODEX_THREAD_ID" \
   --branch codex/<short-name> \
   --start-commit "$(git rev-parse --short origin/main)" \
-  --model deepseek-v4-pro \
+  --model gpt-6-luna \
   --effort high \
-  --effective-effort high \
+  --effective-effort max \
   --worktree ../quiz-<short-name>
 ```
 
@@ -169,14 +169,14 @@ node scripts/roadmap/lifecycle.mjs claim N \
   refused. It is never guessed, and the orchestrator never forges it for a worker.
 - **A person at a plain terminal has no such variable**, and the claim is refused:
   `REFUSED EXECUTION_ID_MISSING: no CODEX_THREAD_ID or CLAUDE_CODE_SESSION_ID is
-  set`. The supported route is to do the work through a Codex session (DeepSeek
-  profile). Ask Matthew before setting the variable by hand: it would satisfy the
-  check, but it is self-asserted.
+  set`. The supported route is to do the work through a Codex session that
+  launches the native Luna subagent. Ask Matthew before setting the variable by
+  hand: it would satisfy the check, but it is self-asserted.
 - **The run must match the labels.** `--model` must be the ID of the issue's
-  `model:` profile (`model:standard` = `deepseek-v4-pro`, `model:economy` =
-  `deepseek-flash`) and `--effort` its `effort:` level, or you get
-  `ROUTING_MISMATCH`. `--effective-effort` states the runner's real effort
-  (`medium` and `high` run as `high`); it is validated and recorded separately.
+  `model:` profile (`model:standard` and `model:economy` both use `gpt-6-luna`)
+  and `--effort` its `effort:` level, or you get `ROUTING_MISMATCH`.
+  `--effective-effort` states the runner's real effort (`low` maps to `medium`,
+  `medium` to `high`, `high` to `max`); it is validated and recorded separately.
   `--allow-mismatch "<reason>"` records a deliberate difference; ask first.
 - `--worktree` takes a name like `../quiz-x`, **never an absolute path** (the
   repo is public).
@@ -202,8 +202,8 @@ unused branch, and tell Matthew. Do not try to override it.
   `git show --stat HEAD` after every commit.
 - **Commits:** small and single-purpose with a `feat:` / `fix:` / `chore:` /
   `docs:` prefix. Identify the model that did the work (for example
-  `Model: DeepSeek V4 Pro (deepseek-v4-pro)`); never attribute work to Claude you
-  did not run through Claude.
+  `Model: GPT-6 Luna (gpt-6-luna)`); never attribute work to Claude you did not
+  run through Claude.
 - **Work log:** append an entry to `docs/CLAUDE_WORKLOG.md` for every session:
   date, branch, files touched, the slice, the commands you really ran, and what
   remains unproven. Add a `CHANGELOG.md` line only for completed, user-visible,
@@ -217,9 +217,10 @@ unused branch, and tell Matthew. Do not try to override it.
   Matthew assigned. Never edit or renumber an applied migration. Do not apply it
   yourself.
 - **Stuck?** After **two** evidence-based attempts without progress, stop. Write
-  down the confirmed facts and a focused reproduction and ask. If DeepSeek cannot
-  get a required check green, record the failing checks and the smallest next
-  scope and ask Matthew; there is no Opus escalation in the current workflow.
+  down the confirmed facts and a focused reproduction and ask. If a Luna
+  subagent cannot get a required check green, record the failing checks and the
+  smallest next scope and ask Matthew; there is no Opus escalation in the
+  current workflow.
 
 ### Product rules that must not regress
 
@@ -350,7 +351,7 @@ dropping the other side's entries. Delete merged branches with `git branch -d`
 - **Exit codes:** `0` done, `1` refused (the code and reason are printed), `2` bad
   usage. Add `--json` for machine-readable output.
 
-## 9. Starter prompt for a Codex DeepSeek session
+## 9. Starter prompt for a Codex session
 
 Launch it from the repository (or worktree) root so `CLAUDE.md` loads.
 
@@ -363,7 +364,7 @@ worktree and branch from origin/main; claim with `lifecycle.mjs claim` (your own
 CODEX_THREAD_ID; model and effort must match the labels); work test-first
 inside the issue's scope; log your work; record `lifecycle.mjs review` with real
 evidence; and STOP at In review. Never merge, close, run `complete`, deploy, push
-to main, or choose a migration number. Routing is DeepSeek (see routing.md). After two
-evidence-based failed attempts, stop and ask. Do not hand-write claim/review/block
-comments or edit board statuses; use the wrapper.
+to main, or choose a migration number. Routing is native Luna subagents (see
+routing.md). After two evidence-based failed attempts, stop and ask. Do not
+hand-write claim/review/block comments or edit board statuses; use the wrapper.
 ```

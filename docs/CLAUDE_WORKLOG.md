@@ -1852,7 +1852,7 @@ Branch: `codex/deepseek-orchestration` (from `main` at `271a47d`). Model: DeepSe
 
 ## 2026-10-01 — DeepSeek orchestration repair (issue #51, PR #52)
 
-Branch: `codex/deepseek-orchestration` (from `main` at `271a47d`). Model: DeepSeek V4 Pro (`deepseek-v4-pro`). Execution ID: `01a0f5f2-ac82-7862-8f3e-710e1a59ae82` (this run's own `CODEX_THREAD_ID`).
+Branch: `codex/deepseek-orchestration` (from `main` at `271a47d`). Model: DeepSeek V4 Pro (`deepseek-v4-pro`). Execution ID: `01a0f5f9-a3cc-7a12-b5c1-81cf4a9ffe6d` (this run's own `CODEX_THREAD_ID`; the earlier `01a0f5f2-ac82-7862-8f3e-710e1a59ae82` attribution was incorrect).
 
 **Slice:** consolidated repair of the batch dispatcher after an independent Sol review failed the published SHA. The worker now launches with the exact DeepSeek profile/model, `approval_policy=never`, workspace-write sandbox, effective-effort override, writable git shared dir, and a stripped-then-parented execution identity (the worker generates its own id; the dispatcher is recorded as `CODEX_PARENT_THREAD_ID`). Sol runs on the default provider with no DeepSeek key and its own session. Publication pushes the branch, verifies the remote head through the gate, then creates/refetches a PR; merge carries the reviewed SHA in the REST body; merged `origin/main` is fetched and tested in a separate detached integration worktree, never the caller's checkout. Acceptance requires Sol exit zero plus a fresh independent `verify` for the exact reviewed SHA. State is persisted atomically (owner-only files, outside git), corrupt state fails closed, resume reuses the owned branch/worktree and never resets spend, budget is strictly cumulative (null/empty totals are invalid, not zero), and a non-dry-run needs `--sole-dispatcher` (host-local lock) with a real process-deadline kill. `lifecycle.inspect` now returns sanitized review/verification fields instead of stripping them entirely.
 
@@ -1863,3 +1863,31 @@ Branch: `codex/deepseek-orchestration` (from `main` at `271a47d`). Model: DeepSe
 **Correction to the earlier diagnosis:** the previous "invalid gh token" reading was wrong. The token is supplied privately to the launcher as `GH_TOKEN`; the macOS Keychain is inaccessible in the sandbox, which is why `gh` auth-by-keychain could not resolve. `GH_TOKEN` is the supported path and is never printed or committed.
 
 **Unproven / outstanding:** the orchestrator still must push this branch, run the final independent Sol review and the real setup rehearsal, then merge and complete #51. The batch runner's live worker/Sol spawns and provider-balance calls are covered by offline fakes only; the exact `shell_environment_policy` exclusion of `DEEPSEEK_API_KEY` from a child shell is not yet asserted offline.
+
+## 2026-10-01 — Native Luna routing and lifecycle repair (issue #51)
+
+Branch: `codex/deepseek-orchestration` (worktree based on `271a47d5`). Model:
+GPT-6 Luna (`gpt-6-luna`) as a native Codex subagent. Execution ID:
+`01a0f723-2ce8-7071-b5c2-5004b0c1e211` (this run's `CODEX_THREAD_ID`).
+
+**Slice:** both logical model profiles now identify Luna; logical efforts map to
+effective `medium`/`high`/`max`; distinct full commit IDs compare exactly while
+legacy abbreviated records remain readable. Historical Claude and DeepSeek
+records stay parseable, and new unsupported model claims remain refused.
+
+**Files:** edited `docs/roadmap/config.json`, `docs/roadmap/routing.md`,
+`docs/roadmap/WORKING_A_TICKET.md`, `scripts/roadmap/README.md`,
+`docs/roadmap/transport-inventory.md`, `AGENTS.md`, `CLAUDE.md`,
+`scripts/roadmap/lifecycle-core.mjs`, `scripts/roadmap/lifecycle.mjs` and the two
+lifecycle test files.
+
+**Commands run:** `ctx-wire run node --test test/roadmap-lifecycle.test.js test/roadmap-lifecycle-finish.test.js`
+(97 pass, 0 fail); `ctx-wire run git diff --check` (clean). The first live claim
+attempt refused before network access because the child environment inherited a
+parent `CODEX_SESSION_ID`. Retried with only that inherited alias unset and the
+authentic `CODEX_THREAD_ID` unchanged; lifecycle claimed #51 at high/max and set
+In progress.
+
+**Unproven / outstanding:** the native Luna/Sol setup rehearsal and independent
+review are still pending. The temporary subprocess dispatcher remains for the
+separately scoped next change.

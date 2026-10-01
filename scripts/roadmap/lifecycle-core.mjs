@@ -160,8 +160,8 @@ export function evaluateRouting(labels, routing) {
   return { profile, effort, escalation: labels.includes(LEGACY_ESCALATION_LABEL), problems };
 }
 
-// The runner's effective effort for a logical effort label (medium runs as high
-// on this runner). Returns null for a label the policy does not define.
+// The runner's effective effort for a logical effort label. Returns null for a
+// label the policy does not define.
 export function effectiveEffort(logicalEffort, routing) {
   const map = routing?.effectiveEfforts ?? {};
   if (typeof logicalEffort !== "string" || !Object.prototype.hasOwnProperty.call(map, logicalEffort)) return null;
@@ -318,7 +318,13 @@ const HEX_COMMIT = /^[0-9a-f]{7,40}$/i;
 const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 export const isCommit = (value) => typeof value === "string" && HEX_COMMIT.test(value.trim());
 const shortCommit = (commit) => commit.trim().toLowerCase().slice(0, 7);
-export const sameCommit = (a, b) => Boolean(a && b) && shortCommit(a) === shortCommit(b);
+export const sameCommit = (a, b) => {
+  if (!isCommit(a) || !isCommit(b)) return false;
+  const first = a.trim().toLowerCase();
+  const second = b.trim().toLowerCase();
+  if (first.length === 40 && second.length === 40) return first === second;
+  return first.startsWith(second) || second.startsWith(first);
+};
 
 // Comments of one marker kind for this issue, in order: [{ comment, index }].
 export function markedComments(comments, kind, issueNumber, { authors = null } = {}) {
@@ -392,7 +398,7 @@ export function findOwnerAcceptance(comments, afterIndex, commit, trustedAuthors
     if (index <= afterIndex || MARKER.test(body)) return false;
     if (!trustedAuthors.includes(comment.author?.login)) return false;
     if (!/\baccepted\b/i.test(body) || /\b(?:not|never|un)\s*accepted\b/i.test(body)) return false;
-    return body.toLowerCase().includes(shortCommit(commit));
+    return (body.match(/\b[0-9a-f]{7,40}\b/gi) ?? []).some((acceptedCommit) => sameCommit(acceptedCommit, commit));
   });
 }
 

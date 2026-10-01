@@ -76,13 +76,13 @@
   },
   "crossRepoPrerequisites": [],
   "routing": {
-    "_comment": "Machine-readable mirror of docs/roadmap/routing.md (issue #3). Model IDs are Codex DeepSeek provider IDs; efforts are logical labels mapped to the runner's effective effort below.",
+    "_comment": "Machine-readable mirror of docs/roadmap/routing.md (issue #3). Both profiles use native Codex Luna subagents; efforts are logical labels mapped to the runner's effective effort below.",
     "profiles": {
-      "economy": { "model": "DeepSeek Flash", "modelId": "deepseek-flash", "efforts": ["low", "medium", "high"] },
-      "standard": { "model": "DeepSeek V4 Pro", "modelId": "deepseek-v4-pro", "efforts": ["low", "medium", "high"] }
+      "economy": { "model": "GPT-6 Luna", "modelId": "gpt-6-luna", "efforts": ["low", "medium", "high"] },
+      "standard": { "model": "GPT-6 Luna", "modelId": "gpt-6-luna", "efforts": ["low", "medium", "high"] }
     },
     "efforts": ["low", "medium", "high"],
-    "effectiveEfforts": { "low": "low", "medium": "high", "high": "high" },
+    "effectiveEfforts": { "low": "medium", "medium": "high", "high": "max" },
     "acceptanceClasses": ["Automated", "External", "Producer"]
   }
 }

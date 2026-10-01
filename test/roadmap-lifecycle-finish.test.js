@@ -5,7 +5,7 @@ import {
   COMMIT, OTHER, SELF, STATUS_OPTIONS, VERIFIER, acceptComment, claimComment, completeComment, config, contractBody,
   makeWorld, reviewComment, reviewedWorld, root, setup, verifyComment,
 } from "./helpers/roadmap-world.js";
-import { parseClaims } from "../scripts/roadmap/lifecycle-core.mjs";
+import { findOwnerAcceptance, parseClaims, sameCommit } from "../scripts/roadmap/lifecycle-core.mjs";
 
 // Lifecycle wrapper part 2 (issue #45): review, verify, complete, stale, release.
 // Fake GitHub only. Every refusal also asserts that no write was sent.
@@ -25,6 +25,16 @@ const inProgressWorld = (acceptance = "Automated", extra = {}) => {
 const statusOf = (world) => world.issues[3].items[0].status;
 
 // ---- review ---------------------------------------------------------------
+
+test("full commit IDs compare exactly while legacy abbreviated records remain readable", () => {
+  const other = `${COMMIT.slice(0, 7)}${"f".repeat(33)}`;
+  assert.equal(sameCommit(COMMIT, COMMIT), true);
+  assert.equal(sameCommit(COMMIT, other), false);
+  assert.equal(sameCommit(COMMIT, COMMIT.slice(0, 7)), true);
+  assert.equal(sameCommit(COMMIT.slice(0, 12), COMMIT), true);
+  assert.equal(findOwnerAcceptance([{ author: { login: "mbelinkie" }, body: `accepted ${other}` }], -1, COMMIT, ["mbelinkie"]), false);
+  assert.equal(findOwnerAcceptance([{ author: { login: "mbelinkie" }, body: `accepted ${COMMIT.slice(0, 7)}` }], -1, COMMIT, ["mbelinkie"]), true);
+});
 
 test("review records the tested commit, commands, exclusions and outstanding steps, then sets In review", async () => {
   const world = inProgressWorld();
@@ -412,7 +422,7 @@ test("release records the confirmation, ends the claim, and returns the issue to
   assert.equal(statusOf(world), "Ready");
   assert.equal(parseClaims(world.issues[3].comments, 3, { endAuthors: ["mbelinkie"] }).live, null);
   const next = setup({ world, env: { CLAUDE_CODE_SESSION_ID: VERIFIER } });
-  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "deepseek-v4-pro", effort: "high" });
+  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "codex/x", startCommit: COMMIT, model: "gpt-6-luna", effort: "high" });
   assert.equal(claimed.ok, true);
 });
 
