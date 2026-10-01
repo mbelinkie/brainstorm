@@ -42,7 +42,8 @@ export function evaluateHookInput(input, { scratchDirs = defaultScratchDirs(), c
 async function readStdin() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
+  // Windows PowerShell prepends a byte-order mark when it pipes text; JSON.parse rejects it.
+  return Buffer.concat(chunks).toString("utf8").replace(/^\uFEFF/, "");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

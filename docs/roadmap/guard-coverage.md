@@ -57,6 +57,10 @@ Be honest about these before relying on it:
 
 Not installed by this change. The owner reviews `docs/roadmap/claude-settings.guard.json`
 and merges its `hooks` block into `.claude/settings.json` (project) or the user settings.
+To check it in the real runner from Windows PowerShell, run
+`powershell -ExecutionPolicy Bypass -File tools\guard-real-runner-check.ps1`; it builds a scratch
+repo, loads the hook for a headless run, and reports whether an uncommitted change survived a
+`git reset --hard` request (`-SkipClaude` tests the hook script alone, no login needed).
 Restart the Claude Code session afterwards; hooks load at session start. To check it
 worked, ask the session to run a refused command such as `git reset --hard` in a scratch
 repository: it should be denied with the rule named.

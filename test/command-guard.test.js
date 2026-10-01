@@ -138,6 +138,10 @@ test("the hook script, run as a process, answers on stdout and never runs the co
   const allowed = run(JSON.stringify({ tool_name: "Bash", tool_input: { command: "git status" } }));
   assert.equal(allowed.status, 0);
   assert.equal(allowed.stdout.trim(), "");
+  const bom = run(`\uFEFF${JSON.stringify({ tool_name: "Bash", tool_input: { command: "git status" } })}\r\n`);
+  assert.equal(bom.stdout.trim(), "", "a byte-order mark (PowerShell pipes add one) must not turn valid input into a refusal");
+  const bomDenied = run(`\uFEFF${JSON.stringify({ tool_name: "Bash", tool_input: { command: "git clean -fd" } })}`);
+  assert.equal(JSON.parse(bomDenied.stdout).hookSpecificOutput.permissionDecision, "deny");
   const garbage = run("not json");
   assert.equal(JSON.parse(garbage.stdout).hookSpecificOutput.permissionDecision, "deny", "unreadable input is refused, not allowed");
 });
