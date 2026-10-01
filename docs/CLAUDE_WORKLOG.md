@@ -1994,7 +1994,9 @@ commit verification, safe recovery notes, strict boundary-field normalization,
 and the distinction between repository checks and existing deployment failures.
 Recorded only observed behavior; added no runner or scheduler.
 
-**Files:** `docs/roadmap/WORKING_A_TICKET.md` and this worklog.
+**Files:** `docs/roadmap/WORKING_A_TICKET.md`, `docs/roadmap/routing.md`, and this worklog.
+Sol flagged the stale pending-rehearsal statement in routing; it now points to
+the verified rehearsal evidence in the ticket guide.
 **Verification:** live lifecycle completion returned completed, then
 alreadyCompleted; stale confirmed CLOSED/Done, no live claim and no discrepancy.
 Sol and integrated main each passed 554 tests at the recorded rehearsal SHAs.
