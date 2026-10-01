@@ -32,12 +32,12 @@ format it can read back.
 6. **Public repo.** No tokens, passwords, `.env.local` contents, private
    recordings, personal data or absolute local paths in issues, comments, commits
    or logs.
-7. **Routing uses native Luna subagents.** Both `model:standard` and
-   `model:economy` mean `gpt-6-luna`. Logical `low`/`medium`/`high` effort maps
-   to effective `medium`/`high`/`max`. The independent reviewer uses
-   `gpt-6.1-sol` and checks the change without taking over coding. Historical
-   Claude and DeepSeek claims remain readable; unsupported models are refused
-   for new claims, including with `--allow-mismatch` (`docs/roadmap/routing.md`).
+7. **DeepSeek implements bounded slices.** `model:economy` uses
+   `deepseek-flash`; `model:standard` uses `deepseek-v4-pro`. Before planning,
+   dispatching or repairing, read [the coding guide](../DEEPSEEK_CODING_GUIDE.md).
+   A native Sol coordinator holds the claim with its real identity and an
+   explicit coordination mismatch; a separate Sol execution reviews the exact
+   published commit. Product implementation and fixes remain with DeepSeek.
 8. **The wrapper does not replace judgment.** If it refuses, read the reason. Do
    not work around a refusal; fix its cause or ask.
 
@@ -156,81 +156,143 @@ Run this from inside your worktree. One command: under one lock it re-checks tha
 the ticket is still Ready, refuses if someone else holds a live claim, posts the
 `claim:v1` comment, and sets the board status to In progress.
 
+Launch one native `gpt-6.1-sol` coordinator at actual high effort. The issue
+keeps its DeepSeek coding label; the `coordinator` config profile allows the
+real claim holder’s model without relabeling it as an implementer. This written
+coordination mismatch is already authorized by Matthew’s routing instruction:
+
 ```bash
 node scripts/roadmap/lifecycle.mjs claim N \
   --execution-id "$CODEX_THREAD_ID" \
   --branch codex/<short-name> \
-  --start-commit "$(git rev-parse --short origin/main)" \
-  --model gpt-6-luna \
-  --effort high \
-  --effective-effort max \
+  --start-commit "$(git rev-parse origin/main)" \
+  --model gpt-6.1-sol \
+  --effort medium \
+  --effective-effort high \
+  --allow-mismatch "Sol coordinates; DeepSeek implements all slices" \
   --worktree ../quiz-<short-name>
 ```
 
-- **The execution ID must be this run's own.** It has to equal the runner's
-  `CODEX_THREAD_ID` (a UUID; its `CODEX_SESSION_ID` only counts when it equals the
-  thread id), or the legacy `CLAUDE_CODE_SESSION_ID` when no Codex id is set. It
-  must not equal a parent-session ID. A conflicting or ambiguous environment is
-  refused. It is never guessed, and the orchestrator never forges it for a worker.
-- **A person at a plain terminal has no such variable**, and the claim is refused:
-  `REFUSED EXECUTION_ID_MISSING: no CODEX_THREAD_ID or CLAUDE_CODE_SESSION_ID is
-  set`. The supported route is to do the work through a Codex session that
-  launches the native Luna subagent. Ask Matthew before setting the variable by
-  hand: it would satisfy the check, but it is self-asserted.
-- **The run must match the labels.** `--model` must be the ID of the issue's
-  `model:` profile (`model:standard` and `model:economy` both use `gpt-6-luna`)
-  and `--effort` its `effort:` level, or you get `ROUTING_MISMATCH`.
-  `--effective-effort` states the runner's real effort (`low` maps to `medium`,
-  `medium` to `high`, `high` to `max`); it is validated and recorded separately.
-  `--allow-mismatch "<reason>"` records a deliberate difference; ask first.
-- `--worktree` takes a name like `../quiz-x`, **never an absolute path** (the
-  repo is public).
-- Claiming again with the same ID is safe: it reconciles a half-finished claim
-  instead of posting a second comment.
+- The ID must be this native coordinator’s own `CODEX_THREAD_ID`. Keep the
+  wrapper’s identity checks. A conflicting inherited `CODEX_SESSION_ID` may be
+  removed only while retaining the genuine child thread ID, as in the verified
+  rehearsal below. A plain terminal has no native claim identity; start the
+  coordinator through Codex’s native controls. Never fabricate or manually set
+  a worker ID. DeepSeek API request IDs are recorded as provider evidence only.
+- This claim records Sol’s actual effort, not the issue’s DeepSeek effort.
+  DeepSeek logical `low`/`medium`/`high` maps to effective `low`/`high`/`high`;
+  record both values in slice evidence. `model:coordinator` is an execution-role
+  allowlist, never a product-issue label. Sol may design, test, document and
+  orchestrate, but never substitute product implementation or review fixes.
+- Worktree names are public relative names, never absolute private paths.
+- Repeating a claim with the same ID reconciles a partial write. `CLAIM_HELD`
+  means preserve both checkouts and stand down; never remove an ambiguous or
+  occupied worktree. Report the holder and await reconciliation.
 
-If the claim is refused with `CLAIM_HELD`, someone else holds it. **Stand down**:
-remove your worktree (`git worktree remove ../quiz-<short-name>`), delete your
-unused branch, and tell Matthew. Do not try to override it.
+### DeepSeek batch limits and handoff
 
-### Native orchestration limits
+A batch starts only on Matthew’s explicit start instruction. This policy change
+is preparation, not a start instruction. At restart record a fresh start time,
+an eight-hour deadline, the sole dispatcher and the actual USD balance from
+DeepSeek’s `/user/balance`. Do not reuse an expired prior deadline. One DeepSeek
+session at a time; remote workers receive explicit ticket assignments from the
+same dispatcher. A model request runs only after its slice contract is ready.
 
-The dispatcher starts one native Luna worker for one claimed issue, with an
-eight-hour wall-clock deadline. Use the Codex account allowance shown by Codex;
-do not invent a USD budget, query DeepSeek balances, or read a DeepSeek key.
-Keep intermediate checkpoints in private task notes. Put only lifecycle
-records and evidence needed for acceptance on GitHub.
+Use the official artifact-only API harness described in the coding guide.
+Load the saved key privately in the parent request wrapper; do not print it,
+place it in a prompt or expose it to tools. Verify `/models`, the requested and
+returned model, thinking mode and mapped effort. Preserve Sol’s Codex settings.
+The prior CLI profile is not evidence that tool permissions or recovery work.
 
-If work is interrupted, recover from fresh GitHub and Git reads: run
-`lifecycle inspect N`, check the recorded claim and review, then inspect
-`git status`, `git rev-parse HEAD`, the branch and its remote head, and any
-existing PR before resuming. Do not trust a stale local checkpoint as authority,
-create duplicate claims or PRs, or invent an execution ID. If the prior worker
-is confirmed stopped, the owner or dispatcher uses `lifecycle release N` with
-the stopped execution, confirmer and evidence; age alone never releases a
-claim. The same worker owns any fixes after Sol review; Sol remains read-only
-and never takes over coding.
+Check actual USD balance before and after every session, including failed
+responses and repairs. Stop launching at $10 observed spend since the fresh
+batch baseline; the last session may exceed it. Billing can lag and has cent
+precision: report observed balances and retain usage metadata, never call a
+zero observed change free. Missing, inconsistent or unreliable spending data
+pauses dispatch. Codex coordination and review consume separate allowance.
+Keep private provider responses and checkpoints outside the public repository.
 
-After two evidence-based attempts without progress, stop. Preserve useful
-committed partial work and state exactly what failed. A partial publication must
-be clearly marked incomplete, contain no issue-closing keywords, and go through
-an authorized gated publication path; it does not count as review or acceptance.
-If no gated publication path is available, keep the commit on its branch and
-ask Matthew how to proceed. Never erase the partial work or claim completion.
+The authorized batch permits ordinary scoped edits, checks, explicit-path
+commits, pushes, PR creation, lifecycle records and accepted Automated merges
+without per-operation approval. Publish each completed ticket’s branch and PR
+before the next ticket. Git operations preserve unrelated work; deployments,
+real provider/production-room actions and migration application remain with
+Matthew. Producer tickets still wait for his exact-artifact acceptance;
+External tickets require authorized real-environment evidence.
 
-Publish only the reviewed commit by its full 40-character SHA, and confirm the
-remote branch head is still that exact SHA. The independent Sol check uses a
-fresh clean detached worktree at that commit, re-runs `npm ci` and
-`npm test`, and records verification with Sol’s own execution ID. Any changed
-head invalidates that verification; send fixes back to the same Luna worker,
-then obtain a new clean verification.
+Prepare ordered behavior slices from actual source/callers, with exact write
+scope, input/output contracts, pseudocode where useful, and Sol-owned acceptance
+checks. Use a fresh packet per slice and preserve accepted code plus short
+handoff. Prefer pure logic, transformations and explicitly requested skeletons;
+a skeleton alone does not complete a behavior ticket. Only allowlisted artifacts
+are applied. Run acceptance and relevant regressions after each slice, then
+verify the combined ticket. DeepSeek’s own tests do not replace Sol’s assertions.
 
-For Automated acceptance, after independent verification the owner or
-dispatcher merges, runs `npm test` on integrated `main`, and calls
-`lifecycle complete N`. Producer work waits for Matthew’s acceptance naming
-the tested commit after review. External work is never dispatched by the planner;
-it needs Matthew’s authorization and real-environment evidence recorded at
-review. Never hand-write lifecycle comments, change Project status, merge or
-complete around the wrapper.
+Allow one localized repair with observed failure and unchanged contract. If it
+fails, behavior/design expands or a critical invariant breaks, stop and reduce
+or block the slice. After two evidence-based attempts without progress, record
+the blocker and continue only with unrelated eligible work. Preserve and publish
+safe partial commits clearly marked incomplete, with no issue-closing keywords.
+Sol does not code the fix and there is no Luna/OpenAI fallback. A Flash-to-Pro
+change needs a recorded routing decision, not a silent replacement. Packet or
+output-limit failures require a smaller packet and retained failed-call cost.
+
+If interrupted, re-read live issue/claim/review, Git status, published branch and
+PR heads before any write. Preserve older live Luna claims. A new coordinator
+must not impersonate the old holder: only lifecycle release with confirmed
+stopped-execution evidence permits a replacement claim. Age and a local
+checkpoint alone are insufficient. Re-read after uncertain mutations before
+replaying; compare stable markers to avoid duplicate claims/completions.
+
+Publish and verify the full 40-character commit SHA. A fresh independent Sol
+execution uses a clean detached checkout, runs `npm ci` and `npm test`, exercises
+the slice/ticket acceptance checks and records verification with its own native
+ID. Any revised head needs renewed verification. Send localized findings back
+to DeepSeek within the repair budget. The claimant records lifecycle review,
+distinguishing implementation evidence from checks it actually ran.
+
+For Automated acceptance the dispatcher merges with a merge commit or
+fast-forward preserving the verified SHA (no squash or rebase), tests integrated
+`main`, then calls lifecycle complete. Producer acceptance remains with Matthew;
+External work remains excluded by the read-only planner. Keep one dispatcher,
+no recurring schedule or distributed scheduler. Matthew keeps the Mac awake.
+
+### Verified rehearsal lessons (2026-10-01)
+
+The native route completed [#51](https://github.com/mbelinkie/brainstorm/issues/51)
+through [PR #52](https://github.com/mbelinkie/brainstorm/pull/52). Sol verified
+`5941527a57299c746ff65af9806b4aac321a9d01`; merge commit
+`bc1d37421bc37769f05aec2ee59788b8761fe397` preserved it. All 554 tests passed
+in Sol's clean checkout and on integrated main. Repeating `complete` returned
+`alreadyCompleted`; `stale` confirmed Closed/Done, no live claim or discrepancy.
+
+- **Native identity:** a child can have its own `CODEX_THREAD_ID` while inheriting
+  the parent's different `CODEX_SESSION_ID`. For lifecycle calls in that child,
+  use `env -u CODEX_SESSION_ID node scripts/roadmap/lifecycle.mjs ...`, retaining
+  its actual thread ID. An ambiguous identity must stop consequential actions.
+  Sol found a self-release bypass missed by the suite; Luna reproduced it with
+  a failing regression and fixed it before renewed verification.
+- **Live decisions:** Ready status does not resolve an explicitly pending choice.
+  Conversely, an affirmative owner decision can be complete but use wording the
+  strict planner rejects. Preserve the original evidence while normalizing the
+  boundary field, for example `Migrations: Assigned by Matthew: 0037` or
+  `Owner decisions: None.` with a separate `Resolved owner decision:` line.
+  Here `None` means no outstanding choice. Normalization never assigns a number
+  or decides a value. Re-read newly promoted tickets; the planner scans #13–44.
+- **Recovery notes:** privately retain the deadline, dispatcher-lock owner,
+  issue/agent identity, branch, published SHA, verifier SHA and lifecycle phase.
+  Compare them with fresh GitHub/git evidence before the next write. Resume the
+  claim holder to record its own review; the dispatcher cannot impersonate it.
+- **Waiting:** native agents use `collaboration.wait_agent`. `functions.wait`
+  accepts only a running exec cell ID, never an agent name or an invented ID.
+- **Handoffs:** confirm native spawn/resume/wait controls remain available after
+  a model or tool handoff. A completed child turn can still have an app-owned
+  thread writer: a CLI resume of #42 was refused with `already has an active
+  writer`. Preserve the claim and published work; resume through the owning
+  native controls rather than replacing its identity or removing writer locks.
+- **Evidence limits:** the Cloudflare Workers Builds check failed on both the
+  starting baseline and integrated main. Passing repository tests established
+  setup correctness; deployment success remained unproven and outside scope.
 
 ## 5. Do the work
 
@@ -247,25 +309,24 @@ complete around the wrapper.
   `git show --stat HEAD` after every commit.
 - **Commits:** small and single-purpose with a `feat:` / `fix:` / `chore:` /
   `docs:` prefix. Identify the model that did the work (for example
-  `Model: GPT-6 Luna (gpt-6-luna)`); never attribute work to Claude you did not
+  `Model: DeepSeek Flash (deepseek-flash)`); never attribute work to Claude you did not
   run through Claude.
 - **Work log:** append an entry to `docs/CLAUDE_WORKLOG.md` for every session:
   date, branch, files touched, the slice, the commands you really ran, and what
   remains unproven. Add a `CHANGELOG.md` line only for completed, user-visible,
   verified work.
 - **Talking to GitHub from code:** only through `scripts/roadmap/gate.mjs`. Do
-  not call `gh` or the GitHub API from a script; `test/roadmap-bypass.test.js`
-  will fail. Typing `gh` yourself is fine, but it shares the same quota (about
-  5,000 GraphQL points an hour per account), so avoid loops.
+  not call `gh` or the GitHub API directly from scripts or ad hoc commands;
+  `test/roadmap-bypass.test.js` checks repository-owned scripts. Use `createGate`
+  and `createGhTransport` for PR/issue reads and writes too.
   `node scripts/roadmap/probe.mjs` shows the budget; use it sparingly.
 - **Migrations:** one new, ordered file in `supabase/migrations/` with the number
   Matthew assigned. Never edit or renumber an applied migration. Do not apply it
   yourself.
 - **Stuck?** After **two** evidence-based attempts without progress, stop. Write
-  down the confirmed facts and a focused reproduction and ask. If a Luna
-  subagent cannot get a required check green, record the failing checks and the
-  smallest next scope and ask Matthew; there is no Opus escalation in the
-  current workflow.
+  down the confirmed facts and a focused reproduction. Record the blocker via
+  lifecycle, preserve safe partial work, and continue only unrelated eligible
+  tickets within the batch limits; DeepSeek owns any further approved fixes.
 
 ### Product rules that must not regress
 
@@ -396,23 +457,30 @@ dropping the other side's entries. Delete merged branches with `git branch -d`
 - **Exit codes:** `0` done, `1` refused (the code and reason are printed), `2` bad
   usage. Add `--json` for machine-readable output.
 
-## 9. Starter prompt for a Codex session
+## 9. Starter prompt for a Codex dispatcher
 
-Launch the dispatcher from the repository or worktree root so `CLAUDE.md`
-loads. Run `node tools/codex-batch.mjs --dry-run`, then re-read the chosen
-issue using `lifecycle inspect` and `ready --dry-run`. The native orchestrator
-assigns one already-Ready ticket to one Luna worker; the planner does not make
-claims or launch subprocesses.
+Launch from the repository or worktree root so `CLAUDE.md` loads. Resolve live
+claims and pending decisions before new dispatch; the planner only proposes
+already-Ready work. Use this after Matthew explicitly starts the batch:
 
 ```text
-Work GitHub issue #<N> in mbelinkie/brainstorm exactly as
-docs/roadmap/WORKING_A_TICKET.md describes. Read CLAUDE.md, the playbook and
-that guide; confirm the ticket is Ready and Matthew assigned it to you; create
-your own worktree from the required baseline; claim it with your own
-CODEX_THREAD_ID and labels-matched model/effort; work only inside the contract;
-test and report real results; commit with a full SHA and record lifecycle review.
-Stop at In review. Never publish unless explicitly authorized, merge, close,
-complete, deploy, promote a ticket, or choose a migration number. A separate
-clean gpt-6.1-sol worker performs independent verification. Follow the eight-
-hour limit, use only the Codex allowance, and stop after two failed attempts.
+Run the authorized Brainstorm batch under docs/roadmap/WORKING_A_TICKET.md,
+docs/roadmap/routing.md and docs/DEEPSEEK_CODING_GUIDE.md. Reconcile live
+GitHub/Project/Git records first, including paused claims and published PRs.
+Record a fresh eight-hour deadline, sole dispatcher and DeepSeek USD baseline.
+Select Ready tickets by priority/dependencies, preserving acceptance and owner
+migration numbers. Use Flash for model:economy and Pro for model:standard;
+verify actual provider/model, enable thinking, and map low/medium/high to
+low/high/high. One DeepSeek session at a time, using fresh bounded packets
+and the artifact-only API; enforce allowlisted writes and private credentials.
+A genuine native high-effort Sol coordinator holds each lifecycle claim with
+an explicit coordination mismatch; DeepSeek implements all product code and
+fixes. Publish each completed ticket branch and PR. Independent Sol verifies
+the exact published SHA in a clean checkout. Merge passing Automated tickets
+preserving that SHA, test integrated main and lifecycle-complete. Producer and
+External gates remain intact. Allow one localized repair; block stalled work
+and preserve safe partial commits. Stop new sessions at the $10 observed USD
+spend threshold or deadline, or when spending/dispatch authority is unknown.
+No implementation fallback, deployments, migration application or real-room
+writes. Do not start from this prompt without Matthew’s start instruction.
 ```

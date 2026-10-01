@@ -1,62 +1,88 @@
 # Routing policy
 
-Implements playbook §3. Every executable issue carries **exactly one**
-`model:` label and **exactly one** `effort:` label before it can be Ready.
+Executable product issues keep exactly one `model:` and one `effort:` label.
+The config mirrors the tables below; existing issue labels need no bulk edit.
 
-## Model profiles
+## Implementation profiles
 
-The Codex orchestrator launches native Luna coding subagents and an independent
-Sol reviewer. Both coding labels currently select the same exact model; the
-labels remain distinct for existing issue contracts and history.
+DeepSeek implements bounded behavior slices using
+[the coding guide](../DEEPSEEK_CODING_GUIDE.md). Sol defines contracts and
+acceptance, runs checks, publishes and coordinates; a separate `gpt-6.1-sol`
+execution independently reviews the exact published SHA. Sol does not take over
+product implementation or review fixes. No Luna or OpenAI coding fallback.
 
-| Label | Model | Model ID | Notes |
+| Label | Model | Model ID | Use |
 | --- | --- | --- | --- |
-| `model:economy` | GPT-6 Luna | `gpt-6-luna` | Mechanical, well-specified edits and bounded coding work. |
-| `model:standard` | GPT-6 Luna | `gpt-6-luna` | Default for real feature and bug work. |
+| `model:economy` | DeepSeek Flash | `deepseek-flash` | Mechanical, fully specified slices; evaluate quality under the same acceptance gate. |
+| `model:standard` | DeepSeek Pro | `deepseek-v4-pro` | Normal feature and bug work, split into explicit slices. |
+| `model:coordinator` | Sol coordinator (not implementation) | `gpt-6.1-sol` | Execution-role allowlist only; never assign this label to product issues. |
 
-The labels do not select different model capabilities today. Use
-`model:standard` for the normal coding route; retain `model:economy` where
-existing contracts or future triage use it. The independent reviewer uses
-`gpt-6.1-sol` and verifies the change without taking over coding work.
+The coordinator profile lets the existing wrapper validate the real native Sol
+claim holder without disguising it as DeepSeek. Claim with actual model
+`gpt-6.1-sol`, logical effort `medium`, effective `high`, and a written
+`--allow-mismatch` reason: “Sol coordinates; DeepSeek implements all slices.”
+This coordination mismatch is authorized by Matthew’s instruction to adopt the
+sliced workflow; it is not permission for Sol implementation or model fallback.
+The coordinator must actually run at high effort. Never claim with an invented
+DeepSeek UUID or put a DeepSeek API request ID into `CODEX_THREAD_ID`.
 
 ## Effort levels
 
-Effort labels are **logical** and remain `low`, `medium` and `high`:
-
 | Label | Meaning |
 | --- | --- |
-| `effort:low` | Small, local change; little cross-file reasoning. |
-| `effort:medium` | Normal bug fix or slice; some cross-module reasoning. |
-| `effort:high` | Authorization, scoring, migrations, or hard cross-system state. |
+| `effort:low` | Simple local behavior with an explicit contract. |
+| `effort:medium` | Normal bounded bug fix or feature. |
+| `effort:high` | Complex contract or critical invariants; split before dispatch. |
 
-The Codex runner maps the logical label to its **effective** effort:
-
-| Logical label | Luna effective effort |
+| Logical label | DeepSeek effective effort |
 | --- | --- |
-| `low` | `medium` |
+| `low` | `low` |
 | `medium` | `high` |
-| `high` | `max` |
+| `high` | `high` |
 
-The claim records both the logical label and the effective effort used by the
-Luna subagent. Unsupported effort/model mappings are resolved explicitly, never
-translated silently. Split large issues instead of routing them upward.
+Enable thinking explicitly. Each slice records the issue’s logical label and
+DeepSeek’s actual mode/effort separately from the native coordinator claim.
+Coordinator logical `medium` or `high` means actual Sol `high`; its claim does
+not report DeepSeek effort. A different coordinator effort requires an explicit
+supported mapping; do not silently translate or misstate it.
 
-## Evidence
+## Execution and evidence
 
-Execution evidence records the exact model ID and effective effort actually
-used, not just the label.
+Use the official `https://api.deepseek.com` API and exact configured IDs. Confirm
+both IDs are available on `/models`, then verify the returned model on each
+response. The default harness is artifact-only Chat Completions with no tools:
+the orchestrator supplies relevant public source, accepts only allowlisted
+artifacts, and runs checks locally. The saved key stays in the private parent
+request wrapper; DeepSeek receives neither secrets nor credential/file/Git tools.
+Preserve Sol’s normal Codex configuration. A tool-enabled CLI harness requires
+separate evidence for identity, permissions, reasoning replay and side effects
+before use; the fixture trial did not verify it.
 
-The orchestrator launches native Luna coding workers and an independent Sol
-reviewer. `tools/codex-batch.mjs --dry-run` is a read-only planner for issues
-#13–44; it cannot claim tickets, start subprocesses, access provider balances,
-publish, merge or complete work. Claims and lifecycle state remain with the
-shared lifecycle and gate. The native Luna/Sol rehearsal has not yet been
-recorded as complete.
+Record requested/returned model, fingerprint if exposed, request ID, thinking
+mode, effort, usage, balance observations, accepted base SHA, slice contract,
+repair count, checks and unverified boundaries. Unknown usage is unknown, never
+zero. DeepSeek reports are implementation evidence; Sol acceptance is separate.
 
-## Historical records
+Both models follow the same guide and one-localized-repair rule. Failed Flash
+work is preserved and reduced or blocked after that budget; switching to Pro
+requires an explicit recorded routing decision, not a silent retry. Measure
+accepted correctness, repairs, Sol time and total cost for comparable slices.
 
-Older issues and claim records may name Claude or DeepSeek model IDs, and some
-carry `escalation:opus`. They remain readable as historical evidence. New claims
-must use a currently configured model; `--allow-mismatch` cannot authorize a
-retired or otherwise unsupported coding model. There is no active Opus coding
-escalation in the current workflow.
+[#17](https://github.com/mbelinkie/brainstorm/issues/17) through
+[PR #56](https://github.com/mbelinkie/brainstorm/pull/56) verified Pro for a sample
+fixture/test and RUNBOOK append: first-pass fixture, one documentation repair,
+603 passing tests in independent Sol and integrated main. It establishes no
+reliability for recovery, credential handling or live generation. Flash uses
+the same gates; retain its actual results rather than inferring parity.
+
+## Historical records and restart
+
+Older Luna, Claude and DeepSeek records remain readable. Preserve live claims,
+published branches, pending acceptance and owner-assigned migration numbers.
+Reconcile stopped executions through lifecycle release before any replacement
+claim; changing this policy never ends an existing claim. Historical model/effort
+mappings describe their recorded runs, not the current defaults.
+
+The planner remains read-only: `tools/codex-batch.mjs --dry-run` cannot claim,
+launch, publish, merge or complete. Batches start only on Matthew’s instruction;
+see [Working a ticket](WORKING_A_TICKET.md) for limits, publication and recovery.

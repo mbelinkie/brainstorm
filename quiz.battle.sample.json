@@ -1,0 +1,31 @@
+{
+  "id": "quiz-battle-sample",
+  "title": "Prompt Battle Sample",
+  "rounds": [
+    {
+      "id": "prompt-battle-round-1",
+      "title": "Prompt Battle",
+      "type": "prompt_battle",
+      "prompts": [
+        { "id": "pb-prompt-1", "text": "A friendly robot making pancakes for a dinosaur." },
+        { "id": "pb-prompt-2", "text": "A cat astronaut floating near a planet made of cheese." },
+        { "id": "pb-prompt-3", "text": "A penguin surfing on a rainbow wave." },
+        { "id": "pb-prompt-4", "text": "A garden where the flowers are actually tiny teacups." },
+        { "id": "pb-prompt-5", "text": "A dragon knitting a scarf for a snowman." },
+        { "id": "pb-prompt-6", "text": "A squirrel running a lemonade stand on the moon." }
+      ],
+      "engine": {
+        "defaultProvider": "kaplan_proxy",
+        "defaultModel": "gemini-3.1-flash-image",
+        "permittedModels": ["gemini-3.1-flash-image"],
+        "variants": 2,
+        "attemptBudget": 3,
+        "maxSessionSpendUsd": 20
+      },
+      "scoring": {
+        "winnerPoints": 100,
+        "voterPoints": 10
+      }
+    }
+  ]
+}

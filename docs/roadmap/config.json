@@ -76,13 +76,14 @@
   },
   "crossRepoPrerequisites": [],
   "routing": {
-    "_comment": "Machine-readable mirror of docs/roadmap/routing.md (issue #3). Both profiles use native Codex Luna subagents; efforts are logical labels mapped to the runner's effective effort below.",
+    "_comment": "Machine-readable mirror of docs/roadmap/routing.md (issue #3). The DeepSeek coding profiles (economy, standard) use bounded slices; the coordinator profile is an execution-role allowlist, never a product issue label; the coordinator claims its actual native Sol identity and uses written allowMismatch. Efforts are logical labels mapped to the runner's effective effort below.",
     "profiles": {
-      "economy": { "model": "GPT-6 Luna", "modelId": "gpt-6-luna", "efforts": ["low", "medium", "high"] },
-      "standard": { "model": "GPT-6 Luna", "modelId": "gpt-6-luna", "efforts": ["low", "medium", "high"] }
+      "economy": { "model": "DeepSeek Flash", "modelId": "deepseek-flash", "efforts": ["low", "medium", "high"] },
+      "standard": { "model": "DeepSeek Pro", "modelId": "deepseek-v4-pro", "efforts": ["low", "medium", "high"] },
+      "coordinator": { "model": "Sol coordinator (not implementation)", "modelId": "gpt-6.1-sol", "efforts": ["medium", "high"] }
     },
     "efforts": ["low", "medium", "high"],
-    "effectiveEfforts": { "low": "medium", "medium": "high", "high": "max" },
+    "effectiveEfforts": { "low": "low", "medium": "high", "high": "high" },
     "acceptanceClasses": ["Automated", "External", "Producer"]
   }
 }

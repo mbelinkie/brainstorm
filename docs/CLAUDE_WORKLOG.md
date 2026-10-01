@@ -1997,3 +1997,73 @@ Branch: `claude/worktree-guards` (from `origin/main` `271a47d`, which includes t
 **Real-runner evidence (after Matthew approved a local-only hook):** a nested `claude -p` could not authenticate ("Not logged in"), so the hook was loaded through a git-ignored `.claude/settings.local.json` in the desktop app session instead. In that live session a Bash `git reset --hard HEAD` and a PowerShell `git -C <scratch> clean -fd` were both denied by the hook with the rule named (`reset-hard`, `git-clean`), the scratch repo's uncommitted line survived, and an allowed `git status` ran. The live hook then blocked this session's own next command as "unparseable": a heredoc whose text contained an apostrophe. The guard now cuts heredoc bodies out before scanning (a body fed to a shell such as `bash <<EOF` is still checked as commands, a `<<` inside quotes is not a heredoc, an unterminated heredoc is refused); two tests added and shown to fail without the change. Earlier, Windows PowerShell's UTF-8 byte-order mark made the hook refuse valid input; it is now stripped (test added).
 
 **Unproven:** `tools/worktree-setup.mjs` was exercised only with a fake exec, not on a real fresh worktree; the PowerShell `tool_name` is confirmed only by one live denial; the hook is active only through the git-ignored local settings file, not the tracked `.claude/settings.json` (owner decision); a heredoc piped to an interpreter other than a shell (python, node) is not parsed, as documented in guard-coverage.md.
+
+## 2026-10-01 — Verified native workflow lessons
+
+Branch: `codex/native-workflow-lessons`. Author: Codex orchestrator
+(documentation only; product implementation remains Luna-owned).
+
+**Slice:** updated the existing ticket guide with the completed #51/#52
+rehearsal evidence, authentic native child identity handling, exact published
+commit verification, safe recovery notes, strict boundary-field normalization,
+and the distinction between repository checks and existing deployment failures.
+Recorded only observed behavior; added no runner or scheduler.
+
+**Files:** `docs/roadmap/WORKING_A_TICKET.md`, `docs/roadmap/routing.md`, and this worklog.
+Sol flagged the stale pending-rehearsal statement in routing; it now points to
+the verified rehearsal evidence in the ticket guide.
+**Verification:** live lifecycle completion returned completed, then
+alreadyCompleted; stale confirmed CLOSED/Done, no live claim and no discrepancy.
+Sol and integrated main each passed 554 tests at the recorded rehearsal SHAs.
+`git diff --check` passed for this documentation change. No product code changed.
+
+## 2026-10-01 — DeepSeek slice trial: battle fixture and runbook (#17)
+
+Branch: `codex/deepseek-trial-17`, accepted base `bc8a6764f809619519e86ae3163e3f6922e22cf9`. Implementation: official API `deepseek-v4-pro`, thinking enabled, high effort; returned model `deepseek-v4-pro`, fingerprint `a307abda487cd1b463329ccb945ce396`. Sol coordinated the ticket and owned acceptance; this worklog/evidence entry is orchestration-authored. The authorized issue-specific Sol coordinator claim is recorded in #17; the normal Luna routing is unchanged.
+
+**Slices:** 17-A returned `quiz.battle.sample.json` and `test/quiz-battle-fixture.test.js`; request `9d226d39-06e5-4091-9b81-8c17364849ba`, 35.0 seconds, accepted first pass. 17-B returned an appended `RUNBOOK.md` section; request `e1806183-c1d3-40d9-9aa9-b6dc6c4a93e0`, 63.2 seconds. One localized repair (`61552c4c-cdc0-484d-9096-4b513c87764c`, 40.4 seconds) corrected the current adapter identifier and host-credential/provisioning instructions. All artifacts were applied verbatim to allowlisted paths. No model tools, shell, credential access, or product implementation fallback was used.
+
+**Evidence:** baseline `npm ci` exited 0 and `npm test` passed 600/600. Sol-owned new-fixture check initially failed with expected ENOENT. After 17-A, the real shared validator, exact contract values and original compatibility hashes passed; focused fixture/compatibility tests passed 15/15. Full `npm test` passed 603/603, zero failures/skips. Final private fixture/docs gate and `git diff --check` passed after the documentation repair. The original compatibility JSON files, validator and existing tests are unchanged. Independent exact-published-commit review remains pending at this commit.
+
+**Cost and limits:** official USD balance before calls $18.47; observed after workers $18.45. Per-response readings initially lagged the charge, so the observed $0.02 decrease is at the endpoint's cent precision and may not be final billing. Across the three calls, 23,775 prompt tokens and 22,177 completion tokens (17,795 reasoning tokens included). Sol and orchestration use separate Codex allowance.
+
+**Unproven/excluded:** no real room, publishing through the app, image generation, deployment or migration application. The runbook distinguishes the unmerged editor support (#42) and pending Kaplan adapter/Worker wiring from current Workers AI host testing. This fixture/doc trial provides no evidence about autonomous recovery, permission-sensitive work, or production generation.
+
+## 2026-10-01 — DeepSeek Flash/Pro sliced implementation routing
+
+Branch: `codex/deepseek-sliced-routing`, base
+`f1cdf3f83f207c0e8d968dac2cec19d2cc040b65`. Matthew requested new DeepSeek
+instructions after #17, then explicitly requested a Flash trial. This is setup;
+no product ticket/batch was launched and paused live claims remain preserved.
+
+**Authorship:** DeepSeek Flash authored the routing config and exact test edits.
+The Codex orchestrator authored operating docs and this evidence; the user’s
+local guide/research were copied into this branch and extended for the adopted
+workflow. The original checkout/untracked source files were preserved.
+
+**Slices and limits:** initial `deepseek-flash` high-thinking request
+`f81030ce-9e6d-465b-85b7-319777aa38bc` ended `length`: 32,461 prompt tokens,
+16,384 completion (15,644 reasoning). No incomplete edits were applied. Scope
+was reduced to two transformations, both thinking enabled/low: config request
+`79b48fdf-ce76-4d2f-abab-6c554be2928b` (5.5s, 1,274 prompt/1,562 completion,
+338 reasoning), test request `3a5bea36-ba69-4be9-a3d6-38cb532a9c5a` (32.6s,
+5,802 prompt/9,522 completion, 7,497 reasoning). Returned model `deepseek-flash`,
+fingerprint `aeb56401ca74e127821c4f9126dcb669`. Artifacts applied verbatim
+within their allowlist; no implementation repair/fallback. No tools were given;
+DeepSeek correctly marked its checks unrun.
+
+**Behavior:** economy uses Flash, standard Pro; logical low/medium/high maps to
+low/high/high. A Sol coordination profile allows honest native claim identity
+with explicit mismatch evidence; provider request IDs never substitute for
+Codex IDs. Independent Sol review remains separate. Batch instructions retain
+one dispatcher/session, eight hours, $10 observed spend, published PR per ticket,
+exact-commit merge/integrated checks, and Producer/External/production boundaries.
+
+**Checks:** clean starting main `npm ci` exit 0, baseline `npm test` 603/603.
+Focused `node --test test/roadmap-lifecycle.test.js
+ test/roadmap-lifecycle-finish.test.js test/codex-batch.test.js` passed 112/112.
+Non-routing config data compared unchanged; lifecycle production source unchanged.
+Full `npm test` passed 605/605, zero failures/skips; `git diff --check` passed.
+Publication, independent Sol and integrated main evidence follows in the PR. Shared API balance observed $18.41 then $18.39; billing lag/cent
+precision prevents assigning a final invoice cost to this setup. Codex allowance
+is separate. No production services, deployment or migration application.
