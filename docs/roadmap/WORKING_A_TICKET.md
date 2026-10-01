@@ -71,31 +71,50 @@ Read, in this order: `CLAUDE.md`, `docs/PROJECT_OPERATING_PLAYBOOK.md`,
 [#10](https://github.com/mbelinkie/brainstorm/issues/10) (the Prompt Battle MVP
 map). Read `PRODUCT_SPEC.md` and `mistakes.md` before changing behaviour.
 
-## 2. Find an eligible ticket
+## 2. Find and plan an eligible ticket
 
-List what is Ready, lowest priority number first (P0, then P1):
+The read-only planner scans the fixed Prompt Battle issue range (#13–44),
+checks Project priority and status, dependencies and claims, and reports at most
+one already-Ready ticket:
 
 ```bash
-gh project item-list 4 --owner mbelinkie --limit 200 --format json \
-  -q '.items[]|select(.status=="Ready")|"#\(.content.number)\t\(.priority)\t\(.size)\t\(.title)"'
+node tools/codex-batch.mjs --dry-run
 ```
 
-Use `--limit 200`; the default is too small. If nothing is Ready, stop and ask
-Matthew. Do not pick from Backlog.
+The planner uses the shared gate, lifecycle `inspect`, and
+`ready(..., { dryRun: true })`. It never changes a Project field, claims an
+issue, launches a worker, accesses a model-provider balance, publishes, merges
+or completes work. Only `--dry-run` and `--help` are supported;
+`--sole-dispatcher`, `--resume` and issue-scope overrides are refused before
+GitHub access.
 
-Then ask the wrapper, for ticket `N`. Both commands are read-only:
+Issues are ordered P0 through P3, then by number. Missing issues, incomplete
+Project pagination or incomplete claim comments stop the scan. Unknown Scope
+or authorization on one issue skips that ticket while allowing unrelated
+work to proceed. A candidate needs `Owner decisions: None`.
+A migration is eligible only with one concrete number using one of the complete
+field values `Assigned by Matthew: migration #NNNN`, `Matthew assigned
+migration NNNN`, or `Migration NNNN assigned by Matthew`; anything else,
+including `0037+`, multiple numbers, negative text or provisional wording, is
+not an assignment. External issues are always excluded. Producer work may be
+selected, but it cannot merge until Matthew accepts the reviewed commit.
+
+The planner selects only work already marked Ready. Its `promotionCandidates`
+list reports eligible Backlog or Blocked work even when a Ready ticket is also
+selected. Those candidates still need Matthew to promote them with the
+lifecycle wrapper; a null `selected` with nonempty promotions does not mean
+there is no eligible work. The planner never promotes automatically. Before
+starting, re-read the selected issue and its gates:
 
 ```bash
 node scripts/roadmap/lifecycle.mjs inspect N
 node scripts/roadmap/lifecycle.mjs ready N --dry-run
 ```
 
-`inspect` prints the routing labels, declared and native dependencies, claims on
-record (and whether one is live), the baseline commit, and any blockers.
-`ready --dry-run` runs every Ready gate without writing. A passing run looks like:
+Both commands are read-only. A passing Ready check looks like:
 
 ```text
-OK {"ok":true,"op":"ready","dryRun":true,"wouldSet":"Ready","changed":true,"status":"Backlog"}
+OK {"ok":true,"op":"ready","dryRun":true,"wouldSet":"Ready","changed":false,"status":"Ready"}
 ```
 
 A failing run names each reason and exits 1:
@@ -105,24 +124,10 @@ REFUSED NOT_READY: #19 is not ready: PREREQ_NOT_CLOSED, PREREQ_NOT_DONE, PREREQ_
   - PREREQ_NOT_DONE: ...#13 is open but is not Done on Project mbelinkie/4 (status: Backlog)
 ```
 
-The gates, and what the codes mean:
-
-| Gate | Passes when |
-| --- | --- |
-| Contract | all 9 sections present (Outcome, Scope, Exclusions, Dependencies, Acceptance, Verification, Boundaries and authorization, Starting baseline, Routing and size rationale), no placeholders |
-| Routing | exactly one `model:` and exactly one `effort:` label, and a supported pairing |
-| Acceptance | one class (Automated, External or Producer) and the board's Acceptance field agrees with the issue |
-| Dependencies | the `Blocked by` lines in the body and GitHub's native links name the same set (`DEPENDENCY_MISMATCH` otherwise) |
-| Prerequisites | each one is **closed**, **Done on the board**, and has a recorded owner acceptance (`PREREQ_NOT_CLOSED`, `PREREQ_NOT_DONE`, `PREREQ_NO_ACCEPTANCE`). Closed alone is not enough. |
-| Data | nothing truncated or stale; missing data fails closed (`STALE_READ`, `CLAIM_HISTORY_INCOMPLETE`) |
-
-Also check by eye: if the ticket adds a migration, its number is written in the
-issue (assigned by Matthew); and any existing live claim is Matthew's to clear
-(section 7).
-
-Promoting a ticket to Ready is the dispatcher's step:
-`node scripts/roadmap/lifecycle.mjs ready N` (without `--dry-run`). Do not run it
-on tickets you were not given.
+Matthew decides what becomes Ready and who works it. Do not start a ticket
+unless it is Ready and Matthew has assigned it to you. Do not run
+`ready N` without `--dry-run` unless Matthew explicitly asks you to promote
+that ticket.
 
 ## 3. Prepare your branch and worktree (no work yet)
 
@@ -186,6 +191,46 @@ node scripts/roadmap/lifecycle.mjs claim N \
 If the claim is refused with `CLAIM_HELD`, someone else holds it. **Stand down**:
 remove your worktree (`git worktree remove ../quiz-<short-name>`), delete your
 unused branch, and tell Matthew. Do not try to override it.
+
+### Native orchestration limits
+
+The dispatcher starts one native Luna worker for one claimed issue, with an
+eight-hour wall-clock deadline. Use the Codex account allowance shown by Codex;
+do not invent a USD budget, query DeepSeek balances, or read a DeepSeek key.
+Keep intermediate checkpoints in private task notes. Put only lifecycle
+records and evidence needed for acceptance on GitHub.
+
+If work is interrupted, recover from fresh GitHub and Git reads: run
+`lifecycle inspect N`, check the recorded claim and review, then inspect
+`git status`, `git rev-parse HEAD`, the branch and its remote head, and any
+existing PR before resuming. Do not trust a stale local checkpoint as authority,
+create duplicate claims or PRs, or invent an execution ID. If the prior worker
+is confirmed stopped, the owner or dispatcher uses `lifecycle release N` with
+the stopped execution, confirmer and evidence; age alone never releases a
+claim. The same worker owns any fixes after Sol review; Sol remains read-only
+and never takes over coding.
+
+After two evidence-based attempts without progress, stop. Preserve useful
+committed partial work and state exactly what failed. A partial publication must
+be clearly marked incomplete, contain no issue-closing keywords, and go through
+an authorized gated publication path; it does not count as review or acceptance.
+If no gated publication path is available, keep the commit on its branch and
+ask Matthew how to proceed. Never erase the partial work or claim completion.
+
+Publish only the reviewed commit by its full 40-character SHA, and confirm the
+remote branch head is still that exact SHA. The independent Sol check uses a
+fresh clean detached worktree at that commit, re-runs `npm ci` and
+`npm test`, and records verification with Sol’s own execution ID. Any changed
+head invalidates that verification; send fixes back to the same Luna worker,
+then obtain a new clean verification.
+
+For Automated acceptance, after independent verification the owner or
+dispatcher merges, runs `npm test` on integrated `main`, and calls
+`lifecycle complete N`. Producer work waits for Matthew’s acceptance naming
+the tested commit after review. External work is never dispatched by the planner;
+it needs Matthew’s authorization and real-environment evidence recorded at
+review. Never hand-write lifecycle comments, change Project status, merge or
+complete around the wrapper.
 
 ## 5. Do the work
 
@@ -288,8 +333,8 @@ Alternatively the owner accepts in writing (below).
 | Class | What permits completion |
 | --- | --- |
 | **Automated** | A `verify` record from an execution other than the implementer for the reviewed commit, or the owner's acceptance. |
-| **External** | Real evidence from the actual application, service or environment, recorded with the review. A simulation is not enough. |
-| **Producer** | The owner's explicit acceptance, posted after the review, naming the tested commit. |
+| **External** | Excluded by the planner. Dispatch requires Matthew's authorization and real evidence from the actual application, service or environment, recorded with the review. A simulation is not enough. |
+| **Producer** | The owner's explicit acceptance, posted after the review, naming the full tested commit SHA. |
 
 ## 7. Completion and recovery (owner or dispatcher only)
 
@@ -353,18 +398,21 @@ dropping the other side's entries. Delete merged branches with `git branch -d`
 
 ## 9. Starter prompt for a Codex session
 
-Launch it from the repository (or worktree) root so `CLAUDE.md` loads.
+Launch the dispatcher from the repository or worktree root so `CLAUDE.md`
+loads. Run `node tools/codex-batch.mjs --dry-run`, then re-read the chosen
+issue using `lifecycle inspect` and `ready --dry-run`. The native orchestrator
+assigns one already-Ready ticket to one Luna worker; the planner does not make
+claims or launch subprocesses.
 
 ```text
-You are working on the Brainstorm quiz platform. Work GitHub issue #<N> in
-mbelinkie/brainstorm exactly as docs/roadmap/WORKING_A_TICKET.md describes: read
-CLAUDE.md, the playbook and that file first; run `node scripts/roadmap/lifecycle.mjs
-inspect <N>` and `ready <N> --dry-run` and report the result; create your own
-worktree and branch from origin/main; claim with `lifecycle.mjs claim` (your own
-CODEX_THREAD_ID; model and effort must match the labels); work test-first
-inside the issue's scope; log your work; record `lifecycle.mjs review` with real
-evidence; and STOP at In review. Never merge, close, run `complete`, deploy, push
-to main, or choose a migration number. Routing is native Luna subagents (see
-routing.md). After two evidence-based failed attempts, stop and ask. Do not
-hand-write claim/review/block comments or edit board statuses; use the wrapper.
+Work GitHub issue #<N> in mbelinkie/brainstorm exactly as
+docs/roadmap/WORKING_A_TICKET.md describes. Read CLAUDE.md, the playbook and
+that guide; confirm the ticket is Ready and Matthew assigned it to you; create
+your own worktree from the required baseline; claim it with your own
+CODEX_THREAD_ID and labels-matched model/effort; work only inside the contract;
+test and report real results; commit with a full SHA and record lifecycle review.
+Stop at In review. Never publish unless explicitly authorized, merge, close,
+complete, deploy, promote a ticket, or choose a migration number. A separate
+clean gpt-6.1-sol worker performs independent verification. Follow the eight-
+hour limit, use only the Codex allowance, and stop after two failed attempts.
 ```

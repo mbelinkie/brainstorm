@@ -18,6 +18,7 @@ codes are listed at the top of `gate.mjs`.
 | `github-transport.mjs` | The one file allowed to start `gh`. |
 | `bypass-check.mjs` | Used by `test/roadmap-bypass.test.js` to catch code that skips the gate. |
 | `probe.mjs` | Prints what the gate believes the budget is. Costs a few quota points. |
+| `tools/codex-batch.mjs` | Read-only `--dry-run` planner for issues #13–44. It uses lifecycle `inspect` and `ready --dry-run`; it has no claim, worker, provider-balance, publication or completion path. |
 
 ```js
 import { createGate } from "./gate.mjs";

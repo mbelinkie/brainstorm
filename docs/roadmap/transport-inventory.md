@@ -20,7 +20,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 - `scripts/roadmap/probe.mjs`: read-only budget diagnostic.
 - `scripts/roadmap/lifecycle.mjs` (+ `lifecycle-core.mjs`, pure): inspect, ready, claim, block (#3). Uses `gate.session()` only.
 - `scripts/roadmap/lifecycle-finish.mjs`: review, verify, complete, stale, release (#45). Uses `gate.session()` and `ops.rest` only.
-- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): the legacy subprocess dispatcher from #51. It remains temporarily pending separate removal and is not the supported path for new work. The Codex orchestrator launches native Luna coding subagents and an independent Sol reviewer directly; lifecycle and GitHub state still use the adapters above.
+- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): read-only dry-run planner for issues #13–44. It reads through the gate and calls lifecycle `inspect` plus `ready(..., { dryRun: true })`; it cannot claim, spawn workers, access provider balances, publish, merge or complete. The Codex orchestrator launches native Luna coding subagents and an independent Sol reviewer directly.
 - Future: the progress view (#5).
 
 ## Not covered, and why

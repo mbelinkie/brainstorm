@@ -46,10 +46,12 @@ translated silently. Split large issues instead of routing them upward.
 Execution evidence records the exact model ID and effective effort actually
 used, not just the label.
 
-The orchestrator and lifecycle tools manage claims and GitHub state. The
-temporary subprocess dispatcher remains in the repository until its separately
-tracked removal; it is not the supported execution path for this policy. The
-native Luna/Sol rehearsal has not yet been recorded as complete.
+The orchestrator launches native Luna coding workers and an independent Sol
+reviewer. `tools/codex-batch.mjs --dry-run` is a read-only planner for issues
+#13–44; it cannot claim tickets, start subprocesses, access provider balances,
+publish, merge or complete work. Claims and lifecycle state remain with the
+shared lifecycle and gate. The native Luna/Sol rehearsal has not yet been
+recorded as complete.
 
 ## Historical records
 

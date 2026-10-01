@@ -1891,3 +1891,40 @@ In progress.
 **Unproven / outstanding:** the native Luna/Sol setup rehearsal and independent
 review are still pending. The temporary subprocess dispatcher remains for the
 separately scoped next change.
+
+
+## 2026-10-01 — Read-only Prompt Battle planner (issue #51)
+
+Branch: `codex/deepseek-orchestration`. Model: GPT-6 Luna (`gpt-6-luna`),
+executed as a native Codex subagent. Execution ID: this run's own
+`CODEX_THREAD_ID`.
+
+**Slice:** removed the subprocess batch runner, provider key/balance access,
+resume state, execution flags and publication/completion behavior. Replaced it
+with a read-only `--dry-run` planner for issues #13–44 using the shared GitHub
+gate and lifecycle `inspect`/`ready --dry-run`. It fails closed on absent or
+incomplete issue data, incomplete claim history, unknown scope/authorization,
+ambiguous migration assignment and stale SHA identity; respects status,
+priority, dependencies, claims and acceptance class. External work is excluded;
+Producer selection states the owner-acceptance merge gate. Eligible Backlog and
+Blocked promotion candidates are reported without changing Project status.
+
+**Files:** `tools/codex-batch.mjs`, `tools/batch-core.mjs`,
+`test/codex-batch.test.js`, `test/batch-core.test.js`, `AGENTS.md`, `CLAUDE.md`,
+`docs/roadmap/WORKING_A_TICKET.md`, `docs/roadmap/routing.md`,
+`scripts/roadmap/README.md`, and `docs/roadmap/transport-inventory.md`.
+
+**Commands run:** `ctx-wire run node --test test/batch-core.test.js test/codex-batch.test.js`
+(18 pass, 0 fail); `ctx-wire run env -u GH_TOKEN -u DEEPSEEK_API_KEY npm test`
+(553 pass, 0 fail); `ctx-wire run git diff --check` (clean);
+`ctx-wire run node tools/codex-batch.mjs --dry-run` (32 issues scanned, no Ready
+selection, #42 reported as the sole eligible Backlog promotion candidate, and
+contract/acceptance skips reported for the other actionable issues). The first
+live attempt stopped at #16's missing authorization field; after changing
+per-ticket unknown scope/authorization to a skip, the full scan completed.
+
+**Unproven / outstanding:** whether Matthew promotes #42, publication,
+independent Sol review of the published full-SHA head, merge, integrated-main
+test and lifecycle completion remain with the owner/dispatcher. No GitHub mutation,
+worker launch, model-provider request, publication or merge was performed by
+this worker.

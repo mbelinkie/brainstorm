@@ -1,173 +1,80 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import {
-  branchName, budgetAllowsNext, decideAcceptance, headMatchesReviewed, isPastDeadline, migrationAllocation,
-  parseDeepseekBalance, prBodyAutoCloses, renderPrBody, renderSolPrompt, renderWorkerPrompt, resumeDecision,
-  routeIssue, selectEligibleIssues, sessionSpendUsd, sortIssues, validateBalance, verifyInvalidated, worktreeName,
-} from "../tools/batch-core.mjs";
+import { assessIssueContract, isFullCommitSha, ISSUE_RANGE, sortIssues } from "../tools/batch-core.mjs";
 
-const root = new URL("../", import.meta.url);
-const config = JSON.parse(fs.readFileSync(new URL("docs/roadmap/config.json", root), "utf8"));
+function body({ scope = "Update the presenter state recovery path.", migrations = "None", owner = "None" } = {}) {
+  return `## Outcome
+The observable behavior is corrected.
+## Scope
+${scope}
+## Exclusions
+No adjacent features.
+## Dependencies
+None
+## Acceptance
+Automated
+- [ ] The regression test passes.
+## Verification
+1. Run npm test.
+## Boundaries and authorization
+Contract/fixture changes: None.
+External inputs/services: None.
+Migrations: ${migrations}
+Owner decisions: ${owner}
+## Starting baseline
+main
+## Routing and size rationale
+model:standard / effort:high / Medium.`;
+}
 
-const issue = (number, overrides = {}) => ({
-  number, title: `PB ${number}`, state: "OPEN", status: "Ready", acceptance: "Automated",
-  priority: "P1", labels: ["model:standard", "effort:high"], liveClaim: null, kind: "implementation", ...overrides,
+test("planner priorities sort P0 through P3, then issue number", () => {
+  assert.deepEqual(sortIssues([
+    { number: 14, priority: "P2" },
+    { number: 17, priority: "P0" },
+    { number: 15, priority: "P0" },
+    { number: 13, priority: "P3" },
+  ]).map((issue) => issue.number), [15, 17, 14, 13]);
 });
 
-// ---- routing --------------------------------------------------------------
-
-test("routeIssue maps a label set to the provider model id and effective effort", () => {
-  const standard = routeIssue(["model:standard", "effort:medium"], config.routing);
-  assert.equal(standard.modelId, "deepseek-v4-pro");
-  assert.equal(standard.effectiveEffort, "high");
-  assert.deepEqual(standard.problems, []);
-
-  const economy = routeIssue(["model:economy", "effort:low"], config.routing);
-  assert.equal(economy.modelId, "deepseek-flash");
-  assert.equal(economy.effectiveEffort, "low");
-
-  assert.equal(routeIssue(["model:advanced", "effort:low"], config.routing).modelId, null);
-  assert.equal(routeIssue(["model:advanced", "effort:low"], config.routing).problems.length > 0, true);
+test("a complete contract with no migration or owner decision is plannable", () => {
+  assert.deepEqual(assessIssueContract(body()), {
+    allowed: true,
+    scope: "Update the presenter state recovery path.",
+    migration: null,
+    ownerDecisions: "None",
+  });
 });
 
-// ---- selection ------------------------------------------------------------
-
-test("selectEligibleIssues keeps in-scope implementation work and sorts by priority then number", () => {
-  const issues = [
-    issue(10, { title: "Goal", kind: "goal" }),
-    issue(13, { priority: "P2" }),
-    issue(14, { priority: "P0" }),
-    issue(15, { state: "CLOSED" }),
-    issue(16, { status: "Done" }),
-    issue(17, { liveClaim: "someone" }),
-    issue(18, { acceptance: "Producer", status: "In review" }),
-    issue(19, { acceptance: "External" }),
-    issue(20, { priority: "P0" }),
-    issue(44, { priority: "P3" }),
-    issue(45, { priority: "P0" }), // out of default scope
-  ];
-  const selected = selectEligibleIssues(issues);
-  assert.deepEqual(selected.map((i) => i.number), [14, 20, 13, 44]);
-  // an explicit real-environment authorization admits the External ticket
-  const withAuth = selectEligibleIssues(issues, { externalAuthorized: new Set([19]) });
-  assert.ok(withAuth.some((i) => i.number === 19));
+test("owner decisions pending and non-empty unknown decisions block selection", () => {
+  assert.equal(assessIssueContract(body({ owner: "Pending: confirm the source of truth." })).code, "OWNER_DECISION_PENDING");
+  assert.equal(assessIssueContract(body({ owner: "Matthew chose option B." })).code, "OWNER_DECISION_UNRESOLVED");
 });
 
-test("sortIssues orders P0 before P3 and unknowns last, then by number", () => {
-  const sorted = sortIssues([issue(2, { priority: null }), issue(1, { priority: "P3" }), issue(0, { priority: "P0" }), issue(3, { priority: "P0" })]);
-  assert.deepEqual(sorted.map((i) => i.number), [0, 3, 1, 2]);
+test("a migration needs one concrete number explicitly assigned by Matthew", () => {
+  assert.deepEqual(assessIssueContract(body({ migrations: "Migration 0042 assigned by Matthew." })), {
+    allowed: true,
+    scope: "Update the presenter state recovery path.",
+    migration: "0042",
+    ownerDecisions: "None",
+  });
+  assert.equal(assessIssueContract(body({ migrations: "Assigned by Matthew: migration #0042" })).migration, "0042");
+  assert.equal(assessIssueContract(body({ migrations: "0042" })).code, "MIGRATION_ASSIGNMENT_REQUIRED");
+  assert.equal(assessIssueContract(body({ migrations: "not assigned by Matthew — 0042" })).code, "MIGRATION_ASSIGNMENT_REQUIRED");
+  assert.equal(assessIssueContract(body({ migrations: "Matthew assigned 0042, possibly 0043" })).code, "MIGRATION_ASSIGNMENT_REQUIRED");
+  assert.equal(assessIssueContract(body({ migrations: "Matthew assigned migration 0042 provisionally" })).code, "MIGRATION_ASSIGNMENT_REQUIRED");
+  assert.equal(assessIssueContract(body({ migrations: "0037+ (provisional; Matthew will assign later)" })).code, "MIGRATION_ASSIGNMENT_REQUIRED");
 });
 
-// ---- limits ---------------------------------------------------------------
-
-test("validateBalance accepts only a non-negative USD total", () => {
-  assert.equal(validateBalance({ currency: "USD", total: 5 }).ok, true);
-  assert.equal(validateBalance({ currency: "usd", total: 0 }).ok, true);
-  assert.equal(validateBalance({ currency: "CNY", total: 5 }).ok, false);
-  assert.equal(validateBalance({ currency: "USD", total: -1 }).ok, false);
-  assert.equal(validateBalance({ currency: "USD", total: NaN }).ok, false);
-  assert.equal(validateBalance(null).ok, false);
+test("unknown scope, missing authorization labels, and placeholders fail closed", () => {
+  assert.equal(assessIssueContract(null).code, "SCOPE_UNKNOWN");
+  assert.equal(assessIssueContract(body({ scope: "Included work, affected modules, and required outputs." })).code, "SCOPE_UNKNOWN");
+  assert.equal(assessIssueContract(body().replace("Owner decisions: None\n", "")).code, "AUTHORIZATION_UNKNOWN");
 });
 
-test("parseDeepseekBalance reads balance_infos and sessionSpendUsd treats an increase as suspicious", () => {
-  const before = parseDeepseekBalance({ balance_infos: [{ currency: "USD", total_balance: "10.00" }] });
-  assert.deepEqual(before, { currency: "USD", total: 10 });
-  assert.equal(parseDeepseekBalance({ balance_infos: [] }), null);
-
-  const down = sessionSpendUsd({ currency: "USD", total: 10 }, { currency: "USD", total: 9.4 });
-  assert.equal(down.increase, false);
-  assert.ok(Math.abs(down.spend - 0.6) < 1e-9);
-  const up = sessionSpendUsd({ currency: "USD", total: 10 }, { currency: "USD", total: 11 });
-  assert.equal(up.increase, true);
-});
-
-test("budgetAllowsNext launches only while cumulative spend is strictly below budget", () => {
-  assert.equal(budgetAllowsNext({ spentUsd: 5, budgetUsd: 10 }), true);
-  assert.equal(budgetAllowsNext({ spentUsd: 9.99, budgetUsd: 10 }), true);
-  assert.equal(budgetAllowsNext({ spentUsd: 10, budgetUsd: 10 }), false);
-  assert.equal(budgetAllowsNext({ spentUsd: 10.01, budgetUsd: 10 }), false);
-});
-
-test("null or empty balance totals never coerce to zero", () => {
-  assert.equal(validateBalance({ currency: "USD", total: null }).ok, false);
-  assert.equal(validateBalance({ currency: "USD", total: "" }).ok, false);
-  assert.equal(validateBalance({ currency: "USD" }).ok, false);
-  const nullTotal = parseDeepseekBalance({ balance_infos: [{ currency: "USD", total_balance: null }] });
-  assert.equal(Number.isNaN(nullTotal.total), true);
-  assert.equal(validateBalance(nullTotal).ok, false);
-});
-
-test("migrationAllocation never guesses a migration number", () => {
-  assert.equal(migrationAllocation("## Migrations\nNone"), null);
-  assert.equal(migrationAllocation("no migrations section"), null);
-  assert.deepEqual(migrationAllocation("## Migrations\nadd a table (number TBD)"), { allocated: false, number: null });
-  assert.deepEqual(migrationAllocation("## Migrations\n0034_add_thing.sql"), { allocated: true, number: 34 });
-});
-
-test("isPastDeadline stops the batch after the deadline", () => {
-  const start = 1_000_000;
-  assert.equal(isPastDeadline({ startMs: start, deadlineMs: 8 * 60 * 60 * 1000, nowMs: start + 1 }), false);
-  assert.equal(isPastDeadline({ startMs: start, deadlineMs: 8 * 60 * 60 * 1000, nowMs: start + 8 * 60 * 60 * 1000 + 1 }), true);
-});
-
-// ---- branch/head review ---------------------------------------------------
-
-test("headMatchesReviewed and verifyInvalidated compare commits on their short id", () => {
-  const sha = "cd15757cd7ffa0adadb91325a9613d99c9975f2d";
-  assert.equal(headMatchesReviewed("cd15757cd7ffa0adadb91325a9613d99c9975f2d", "cd15757"), true);
-  assert.equal(headMatchesReviewed("a".repeat(40), sha), false);
-  assert.equal(verifyInvalidated("b".repeat(40), sha), true);
-  assert.equal(verifyInvalidated(sha, sha), false);
-  assert.equal(verifyInvalidated(null, sha), false);
-});
-
-// ---- acceptance gating ----------------------------------------------------
-
-test("decideAcceptance completes only accepted Automated work and never merges Producer/External", () => {
-  assert.equal(decideAcceptance({ acceptance: "Automated", independentVerify: true, ownerAcceptance: false }), "complete");
-  assert.equal(decideAcceptance({ acceptance: "Automated", independentVerify: false, ownerAcceptance: true }), "complete");
-  assert.equal(decideAcceptance({ acceptance: "Automated", independentVerify: false, ownerAcceptance: false }), "wait");
-  assert.equal(decideAcceptance({ acceptance: "Producer", independentVerify: true, ownerAcceptance: false }), "wait");
-  assert.equal(decideAcceptance({ acceptance: "External", independentVerify: false, ownerAcceptance: false }), "skip");
-});
-
-// ---- PR body --------------------------------------------------------------
-
-test("renderPrBody references the issue without any auto-closing keyword", () => {
-  const body = renderPrBody({ number: 13, title: "PB 13", commit: "cd15757", branch: "codex/pb-13-1" });
-  assert.ok(body.includes("#13"));
-  assert.equal(prBodyAutoCloses(body), false);
-  assert.equal(prBodyAutoCloses("Closes #13"), true);
-  assert.equal(prBodyAutoCloses("fixes #13 and resolves #14"), true);
-});
-
-test("worker and Sol prompts carry the contract and boundaries but never a key", () => {
-  const contract = "## Outcome\nDo the thing.\n";
-  const worker = renderWorkerPrompt({ number: 13, title: "PB 13", body: contract, branch: "codex/pb-13-1", worktree: "../quiz-pb-13-1", startCommit: "abc1234", modelId: "deepseek-v4-pro", effectiveEffort: "high" });
-  assert.ok(worker.includes(contract));
-  assert.ok(worker.includes("Permanent authorization boundaries"));
-  assert.ok(worker.includes("codex/pb-13-1"));
-  assert.ok(!/sk-[A-Za-z0-9]/.test(worker));
-
-  const sol = renderSolPrompt({ number: 13, reviewedSha: "cd15757", branch: "codex/pb-13-1" });
-  assert.ok(sol.includes("cd15757"));
-  assert.ok(sol.includes("read-only"));
-});
-
-// ---- interruption reconciliation ------------------------------------------
-
-test("resumeDecision never duplicates a claim, PR or completion", () => {
-  assert.deepEqual(resumeDecision({ persisted: null, live: { status: "Ready", liveClaimExecutionId: null } }), { action: "fresh" });
-  assert.equal(resumeDecision({ persisted: null, live: { status: "Done" } }).action, "skip-completed");
-  assert.equal(resumeDecision({ persisted: null, live: { completeRecorded: true, status: "In review" } }).action, "skip-completed");
-  const mine = { executionId: "a", phase: "claimed" };
-  assert.equal(resumeDecision({ persisted: mine, live: { status: "In progress", liveClaimExecutionId: "b" } }).action, "skip-held");
-  assert.deepEqual(resumeDecision({ persisted: mine, live: { status: "In progress", liveClaimExecutionId: "a" } }), { action: "resume", phase: "claimed" });
-  assert.deepEqual(resumeDecision({ persisted: { executionId: "a", phase: "worked" }, live: { status: "In review", liveClaimExecutionId: "a", prNumber: 7 } }), { action: "adopt-pr", prNumber: 7 });
-});
-
-test("branch and worktree names are isolated per issue and run", () => {
-  assert.equal(branchName(13, 2), "codex/pb-13-2");
-  assert.equal(worktreeName(13, 2), "../quiz-pb-13-2");
+test("baseline identity is accepted only as a full 40-character SHA", () => {
+  assert.equal(isFullCommitSha("cd15757cd7ffa0adadb91325a9613d99c9975f2d"), true);
+  assert.equal(isFullCommitSha("cd15757"), false);
+  assert.equal(isFullCommitSha("cd15757cd7ffa0adadb91325a9613d99c9975f2g"), false);
+  assert.equal(ISSUE_RANGE.min, 13);
+  assert.equal(ISSUE_RANGE.max, 44);
 });

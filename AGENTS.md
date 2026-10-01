@@ -17,6 +17,6 @@ For roadmap work (issues, claims, reviews, merges):
   `scripts/roadmap/gate.mjs` (never call `gh` or the GitHub API directly).
 - Your execution identity is this run's own `CODEX_THREAD_ID`. Never forge or
   inherit an id; conflicting environments fail closed.
-- The orchestrator directly launches native coding and review subagents. The
-  old subprocess dispatcher remains temporarily pending separate removal; it is
-  not the supported route for new work.
+- The orchestrator directly launches native coding and review subagents.
+  `tools/codex-batch.mjs --dry-run` is a read-only planner for issues #13–44; it
+  cannot claim, launch, publish, merge or complete work.

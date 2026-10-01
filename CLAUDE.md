@@ -53,10 +53,12 @@ ID `gpt-6-luna`; logical `low`/`medium`/`high` maps to effective
 and private-data boundaries. Use the shared lifecycle wrapper
 (`scripts/roadmap/lifecycle.mjs`, issues #3 and #45) through the API gate
 (`scripts/roadmap/gate.mjs`, issue #4). Execution identity is the run's own
-`CODEX_THREAD_ID` (or the legacy `CLAUDE_CODE_SESSION_ID`). The Codex
-orchestrator launches native subagents; read
-`docs/roadmap/WORKING_A_TICKET.md` before working a ticket. Report missing
-capabilities or conflicting evidence instead of bypassing the gates.
+`CODEX_THREAD_ID` (or the legacy `CLAUDE_CODE_SESSION_ID`). The Codex orchestrator launches one native Luna coding worker at a time
+and an independent Sol reviewer. Use `tools/codex-batch.mjs --dry-run` only to
+read a proposal for issues #13–44; that planner cannot claim, launch, publish,
+merge or complete work. Read `docs/roadmap/WORKING_A_TICKET.md` before working
+a ticket. Report missing capabilities or conflicting evidence instead of
+bypassing the gates.
 
 ## Attribution: distinguishing Claude's work
 
