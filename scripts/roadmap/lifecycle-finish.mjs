@@ -8,6 +8,8 @@
 // what is missing. This module is the only place an issue is closed.
 
 import {
+  CODEX_SESSION_ID_ENV,
+  CODEX_THREAD_ID_ENV,
   findIndependentVerification,
   findOwnerAcceptance,
   isCommit,
@@ -21,6 +23,7 @@ import {
   renderVerifyComment,
   resolveExecutionId,
   resolveOwnExecutionId,
+  SESSION_ID_ENV,
   sameCommit,
   staleReport,
 } from "./lifecycle-core.mjs";
@@ -283,6 +286,9 @@ export function createFinish({ gate, config, env, now, thisRepo, trusted, evalua
     const stopped = text(opts.stoppedExecution).toLowerCase();
     if (!UUID.test(stopped)) return refuse("EXECUTION_ID_INVALID", "--stopped-execution must be the stopped run's UUID");
     const own = resolveOwnExecutionId(env);
+    const identityProvided = [CODEX_THREAD_ID_ENV, CODEX_SESSION_ID_ENV, SESSION_ID_ENV]
+      .some((name) => text(env?.[name]));
+    if (!own.ok && identityProvided) return own;
     if (own.ok && own.executionId === stopped) {
       return refuse("SELF_RELEASE", "this run is evidently still running; it cannot release its own claim as stopped");
     }

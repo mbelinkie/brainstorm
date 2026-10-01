@@ -1928,3 +1928,31 @@ independent Sol review of the published full-SHA head, merge, integrated-main
 test and lifecycle completion remain with the owner/dispatcher. No GitHub mutation,
 worker launch, model-provider request, publication or merge was performed by
 this worker.
+
+## 2026-10-01 — Reject ambiguous release-run identity (issue #51 follow-up)
+
+Branch: `codex/deepseek-orchestration`. Model: GPT-6 Luna
+(`gpt-6-luna`), native Codex subagent. Execution ID: this run's own
+`CODEX_THREAD_ID` (`01a0f723-2ce8-7071-b5c2-5004b0c1e211`).
+
+**Slice:** fixed `lifecycle.release` to reject a present but ambiguous runner
+identity before GitHub access, including a thread ID paired with a conflicting
+session ID. A plain terminal with no runner identity can still perform the
+evidence-backed owner release. Existing release-marker parsing and historical
+records are unchanged. The live #51 claim was not released or otherwise
+modified.
+
+**Files:** `scripts/roadmap/lifecycle-finish.mjs`,
+`test/roadmap-lifecycle-finish.test.js`, and `docs/CLAUDE_WORKLOG.md`.
+
+**Commands run:** initial regression reproduction,
+`ctx-wire run node --test test/roadmap-lifecycle-finish.test.js` (31 pass,
+1 fail: ambiguous identity incorrectly released the claim); after the fix,
+`ctx-wire run node --test test/roadmap-lifecycle-finish.test.js` (32 pass,
+0 fail); `ctx-wire run node --test test/roadmap-lifecycle.test.js test/roadmap-lifecycle-finish.test.js`
+(98 pass, 0 fail); `ctx-wire run env -u GH_TOKEN -u DEEPSEEK_API_KEY npm test`
+(554 pass, 0 fail); `ctx-wire run git diff --check` (clean).
+
+**Unproven / outstanding:** no live release was attempted; the existing #51
+claim remains live. Publication, Sol review, merge and completion remain with
+the owner/dispatcher.

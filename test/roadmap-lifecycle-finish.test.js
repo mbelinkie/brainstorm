@@ -396,6 +396,20 @@ test("release refuses without recorded operator evidence, before any request", a
   }
 });
 
+test("release refuses when the current run identity is ambiguous, before any request", async () => {
+  const { lifecycle, transport } = setup({
+    world: inProgressWorld(),
+    env: { CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: OTHER },
+  });
+  const result = await lifecycle.release(3, {
+    stoppedExecution: SELF,
+    confirmedBy: "mbelinkie",
+    evidence: "terminal closed, process gone",
+  });
+  assert.equal(result.code, "EXECUTION_ID_AMBIGUOUS");
+  assert.equal(transport.calls.length, 0);
+});
+
 test("release refuses when the named execution is not the live claimant", async () => {
   const world = inProgressWorld();
   world.issues[3].comments = [claimComment(OTHER)];
@@ -412,7 +426,7 @@ test("release refuses when the named execution is not the live claimant", async 
 test("release records the confirmation, ends the claim, and returns the issue to Ready for a new claim", async () => {
   const world = inProgressWorld();
   world.issues[3].comments = [claimComment(OTHER)];
-  const { lifecycle, transport } = setup({ world });
+  const { lifecycle, transport } = setup({ world, env: {} });
   const result = await lifecycle.release(3, { stoppedExecution: OTHER, confirmedBy: "mbelinkie", evidence: "laptop was shut down; session cannot resume" });
   assert.equal(result.ok, true);
   assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
