@@ -1,3 +1,5 @@
+import { ENGINES } from "./image-engine.js";
+
 function supabaseAdminHeaders(secret, { json = false } = {}) {
   // Modern Supabase server keys are opaque API keys, not user-session JWTs.
   // The hosted gateway translates those credentials to the service_role role.
@@ -9,6 +11,64 @@ function supabaseAdminHeaders(secret, { json = false } = {}) {
   };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
+}
+
+// Media bytes (audio clips, images) were being re-fetched from Supabase
+// Storage on every single request -- including every player in a live room
+// pulling the same clip within seconds of each other -- which is what blew
+// through the Supabase org's Cached Egress quota. The DB-backed authorization
+// check (can_access_live_media / author-token verification) must still run
+// on every request, but the actual object bytes for a given storage_path are
+// identical for anyone who's allowed to see them, so they're safe to cache at
+// Cloudflare's edge keyed by storage_path. One caveat: author.js can update a
+// clip in place (same storage_path, new bytes) when a host re-trims audio, so
+// this is a bounded-staleness cache, not an immutable one -- edits made less
+// than MEDIA_CACHE_TTL_SECONDS before a live session could still serve the
+// old clip for up to that long. Keep this TTL short enough that "edit, then
+// go live" workflows stay safe.
+const MEDIA_CACHE_TTL_SECONDS = 900; // 15 minutes
+
+function mediaCacheKey(storagePath) {
+  // Synthetic same-shape URL used only as a cache key -- never fetched.
+  // Keyed by storage_path (the actual object identity in the bucket), not by
+  // assetId or by anything request-specific like room/token, so every caller
+  // asking for the same bytes shares one cache entry.
+  return new Request(`https://media-cache.internal/quiz-media/${storagePath.split("/").map(encodeURIComponent).join("/")}`);
+}
+
+// Cloudflare's edge Cache API (caches.default) only stores responses it
+// considers cacheable, and "instructs not to cache" isn't fully spelled out
+// for every Cache-Control directive -- so the copy we hand to cache.put() is
+// always unambiguously `public`, guaranteeing it gets stored. The copy we
+// hand back to the actual browser is a separately-built `private` response,
+// so no shared/corporate proxy between the player and Cloudflare ever caches
+// it -- only that one browser's own local cache may. This split costs
+// nothing (both come from the same tee'd body) and keeps the access-control
+// story identical to before: the room/author authorization check above still
+// runs on every single request, cache hit or not, so a private copy sitting
+// in Cloudflare's edge is never handed out to anyone who fails that check.
+function toPrivateClientResponse(response, extraHeaders) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", `private, max-age=${MEDIA_CACHE_TTL_SECONDS}`);
+  for (const [key, value] of Object.entries(extraHeaders || {})) headers.set(key, value);
+  return new Response(response.body, { headers });
+}
+
+async function deliverMediaObject(env, storagePath, mimeType, headers, extraHeaders, ctx) {
+  const cacheKey = mediaCacheKey(storagePath);
+  const cache = caches.default;
+
+  const cached = await cache.match(cacheKey);
+  if (cached) return { ok: true, response: toPrivateClientResponse(cached, extraHeaders) };
+
+  const objectResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/authenticated/quiz-media/${storagePath.split("/").map(encodeURIComponent).join("/")}`, { headers });
+  if (!objectResponse.ok) return { ok: false, status: objectResponse.status };
+
+  const cacheableResponse = new Response(objectResponse.body, {
+    headers: { "content-type": mimeType, "cache-control": `public, max-age=${MEDIA_CACHE_TTL_SECONDS}` }
+  });
+  ctx.waitUntil(cache.put(cacheKey, cacheableResponse.clone()));
+  return { ok: true, response: toPrivateClientResponse(cacheableResponse, extraHeaders) };
 }
 
 function mediaFailure(stage, upstreamStatus = 0) {
@@ -67,6 +127,109 @@ function hostSubmissionsResponse(body, init = {}) {
   });
 }
 
+// --- Prompt Battle: host model test route -----------------------------
+//
+// POST /battle/test-image (base spec section 7.5; dispatch corrected by
+// docs/superpowers/specs/2026-08-24-prompt-battle-free-engine-addendum.md
+// section 2.3). Lets the host preview the effective model from the title
+// screen before a round starts. Runs one generation outside any battle
+// round: it never touches player budgets, never creates matchup entries,
+// and never persists -- images return inline as base64 to the host, who is
+// already trusted with all quiz media.
+//
+// This route is the single dispatch path the addendum requires: it builds
+// descriptors via the pure image-engine.js adapter, executes every one of
+// them through runBattleDescriptor() with Promise.allSettled (never
+// Promise.all -- one flaky variant must not discard the others), and folds
+// the results back through the adapter's parseResponses(). image-engine.js
+// itself performs no I/O, which is what lets it be tested from fixtures.
+const BATTLE_TEST_IMAGE_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
+const BATTLE_TEST_IMAGE_VARIANTS = 2;
+const BATTLE_TEST_IMAGE_MAX_PER_SESSION = 10;
+
+// Deployment allowlist (base spec section 7.5): the host's model menu is
+// validated against this on the Worker, never against a model string taken
+// from the request body -- a client-supplied model name is the allowlist
+// defeated. In a later slice this is intersected with the quiz's own
+// `permittedModels`. Only workers_ai is implemented this slice (see
+// image-engine.js), so every entry names that provider rather than stubbing
+// openrouter/vertex/the Kaplan proxy.
+//
+// This list is deployment POLICY -- which models a host may select. How to
+// actually call each one (payload shape, parameter names, step counts) lives
+// with the provider knowledge in image-engine.js's WORKERS_AI_PROFILES,
+// because these models do not share an input schema. Keeping the two
+// separate means adding a model here is a policy decision, not a protocol
+// change.
+const BATTLE_MODEL_ALLOWLIST = {
+  "@cf/black-forest-labs/flux-1-schnell": { provider: "workers_ai" },
+  "@cf/black-forest-labs/flux-2-klein-4b": { provider: "workers_ai" },
+  "@cf/black-forest-labs/flux-2-klein-9b": { provider: "workers_ai" },
+  "@cf/leonardo/lucid-origin": { provider: "workers_ai" }
+};
+
+// Best-effort only, not durable: an in-memory Map does not survive an
+// isolate restart or redeploy, and is not shared between concurrently
+// running isolates, so a determined host could exceed 10 across isolates.
+// A durable per-session cap needs the session_battle_generations table from
+// a later slice's migration -- out of scope here (no migrations this
+// slice). This is the honest interim version rather than a pretended-
+// durable one. Keyed by room code.
+const battleTestImageCounts = new Map();
+
+const battleTestImageCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-host-secret, content-type",
+  "access-control-max-age": "86400"
+};
+
+function battleTestImageResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...battleTestImageCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
+// The one dispatch path every adapter's descriptors run through, per
+// addendum section 2.3. A "binding" descriptor calls the named Workers
+// binding directly; an "http" descriptor (openrouter, openai, the Kaplan
+// proxy -- none implemented yet) would fetch a provider URL. Errors carry a
+// status where one is known so parseResponses can distinguish provider
+// failure shapes later.
+async function runBattleDescriptor(descriptor, auth) {
+  if (descriptor.kind === "binding") {
+    // image-engine.js emits inert data only, so the multipart encoding is
+    // assembled here: FormData -> Response gives both the body stream and a
+    // content-type header carrying the MIME boundary, which is what the
+    // model's validator requires and what no plain object can express. The
+    // stream is single-use, so it is built per descriptor rather than shared
+    // across variants.
+    if (descriptor.encoding === "multipart") {
+      const form = new FormData();
+      for (const [name, value] of Object.entries(descriptor.payload)) {
+        form.append(name, String(value));
+      }
+      const encoded = new Response(form);
+      return auth.binding.run(descriptor.model, {
+        multipart: { body: encoded.body, contentType: encoded.headers.get("content-type") }
+      });
+    }
+    return auth.binding.run(descriptor.model, descriptor.payload);
+  }
+  const response = await fetch(descriptor.url, {
+    method: "POST",
+    headers: { ...descriptor.headers, ...(auth.headers || {}) },
+    body: JSON.stringify(descriptor.body)
+  });
+  if (!response.ok) {
+    const error = new Error(`${descriptor.url} returned ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
 async function verifyQuizAuthor(env, token) {
   const headers = { ...supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true }), Authorization: `Bearer ${token}` };
   const response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/is_quiz_author`, { method: "POST", headers, body: "{}" });
@@ -74,7 +237,7 @@ async function verifyQuizAuthor(env, token) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 if (request.method === "GET" && url.pathname === "/__version") {
       const metadata = env.CF_VERSION_METADATA || {};
@@ -99,6 +262,7 @@ if (request.method === "GET" && url.pathname === "/__version") {
     if (request.method === "OPTIONS" && url.pathname === "/host-text-answers") return new Response(null, { status: 204, headers: hostTextAnswersCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/host-closest-number-guesses") return new Response(null, { status: 204, headers: hostClosestNumberCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/host-submissions") return new Response(null, { status: 204, headers: hostSubmissionsCorsHeaders });
+    if (request.method === "OPTIONS" && url.pathname === "/battle/test-image") return new Response(null, { status: 204, headers: battleTestImageCorsHeaders });
     if (request.method === "GET" && url.pathname === "/media-health") {
       if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return Response.json({ ok: false, stage: "configuration" }, { status: 503 });
       const check = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?select=id&limit=1`, { headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY) });
@@ -217,6 +381,71 @@ if (request.method === "GET" && url.pathname === "/__version") {
         : [];
       return hostSubmissionsResponse({ questionId, submissions }, { headers: { "cache-control": "private, no-store" } });
     }
+    if (request.method === "POST" && url.pathname === "/battle/test-image") {
+      const roomCode = request.headers.get("x-quiz-room");
+      const hostSecret = request.headers.get("x-quiz-host-secret");
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return battleTestImageResponse({ error: "Host authorization is required." }, { status: 401, headers: { "cache-control": "no-store" } });
+      const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+      const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, { method: "POST", headers, body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret }) });
+      if (!stateResponse.ok) return battleTestImageResponse({ error: "Host authorization failed." }, { status: 403, headers: { "cache-control": "no-store" } });
+
+      let payload;
+      try { payload = await request.json(); } catch { payload = null; }
+      const model = typeof payload?.model === "string" ? payload.model : "";
+      const allowed = BATTLE_MODEL_ALLOWLIST[model];
+      const provider = allowed?.provider;
+      // The host picks from a menu; the host never types a model string. A
+      // model this Worker does not recognize is refused here regardless of
+      // what the client believes it offered, which is what makes the
+      // allowlist a Worker-side guarantee rather than a UI courtesy.
+      if (!provider) return battleTestImageResponse({ error: "Unknown or disallowed model." }, { status: 400, headers: { "cache-control": "no-store" } });
+      // Unlike the model, the prompt is host-typed free text -- that's the
+      // point of this panel, and image-engine.js's own truncation (2048
+      // chars for workers_ai) bounds what actually reaches the provider.
+      const requestedPrompt = typeof payload?.prompt === "string" ? payload.prompt.trim() : "";
+      const prompt = requestedPrompt || BATTLE_TEST_IMAGE_PROMPT;
+
+      const sessionKey = roomCode.trim().toUpperCase();
+      const usedCount = battleTestImageCounts.get(sessionKey) || 0;
+      if (usedCount >= BATTLE_TEST_IMAGE_MAX_PER_SESSION) return battleTestImageResponse({ error: "Test-generation limit reached for this session." }, { status: 429, headers: { "cache-control": "no-store" } });
+      // Consumed synchronously, before any await, so two requests racing
+      // within the same isolate cannot both read the same usedCount.
+      battleTestImageCounts.set(sessionKey, usedCount + 1);
+
+      const adapter = ENGINES[provider];
+      let auth;
+      try {
+        auth = await adapter.resolveAuth(env);
+      } catch (error) {
+        console.error("Battle test-image auth resolution failed", { provider, message: error?.message });
+        return battleTestImageResponse({ error: "Image generation is not configured." }, { status: 503, headers: { "cache-control": "no-store" } });
+      }
+
+      // Seeds are generated here, never inside image-engine.js, so
+      // buildRequests() stays deterministic and testable with fixed seeds.
+      const seeds = Array.from({ length: BATTLE_TEST_IMAGE_VARIANTS }, () => crypto.getRandomValues(new Uint32Array(1))[0]);
+      const descriptors = adapter.buildRequests({ model, prompt, variants: BATTLE_TEST_IMAGE_VARIANTS, seeds });
+
+      const settled = await Promise.allSettled(descriptors.map((descriptor) => runBattleDescriptor(descriptor, auth)));
+      const results = settled.map((entry) =>
+        entry.status === "fulfilled"
+          ? { ok: true, body: entry.value }
+          : { ok: false, status: entry.reason?.status ?? 0, error: entry.reason }
+      );
+      const parsed = adapter.parseResponses({ results, expectedVariants: BATTLE_TEST_IMAGE_VARIANTS });
+
+      // Diagnostic only, host-only: this route is explicitly for the host to
+      // learn what a model/provider actually does, so a zero-image response
+      // that would otherwise look like a silent no-op carries the raw
+      // per-descriptor failure reasons. Never sent to a player -- there is
+      // no player-facing caller of this route.
+      const providerErrors = results
+        .filter((result) => !result.ok)
+        .map((result) => ({ status: result.status || null, message: String(result.error?.message || result.error || "unknown error") }));
+      if (providerErrors.length) console.error("Battle test-image: provider call(s) failed", { provider, model, providerErrors });
+
+      return battleTestImageResponse({ model, prompt, ...parsed, ...(providerErrors.length ? { providerErrors } : {}) }, { headers: { "cache-control": "no-store" } });
+    }
     if (request.method === "GET" && url.pathname.startsWith("/author-media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/author-media/".length));
       const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -230,9 +459,9 @@ if (request.method === "GET" && url.pathname === "/__version") {
       if (!assetResponse.ok) return mediaFailure("author-asset-record", assetResponse.status);
       const [asset] = await assetResponse.json();
       if (!asset?.storage_path) return mediaFailure("author-asset-missing");
-      const objectResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/authenticated/quiz-media/${asset.storage_path.split("/").map(encodeURIComponent).join("/")}`, { headers });
-      if (!objectResponse.ok) return mediaFailure("author-storage-download", objectResponse.status);
-      return new Response(objectResponse.body, { headers: { "content-type": asset.mime_type, "cache-control": "private, no-store", "x-content-type-options": "nosniff", "access-control-allow-origin": "*", "access-control-expose-headers": "x-quiz-media-stage,x-quiz-upstream-status" } });
+      const delivery = await deliverMediaObject(env, asset.storage_path, asset.mime_type, headers, { "x-content-type-options": "nosniff", "access-control-allow-origin": "*", "access-control-expose-headers": "x-quiz-media-stage,x-quiz-upstream-status" }, ctx);
+      if (!delivery.ok) return mediaFailure("author-storage-download", delivery.status);
+      return delivery.response;
     }
     if (request.method === "GET" && url.pathname.startsWith("/media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/media/".length));
@@ -252,9 +481,9 @@ if (request.method === "GET" && url.pathname === "/__version") {
       const [asset] = await assetResponse.json();
       if (!asset?.storage_path) return mediaFailure("asset-missing");
 
-      const objectResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/authenticated/quiz-media/${asset.storage_path.split("/").map(encodeURIComponent).join("/")}`, { headers });
-      if (!objectResponse.ok) return mediaFailure("storage-download", objectResponse.status);
-      return new Response(objectResponse.body, { headers: { "content-type": asset.mime_type, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
+      const delivery = await deliverMediaObject(env, asset.storage_path, asset.mime_type, headers, { "x-content-type-options": "nosniff" }, ctx);
+      if (!delivery.ok) return mediaFailure("storage-download", delivery.status);
+      return delivery.response;
     }
     return env.ASSETS.fetch(request);
   }

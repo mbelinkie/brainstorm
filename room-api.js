@@ -75,6 +75,21 @@ export const roomApi = {
     return call("reveal_live_door_rewards", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
+  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql).
+  // All three are host-secret authorized: there is no player-facing battle call
+  // yet, and the pairing these return is host-only data.
+  openBattleRound({ roomCode, hostSecret }) {
+    return call("open_battle_round", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
+  setBattleEngine({ roomCode, hostSecret, provider, model }) {
+    return call("set_battle_engine", { p_room_code: roomCode, p_host_secret: hostSecret, p_provider: provider, p_model: model });
+  },
+
+  getHostBattleState({ roomCode, hostSecret }) {
+    return call("get_host_battle_state", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
   adjustScore({ roomCode, hostSecret, playerId, points, reason }) {
     return call("adjust_live_score", { p_room_code: roomCode, p_host_secret: hostSecret, p_player_id: playerId, p_points: points, p_reason: reason });
   },

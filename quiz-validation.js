@@ -5,6 +5,9 @@
 // invented during the merge.
 export function validateQuiz(candidate) {
   const errors = [];
+  // Rounds carried no `type` before Prompt Battle, so `undefined` is the
+  // ordinary question round every existing quiz uses.
+  const supportedRoundTypes = new Set(["prompt_battle"]);
   const supportedTypes = new Set(["single_choice", "multiple_choice", "true_false", "image_selection", "short_answer", "fill_in_the_blank", "multi_fill_in_the_blank", "arrange_in_order", "categorize", "matching", "closest_number"]);
   const requiredText = (value) => typeof value === "string" && value.trim();
   const validNumericLiteral = (value) => /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value).trim());
@@ -49,6 +52,11 @@ export function validateQuiz(candidate) {
     if (!round || typeof round !== "object") { errors.push(`${roundLabel} must be an object.`); continue; }
     if (!requiredText(round.id)) errors.push(`${roundLabel} needs an ID.`); else if (roundIds.has(round.id)) errors.push(`${roundLabel} has a duplicate round ID: ${round.id}.`); else roundIds.add(round.id);
     if (!requiredText(round.title)) errors.push(`${roundLabel} needs a title.`);
+    if (round.type !== undefined && !supportedRoundTypes.has(round.type)) { errors.push(`${roundLabel} has an unsupported round type.`); continue; }
+    // A prompt_battle round has prompts instead of questions and no answer
+    // key at all, so it takes its own rules and skips the question loop
+    // entirely rather than being forced through a shape it does not have.
+    if (round.type === "prompt_battle") { validatePromptBattleRound(round, roundLabel, errors); continue; }
     if (!Array.isArray(round.questions) || !round.questions.length) { errors.push(`${roundLabel} needs at least one question.`); continue; }
     for (const [questionIndex, item] of round.questions.entries()) {
       const label = `${roundLabel}, question ${questionIndex + 1}`;
@@ -87,4 +95,64 @@ export function validateQuiz(candidate) {
     }
   }
   return errors;
+}
+
+// Rounds the author editor cannot yet edit. validateQuiz accepts a
+// prompt_battle round, but author.js assumes every round has a questions
+// array (renderNav, restoredDraft), so Apply raw JSON and Import check this
+// before replacing the open bank. Returns one message per unsupported round.
+export function editorUnsupportedRounds(candidate) {
+  const rounds = Array.isArray(candidate?.rounds) ? candidate.rounds : [];
+  return rounds.flatMap((round, roundIndex) => round?.type === "prompt_battle"
+    ? [`Round ${roundIndex + 1} is a Prompt Battle round, which this editor cannot edit yet. Remove it to edit the rest of this quiz here.`]
+    : []);
+}
+
+// Prompt Battle round rules — base spec section 4, as amended by the free-engine
+// addendum section 5. Two things that look like omissions are deliberate:
+// `resolution` and `outputFormat` are adapter-dependent and ignored entirely by
+// the workers_ai adapter, so they are optional and never required; and
+// `maxSessionSpendUsd: null` means "no monetary cap" (0 means generation is
+// disabled), which is why null is accepted and a negative number is not.
+function validatePromptBattleRound(round, roundLabel, errors) {
+  const requiredText = (value) => typeof value === "string" && value.trim();
+  const positiveInteger = (value) => Number.isInteger(value) && value > 0;
+
+  const prompts = round.prompts;
+  if (!Array.isArray(prompts) || prompts.length === 0) errors.push(`${roundLabel} needs at least one battle prompt.`);
+  else {
+    const promptIds = new Set();
+    prompts.forEach((prompt, promptIndex) => {
+      const label = `${roundLabel}, prompt ${promptIndex + 1}`;
+      if (!prompt || typeof prompt !== "object" || Array.isArray(prompt)) { errors.push(`${label} must be an object.`); return; }
+      if (!requiredText(prompt.id)) errors.push(`${label} needs an ID.`);
+      else if (promptIds.has(prompt.id)) errors.push(`${label} has a duplicate prompt ID: ${prompt.id}.`);
+      else promptIds.add(prompt.id);
+      // 2048 characters is the session_battle_matchups.prompt_text check
+      // constraint in 0036; rejecting it here keeps the round unpublishable
+      // rather than letting open_battle_round fail mid-show.
+      if (!requiredText(prompt.text) || prompt.text.length > 2048) errors.push(`${label} needs prompt text of 2048 characters or fewer.`);
+    });
+  }
+
+  const engine = round.engine;
+  if (!engine || typeof engine !== "object" || Array.isArray(engine)) { errors.push(`${roundLabel} needs an engine block.`); return; }
+  if (!requiredText(engine.defaultProvider)) errors.push(`${roundLabel} engine needs a default provider.`);
+  if (!requiredText(engine.defaultModel)) errors.push(`${roundLabel} engine needs a default model.`);
+  if (!Array.isArray(engine.permittedModels) || engine.permittedModels.length === 0 || engine.permittedModels.some((model) => !requiredText(model))) errors.push(`${roundLabel} engine needs at least one permitted model.`);
+  // set_battle_engine() in 0036 only accepts a model that appears in
+  // permittedModels, so a default outside that list is unselectable.
+  else if (requiredText(engine.defaultModel) && !engine.permittedModels.includes(engine.defaultModel)) errors.push(`${roundLabel} engine default model must be one of its permitted models.`);
+  if (!positiveInteger(engine.variants) || engine.variants > 10) errors.push(`${roundLabel} engine needs between 1 and 10 variants.`);
+  if (!positiveInteger(engine.attemptBudget)) errors.push(`${roundLabel} engine needs a positive attempt budget.`);
+  if (engine.steps !== undefined && (!positiveInteger(engine.steps) || engine.steps > 8)) errors.push(`${roundLabel} engine steps must be between 1 and 8.`);
+  if (engine.maxSessionSpendUsd !== undefined && engine.maxSessionSpendUsd !== null && (!Number.isFinite(Number(engine.maxSessionSpendUsd)) || Number(engine.maxSessionSpendUsd) < 0)) errors.push(`${roundLabel} engine spend cap must be null or a number of 0 or more.`);
+  if (engine.maxSessionGenerations !== undefined && engine.maxSessionGenerations !== null && !positiveInteger(engine.maxSessionGenerations)) errors.push(`${roundLabel} engine generation cap must be null or a positive whole number.`);
+  if (engine.resolution !== undefined && !requiredText(engine.resolution)) errors.push(`${roundLabel} engine resolution must be a string when provided.`);
+  if (engine.outputFormat !== undefined && !requiredText(engine.outputFormat)) errors.push(`${roundLabel} engine output format must be a string when provided.`);
+
+  const scoring = round.scoring;
+  if (!scoring || typeof scoring !== "object" || Array.isArray(scoring)) { errors.push(`${roundLabel} needs a scoring block.`); return; }
+  if (!Number.isFinite(Number(scoring.winnerPoints)) || Number(scoring.winnerPoints) <= 0) errors.push(`${roundLabel} needs positive winner points.`);
+  if (!Number.isFinite(Number(scoring.voterPoints)) || Number(scoring.voterPoints) < 0) errors.push(`${roundLabel} needs voter points of 0 or more.`);
 }

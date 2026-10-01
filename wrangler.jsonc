@@ -15,5 +15,13 @@
       "/author-media/*",
       "/media-health"
     ]
+  },
+  // Workers AI: zero-credential image generation for Prompt Battle's
+  // workers_ai adapter (image-engine.js). No secret, no key, no account ID
+  // -- the binding is the credential. See
+  // docs/superpowers/specs/2026-08-24-prompt-battle-free-engine-addendum.md
+  // section 7.
+  "ai": {
+    "binding": "AI"
   }
 }
