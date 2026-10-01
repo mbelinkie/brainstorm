@@ -2001,3 +2001,15 @@ the verified rehearsal evidence in the ticket guide.
 alreadyCompleted; stale confirmed CLOSED/Done, no live claim and no discrepancy.
 Sol and integrated main each passed 554 tests at the recorded rehearsal SHAs.
 `git diff --check` passed for this documentation change. No product code changed.
+
+## 2026-10-01 — DeepSeek slice trial: battle fixture and runbook (#17)
+
+Branch: `codex/deepseek-trial-17`, accepted base `bc8a6764f809619519e86ae3163e3f6922e22cf9`. Implementation: official API `deepseek-v4-pro`, thinking enabled, high effort; returned model `deepseek-v4-pro`, fingerprint `a307abda487cd1b463329ccb945ce396`. Sol coordinated the ticket and owned acceptance; this worklog/evidence entry is orchestration-authored. The authorized issue-specific Sol coordinator claim is recorded in #17; the normal Luna routing is unchanged.
+
+**Slices:** 17-A returned `quiz.battle.sample.json` and `test/quiz-battle-fixture.test.js`; request `9d226d39-06e5-4091-9b81-8c17364849ba`, 35.0 seconds, accepted first pass. 17-B returned an appended `RUNBOOK.md` section; request `e1806183-c1d3-40d9-9aa9-b6dc6c4a93e0`, 63.2 seconds. One localized repair (`61552c4c-cdc0-484d-9096-4b513c87764c`, 40.4 seconds) corrected the current adapter identifier and host-credential/provisioning instructions. All artifacts were applied verbatim to allowlisted paths. No model tools, shell, credential access, or product implementation fallback was used.
+
+**Evidence:** baseline `npm ci` exited 0 and `npm test` passed 600/600. Sol-owned new-fixture check initially failed with expected ENOENT. After 17-A, the real shared validator, exact contract values and original compatibility hashes passed; focused fixture/compatibility tests passed 15/15. Full `npm test` passed 603/603, zero failures/skips. Final private fixture/docs gate and `git diff --check` passed after the documentation repair. The original compatibility JSON files, validator and existing tests are unchanged. Independent exact-published-commit review remains pending at this commit.
+
+**Cost and limits:** official USD balance before calls $18.47; observed after workers $18.45. Per-response readings initially lagged the charge, so the observed $0.02 decrease is at the endpoint's cent precision and may not be final billing. Across the three calls, 23,775 prompt tokens and 22,177 completion tokens (17,795 reasoning tokens included). Sol and orchestration use separate Codex allowance.
+
+**Unproven/excluded:** no real room, publishing through the app, image generation, deployment or migration application. The runbook distinguishes the unmerged editor support (#42) and pending Kaplan adapter/Worker wiring from current Workers AI host testing. This fixture/doc trial provides no evidence about autonomous recovery, permission-sensitive work, or production generation.
