@@ -1969,6 +1969,20 @@ Branch: `claude/progress-view` (from `main` = `origin/main` at `3447913`, which 
 
 **Unproven:** the HTML page was not opened in a browser; organization-owned Projects are untested (this one is user-owned); block-reason lookups only cover this repository.
 
+## 2026-10-01 — Worktree bootstrap and command guard (issue #6)
+
+Branch: `claude/worktree-guards` (from `origin/main` `271a47d`, which includes the lifecycle wrapper and the contributor guide). Model: Sonnet 5.5. #6 was an Inbox placeholder; at Matthew's instruction ("yes to all") I wrote its contract (`model:standard`/`effort:high`, External, Medium), then `ready 6` and `claim 6` through the wrapper (effort mismatch recorded: session `medium` vs label `high`). It was worked in the main checkout after #5 reached In review, not in a separate worktree (the guide asks for one per ticket; a sibling worktree needs extra directory access). #5's branch is untouched.
+
+**Slice:** `scripts/guard/command-guard.mjs` (pure decision logic, 12 rules), `scripts/guard/pre-command-hook.mjs` (Claude Code PreToolUse adapter), `scripts/guard/worktree-checks.mjs` (pure) and `tools/worktree-setup.mjs` (runner), `docs/roadmap/guard-coverage.md`, `docs/roadmap/claude-settings.guard.json` (proposed hook, NOT installed), tests `test/command-guard.test.js` and `test/worktree-setup.test.js` (29).
+
+**Judgment calls (flag for Matthew):** the runner is in `tools/`, not `scripts/worktree-setup.mjs` as my draft contract said, because the #4 bypass test forbids `child_process` anywhere under `scripts/` except the GitHub transport and I did not want to loosen it. `.claude/settings.json` was not created or edited: installing a hook needs the owner's approval (CLAUDE.md), so only the snippet is delivered. Plain `git push`, `merge`, `rebase` and `commit --amend` are deliberately allowed (the guard cannot know whether the user asked). `git commit -a` is refused under `add-all`. A hook-input it cannot read is refused (fail closed).
+
+**Commands run:** `node --test` on the two new files (29/29); `npm test` (556/556, was 527 on main; #5's 15 are on a different branch); mutation check on a scratch copy of six breakages (reset --hard unchecked, substitutions unchecked, any delete target treated as scratch, unreadable hook input allowed, single-quoted text treated as a command, install runs after a failed check), each failing the intended tests, control 29/29.
+
+**Real-runner evidence (after Matthew approved a local-only hook):** a nested `claude -p` could not authenticate ("Not logged in"), so the hook was loaded through a git-ignored `.claude/settings.local.json` in the desktop app session instead. In that live session a Bash `git reset --hard HEAD` and a PowerShell `git -C <scratch> clean -fd` were both denied by the hook with the rule named (`reset-hard`, `git-clean`), the scratch repo's uncommitted line survived, and an allowed `git status` ran. The live hook then blocked this session's own next command as "unparseable": a heredoc whose text contained an apostrophe. The guard now cuts heredoc bodies out before scanning (a body fed to a shell such as `bash <<EOF` is still checked as commands, a `<<` inside quotes is not a heredoc, an unterminated heredoc is refused); two tests added and shown to fail without the change. Earlier, Windows PowerShell's UTF-8 byte-order mark made the hook refuse valid input; it is now stripped (test added).
+
+**Unproven:** `tools/worktree-setup.mjs` was exercised only with a fake exec, not on a real fresh worktree; the PowerShell `tool_name` is confirmed only by one live denial; the hook is active only through the git-ignored local settings file, not the tracked `.claude/settings.json` (owner decision); a heredoc piped to an interpreter other than a shell (python, node) is not parsed, as documented in guard-coverage.md.
+
 ## 2026-10-01 — Verified native workflow lessons
 
 Branch: `codex/native-workflow-lessons`. Author: Codex orchestrator

@@ -28,6 +28,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 These exist but are outside what an in-repo test can see. They share the same
 GitHub quota, so the gate cannot account for them:
 
+- `tools/worktree-setup.mjs` (issue #6) starts `git` and `npm ci` for worktree bootstrap. It is not a GitHub API transport and lives outside `scripts/` so the bypass check there stays strict.
 - `gh` commands typed by a person or run by an agent in a terminal.
 - Throwaway scripts kept outside the repository (for example in a session
   scratchpad). They do not run through the gate.

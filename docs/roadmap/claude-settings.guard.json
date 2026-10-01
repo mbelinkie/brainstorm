@@ -1,0 +1,16 @@
+{
+  "_comment": "The hook installed in the tracked .claude/settings.json (issue #6). Kept here so the install is documented; a test keeps the two identical.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/guard/pre-command-hook.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
