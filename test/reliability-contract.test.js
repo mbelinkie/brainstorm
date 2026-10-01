@@ -34,7 +34,8 @@ test("player UI waits for server confirmation before recording submission", () =
 test("temporarily invalid author drafts survive refresh", () => {
   const restore = author.slice(author.indexOf("function restoredDraft"), author.indexOf("function validationSummary"));
   assert.doesNotMatch(restore, /validateQuiz/);
-  assert.match(restore, /Array\.isArray\(draft\.bank\.rounds\)/);
+  assert.match(restore, /isRestorableAuthorDraft\(draft\)/);
+  assert.match(restore, /restoredAuthorSelection\(draft\)/);
 });
 
 test("the editor validates with the shared quiz-validation module instead of a private copy", () => {

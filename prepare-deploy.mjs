@@ -16,6 +16,7 @@ const publicFiles = [
   "author.html",
   "author.css",
   "author.js",
+  "prompt-battle-editor.js",
   "video-utils.js",
   "image-crop.js",
   "subtitle-core.js",

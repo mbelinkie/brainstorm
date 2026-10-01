@@ -1957,6 +1957,21 @@ modified.
 claim remains live. Publication, Sol review, merge and completion remain with
 the owner/dispatcher.
 
+## 2026-10-01 — Add Prompt Battle round authoring
+- **Branch:** `codex/pb-editor-luna-42`; execution `01a0f768-10ae-7691-b6d8-3d3b6ae95036` (GPT-6 Luna, logical medium / effective high).
+- **Slice:** Added editor support for Prompt Battle rounds and prompts, including engine/scoring fields, validator messages beside fields, round reorder/duplicate/delete, import/raw JSON acceptance, and draft recovery. Existing question rounds and validation rules are unchanged. `prepare-deploy.mjs` now includes the new editor helper module.
+- **Files:** `author.js`, `author.css`, `prompt-battle-editor.js`, `quiz-validation.js`, `prepare-deploy.mjs`, `test/author-battle-round-guard.test.js`, `test/author-prompt-battle-editor.test.js`, `test/reliability-contract.test.js`, `CHANGELOG.md`, and this work log.
+- **Commands and results:** `node --test test/author-prompt-battle-editor.test.js test/author-battle-round-guard.test.js test/quiz-validation.test.js test/quiz-fixtures.test.js test/reliability-contract.test.js test/deploy-manifest.test.js` (85/85); `node --check author.js`; `node --check prompt-battle-editor.js`; `git diff --check`; `env -i PATH="$PATH" CI=1 npm test` (559/559).
+- **Manual check:** Loaded the editor in a local preview with an empty `QUIZ_PLATFORM_CONFIG` and saw the new battle-round form, its prompt/engine/scoring controls, and existing validator messages. No sign-in, room, or service calls were made. The temporary preview server stopped during reload, so the final preview/round-trip was not visually rechecked after the last render adjustment.
+- **Unproven:** Producer acceptance remains outstanding: author a valid round in the editor and load it into a local room to inspect the slice 3a pairing panel. Do not rehearse against the configured production Supabase without Matthew's approval. No migration or deploy was performed.
+
+## 2026-10-01 — #42 review corrections
+- **Slice:** Missing engine/scoring blocks in recoverable battle drafts now expose the validator's section-level message and can be recreated through field edits. Prompt ID/text validator errors now appear beside their individual fields.
+- **Files:** `author.js`, `prompt-battle-editor.js`, `test/author-prompt-battle-editor.test.js`, and this work log.
+- **Commands and results:** focused authoring, guard and reliability tests (44/44); `node --check author.js`; `node --check prompt-battle-editor.js`; `git diff --check`; `env -i PATH="$PATH" CI=1 npm test` (607/607).
+- **Merge:** Integrated `origin/main` at `3c42f92b5ad29719cdf25027847648985f2253c6`; retained both work-log entries in the merge conflict.
+- **Unproven:** Producer acceptance and the local-room pairing-panel check remain with Matthew; no migration or deployment was performed.
+
 ## 2026-10-01 — Read-only progress view (issue #5)
 
 Branch: `claude/progress-view` (from `main` = `origin/main` at `3447913`, which contains the lifecycle wrapper). Model: Sonnet 5.5, effort `medium` (matches the `effort:medium` label). #5 was an Inbox placeholder; at Matthew's instruction ("yes to all") I wrote its contract, labeled it `model:standard`/`effort:medium`, set Backlog/Automated/Medium on the board, then `ready 5` and `claim 5` through the wrapper.
@@ -2052,3 +2067,29 @@ Full `npm test` passed 605/605, zero failures/skips; `git diff --check` passed.
 Publication, independent Sol and integrated main evidence follows in the PR. Shared API balance observed $18.41 then $18.39; billing lag/cent
 precision prevents assigning a final invoice cost to this setup. Codex allowance
 is separate. No production services, deployment or migration application.
+
+
+### 2026-10-01 — issue42 DeepSeek repair checkpoint (Sol orchestration)
+
+Preserved the historical Luna editor work on `codex/pb-editor-luna-42` and merged accepted main `c21efc60c882749fa5f487ead0a8e808f552e1ed` without conflicts. The stopped Luna claim was released with app-confirmed interrupted execution evidence; a genuine Sol coordinator now owns the ticket.
+
+DeepSeek Pro authored stable adjacent validator message nodes and input persistence without form remounts (`e633980a-c622-461a-9f6a-cc240914ae17`, `974054ea-615f-4cc5-b9d1-472db7fdf516`). Every field saves before blur and updates the shared validator and preview in place. Under Matthew's explicit Flash-trial instruction, DeepSeek Flash authored the scoped hidden-control change (`195af9cc-7fa5-45b8-8e6f-d31d4ad4ebff`, `7e125bd6-1cba-41d8-9f1c-4672d070441a`). Sol corrected its initial shared-row assumption: question and round controls share one row, so only Add question and its template select are hidden; round actions remain usable. All artifacts applied verbatim after whole-response/schema/path/unique-match validation. No OpenAI product implementation.
+
+Sol's isolated Chrome check used empty backend configuration, loopback serving and aborted all cross-origin requests. The baseline reproduced variants3->7 restoring3 on refresh and a lost first Add prompt click. Repaired source passes scratch-round validation, full-field save/reload, numeric persistence, first-click prompt addition, exact adjacent validator error updates while preserving focus, preview updates, question-control visibility, real round reorder/delete with neighboring drafts unchanged, and both fixture validation/import checks. No page errors. Existing editor normalization adds empty finale audio when opening question fixtures; that behavior predates this ticket and fixture file bytes remain unchanged. Focused existing editor/guard tests12/12 pass; full checks and independent published-commit review are recorded in the ticket, never inferred from this prose.
+
+The combined repair request `366f60fb-dfdb-4561-bfd2-6a52ce036231` exhausted16384 output tokens and was rejected without edits. Pro's shipped regression generation then exhausted the same budget twice (`fd490096-28a5-43f2-ae88-256defd51947`, `1e47e56a-928b-4e46-b93c-69adeca0b654`); no partial test was accepted. The step was blocked and unrelated issue16 work resumed. All failed calls remain in spending/evaluation evidence.
+
+Process lessons: make source transformations smaller than combined implementation/test design; preserve complete private failing evidence before dispatch; source regex tests can pass while browser input events lose drafts/clicks. Inspect the actual parent DOM before hiding a container. Retain same-element/focus checks and actual first-click/reload/reorder tests. High thinking can consume the entire output limit even on a small test packet; record a failed request and re-scope/reroute explicitly instead of applying truncated code or claiming tests passed.
+
+Outstanding: shipped numeric-input regression, separate Sol review of the published commit, authorized actual local-room pairing-panel rehearsal and Producer acceptance. This rehearsal uses production Supabase, and no production writes, provider-image calls, migrations or deployment occurred.
+
+
+### 2026-10-01 — output budget correction and issue42 regression
+
+The private dispatcher imposed `max_tokens:16384`, including reasoning and final answer. Current official completion docs support 393216 and document 65536 as the thinking default. Sol changed only the private orchestration runner to 65536, retaining deadline/USD/model/artifact guards and recording the cap in success/failure metadata. The portable DeepSeek guide now explains this budget, truncation rejection and controlled retry. Historical failed calls remain charged and preserved.
+
+The identical reduced regression prompt, Pro/high, completed with `stop`: request `de5edea2-9158-4892-91cd-3a8507d11455`, 905 prompt/14742 completion tokens (13791 reasoning), 97.3 seconds. It used less than the former cap, so this stochastic retry alone does not prove causation or general reliability. The returned test omitted the closing brace for its extracted function; one localized DeepSeek repair `b48c53e6-d2e8-46ef-98c4-57fa25f0afc6` completed with 292 prompt/1793 completion tokens (1733 reasoning), 14.7 seconds. Artifacts applied verbatim; Sol authored no test implementation.
+
+`test/author-battle-input.test.js` runs the actual source binding and shared helpers. On an archived genuine `ab7c7b8` baseline it fails specifically on the missing input listener; current source passes persistence before blur, exact invalid/valid marker feedback and zero remounts. Full `npm test`:613 passed, zero failures/skips; `node --check author.js` and `git diff --check` pass. Browser product source is unchanged from the preceding successful isolated Chrome checkpoint. Observed batch USD balance18.39->18.19 ($0.20, delayed cent-precision billing); Sol allowance is separate.
+
+The regression-generation blocker is resolved. Renewed independent Sol verification of the new published SHA, authorized real-room pairing-panel evidence and Producer acceptance remain required. No production calls, deployment, migration application, merge or completion.
