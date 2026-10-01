@@ -218,10 +218,17 @@ test("the guard modules are pure: no process, file or network access", () => {
   }
 });
 
-test("the install snippet is valid JSON, points at the hook script, and is not wired into .claude/settings.json", () => {
+test("the hook is installed in the tracked .claude/settings.json, matches the documented snippet, and works on any machine", () => {
   const snippet = JSON.parse(fs.readFileSync(new URL("docs/roadmap/claude-settings.guard.json", root), "utf8"));
-  const text = JSON.stringify(snippet);
-  assert.match(text, /pre-command-hook\.mjs/);
-  assert.ok(snippet.hooks.PreToolUse[0].matcher.includes("Bash"));
-  assert.equal(fs.existsSync(new URL(".claude/settings.json", root)), false, "the owner approves installation; the branch must not activate the hook");
+  const installed = JSON.parse(fs.readFileSync(new URL(".claude/settings.json", root), "utf8"));
+  assert.deepEqual(installed.hooks, snippet.hooks, "the snippet documents exactly what is installed");
+  const entry = installed.hooks.PreToolUse[0];
+  assert.ok(entry.matcher.includes("Bash") && entry.matcher.includes("PowerShell"));
+  const command = entry.hooks[0].command;
+  assert.match(command, /\$CLAUDE_PROJECT_DIR\/scripts\/guard\/pre-command-hook\.mjs/, "project-relative, not a path on one PC");
+  assert.ok(!/[A-Za-z]:[\\/]|\/Users\//.test(command), "no absolute local path in a tracked file");
+  const ignore = fs.readFileSync(new URL(".gitignore", root), "utf8");
+  assert.match(ignore, /^!\.claude\/settings\.json$/m, "the hook settings must be tracked");
+  assert.match(ignore, /^\.claude\/\*$/m, "other local Claude state stays ignored");
+  assert.equal(fs.existsSync(new URL(".claude/settings.local.json", root)), false, "no local-only duplicate of the hook is left behind");
 });

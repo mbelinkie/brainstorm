@@ -58,15 +58,19 @@ Be honest about these before relying on it:
 
 ## Installing
 
-Not installed by this change. The owner reviews `docs/roadmap/claude-settings.guard.json`
-and merges its `hooks` block into `.claude/settings.json` (project) or the user settings.
-To check it in the real runner from Windows PowerShell, run
-`powershell -ExecutionPolicy Bypass -File tools\guard-real-runner-check.ps1`; it builds a scratch
-repo, loads the hook for a headless run, and reports whether an uncommitted change survived a
-`git reset --hard` request (`-SkipClaude` tests the hook script alone, no login needed).
-Restart the Claude Code session afterwards; hooks load at session start. To check it
-worked, ask the session to run a refused command such as `git reset --hard` in a scratch
-repository: it should be denied with the rule named.
+Installed. `.claude/settings.json` (tracked; `.gitignore` ignores the rest of `.claude/`) loads the hook
+for every Claude Code session started from the repository, using `$CLAUDE_PROJECT_DIR` so it works on
+any machine. `docs/roadmap/claude-settings.guard.json` documents the same block, and a test keeps them
+identical. Hooks load at session start (they also reload when the file changes).
+
+- **Check it:** ask a session to run `git reset --hard HEAD` in a scratch repository; it should be denied
+  with the rule named. From Windows PowerShell, `tools\guard-real-runner-check.ps1` also tests the hook
+  script directly (`-SkipClaude`), and runs a headless check if Claude Code is logged in for it.
+- **A command was blocked that you really want:** run that one command yourself in a terminal, or tell
+  the session which rule is too strict so it can be adjusted (`scripts/guard/command-guard.mjs`).
+- **Turn it off:** remove the `hooks` block from `.claude/settings.json`, or set `"disableAllHooks": true`
+  in your own `.claude/settings.local.json` (git-ignored, this machine only).
+- **Not installed anywhere else:** other tools (Codex, a plain terminal) do not load this hook.
 
 ## Worktrees
 

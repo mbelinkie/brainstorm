@@ -1,5 +1,4 @@
 {
-  "_comment": "The hook installed in the tracked .claude/settings.json (issue #6). Kept here so the install is documented; a test keeps the two identical.",
   "hooks": {
     "PreToolUse": [
       {
