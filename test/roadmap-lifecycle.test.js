@@ -5,6 +5,7 @@ import { createGate } from "../scripts/roadmap/gate.mjs";
 import { createBudget } from "../scripts/roadmap/rate-limit.mjs";
 import { createLifecycle } from "../scripts/roadmap/lifecycle.mjs";
 import {
+  effectiveEffort,
   PLACEHOLDER_LINES,
   normalizeLine,
   evaluateRouting,
@@ -12,6 +13,7 @@ import {
   parseContract,
   parseDependencies,
   resolveExecutionId,
+  resolveOwnExecutionId,
 } from "../scripts/roadmap/lifecycle-core.mjs";
 
 // The lifecycle wrapper (issue #3) is exercised ONLY against a fake GitHub
@@ -185,7 +187,7 @@ const claimOpts = (extra = {}) => ({
   executionId: SELF,
   branch: "claude/lifecycle-wrapper-1",
   startCommit: BASE_OID,
-  model: "claude-sonnet-5-5",
+  model: "deepseek-v4-pro",
   effort: "high",
   worktree: "../quiz-lifecycle",
   ...extra,
@@ -218,10 +220,11 @@ test("the config routing block mirrors docs/roadmap/routing.md", () => {
     assert.ok(md.includes(`\`model:${name}\``), `routing.md names model:${name}`);
     assert.ok(md.includes(profile.modelId), `routing.md names ${profile.modelId}`);
   }
-  assert.ok(!md.includes("model:advanced") || /no\*\* `model:advanced`/.test(md), "no advanced profile exists");
+  assert.ok(!md.includes("model:advanced"), "no advanced profile exists");
   for (const effort of config.routing.efforts) assert.ok(md.includes(`\`effort:${effort}\``));
-  assert.ok(md.includes(`\`${config.routing.escalation.label}\``));
-  assert.equal(config.routing.escalation.changesModelLabel, false);
+  for (const [logical, effective] of Object.entries(config.routing.effectiveEfforts)) {
+    assert.ok(md.includes(`| \`${logical}\` | \`${effective}\` |`), `routing.md maps ${logical} -> ${effective}`);
+  }
   assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["economy", "standard"]);
 });
 
@@ -276,10 +279,17 @@ test("evaluateRouting enforces exactly one model, one effort and a supported pai
   assert.deepEqual(codes(["model:standard", "effort:low", "effort:high"]), ["EFFORT_LABEL_COUNT"]);
   assert.deepEqual(codes(["model:advanced", "effort:low"]), ["MODEL_LABEL_UNKNOWN"]);
   assert.deepEqual(codes(["model:standard", "effort:extreme"]), ["EFFORT_LABEL_UNKNOWN"]);
-  assert.deepEqual(codes(["model:economy", "effort:high"]), ["ROUTING_UNSUPPORTED"]);
-  // escalation:opus is history; it never changes or replaces the model label
+  assert.deepEqual(codes(["model:economy", "effort:high"]), [], "both profiles support every logical effort");
+  // escalation:opus is retired history; it never changes or replaces the model label
   assert.deepEqual(codes(["model:standard", "effort:high", "escalation:opus"]), []);
   assert.deepEqual(codes(["escalation:opus", "effort:high"]), ["MODEL_LABEL_COUNT"]);
+});
+
+test("effectiveEffort maps logical medium/high to the runner's high, low stays low", () => {
+  assert.equal(effectiveEffort("low", config.routing), "low");
+  assert.equal(effectiveEffort("medium", config.routing), "high");
+  assert.equal(effectiveEffort("high", config.routing), "high");
+  assert.equal(effectiveEffort("extreme", config.routing), null);
 });
 
 test("parseClaims reads the claims already on #12 and #4, and ends a claim on a complete marker", () => {
@@ -312,6 +322,30 @@ test("resolveExecutionId accepts only an explicit id that matches this run's own
   assert.equal(code({ flag: "not-a-uuid", env: { CLAUDE_CODE_SESSION_ID: "not-a-uuid" } }), "EXECUTION_ID_INVALID");
   assert.equal(code({ flag: SELF, env: { CLAUDE_CODE_SESSION_ID: SELF, CLAUDE_CODE_PARENT_SESSION_ID: SELF } }), "EXECUTION_ID_INHERITED");
   assert.equal(code({ flag: SELF, env: { CLAUDE_CODE_SESSION_ID: SELF, CLAUDE_CODE_PARENT_SESSION_ID: PARENT } }), undefined, "a different parent id is fine");
+});
+
+test("resolveOwnExecutionId accepts a genuine Codex thread id and validates a matching session id", () => {
+  assert.deepEqual(resolveOwnExecutionId({ CODEX_THREAD_ID: SELF }), { ok: true, executionId: SELF });
+  assert.deepEqual(resolveOwnExecutionId({ CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: SELF }), { ok: true, executionId: SELF });
+  assert.deepEqual(resolveOwnExecutionId({ CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: SELF, CLAUDE_CODE_SESSION_ID: SELF }), { ok: true, executionId: SELF });
+  assert.deepEqual(resolveOwnExecutionId({ CLAUDE_CODE_SESSION_ID: SELF }), { ok: true, executionId: SELF });
+});
+
+test("conflicting or ambiguous Codex environments fail closed", () => {
+  const code = (env) => resolveOwnExecutionId(env).code;
+  assert.equal(code({}), "EXECUTION_ID_MISSING");
+  assert.equal(code({ CODEX_SESSION_ID: SELF }), "EXECUTION_ID_AMBIGUOUS", "a session id without the thread id cannot be validated");
+  assert.equal(code({ CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: OTHER }), "EXECUTION_ID_AMBIGUOUS", "session != thread");
+  assert.equal(code({ CODEX_THREAD_ID: SELF, CLAUDE_CODE_SESSION_ID: OTHER }), "EXECUTION_ID_AMBIGUOUS", "a legacy Claude id that disagrees with Codex");
+  assert.equal(code({ CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: SELF, CLAUDE_CODE_SESSION_ID: OTHER }), "EXECUTION_ID_AMBIGUOUS");
+});
+
+test("resolveExecutionId honours the Codex thread id and refuses a mismatched explicit id", () => {
+  const env = { CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: SELF };
+  assert.deepEqual(resolveExecutionId({ flag: SELF, env }), { ok: true, executionId: SELF });
+  assert.equal(resolveExecutionId({ flag: OTHER, env }).code, "EXECUTION_ID_CONFLICT");
+  assert.equal(resolveExecutionId({ flag: SELF, env: { CODEX_THREAD_ID: SELF, CODEX_SESSION_ID: OTHER } }).code, "EXECUTION_ID_AMBIGUOUS");
+  assert.equal(resolveExecutionId({ flag: SELF, env: { CODEX_THREAD_ID: SELF, CLAUDE_CODE_PARENT_SESSION_ID: SELF } }).code, "EXECUTION_ID_INHERITED");
 });
 
 // ---- inspect --------------------------------------------------------------
@@ -397,8 +431,17 @@ test("ready refuses zero effort labels", () =>
 test("ready refuses two effort labels", () =>
   readyRefused((w) => { w.issues[3].labels = ["model:standard", "effort:low", "effort:high"]; }, ["EFFORT_LABEL_COUNT"]));
 
-test("ready refuses an unsupported model/effort pairing", () =>
-  readyRefused((w) => { w.issues[3].labels = ["model:economy", "effort:high"]; }, ["ROUTING_UNSUPPORTED"]));
+test("ready accepts economy plus a high logical effort (runner maps it to high)", async () => {
+  const world = makeWorld();
+  world.issues[3].labels = ["model:economy", "effort:high"];
+  world.issues[3].items[0].status = "Backlog";
+  const { lifecycle, transport } = setup({ world });
+  const result = await lifecycle.ready(3);
+  assert.equal(result.ok, true);
+  assert.equal(result.changed, true);
+  assert.equal(world.issues[3].items[0].status, "Ready");
+  assert.equal(transport.mutations().length, 1);
+});
 
 test("ready refuses two acceptance classes and an acceptance field that disagrees with the body", async () => {
   await readyRefused((w) => { w.issues[3].body = contractBody({ acceptance: "Automated | External" }); }, ["ACCEPTANCE_CLASS"]);
@@ -689,8 +732,8 @@ test("claim fails closed when the claim history is incomplete", async () => {
 
 test("claim refuses a model or effort that does not match the issue's labels unless the mismatch is justified", async () => {
   const cases = [
-    [{ model: "claude-haiku-4-5-20251001" }, "ROUTING_MISMATCH"],
-    [{ model: "claude-opus-5-5" }, "ROUTING_MISMATCH"],
+    [{ model: "deepseek-flash" }, "ROUTING_MISMATCH"],
+    [{ model: "gpt-6.1-sol" }, "ROUTING_MISMATCH"],
     [{ effort: "medium" }, "ROUTING_MISMATCH"],
   ];
   for (const [extra, code] of cases) {
@@ -707,10 +750,6 @@ test("claim refuses a model or effort that does not match the issue's labels unl
   assert.match(body, /effort `medium`/);
   assert.match(body, /Routing mismatch accepted: session effort cannot be raised/);
   assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
-  const opus = setup({ world: readyWorld() });
-  const refusedOpus = await opus.lifecycle.claim(3, claimOpts({ model: "claude-opus-5-5", allowMismatch: "just because" }));
-  assert.equal(refusedOpus.code, "ROUTING_MISMATCH", "Opus is never allowed through a mismatch override without escalation:opus");
-  assertNoWrites(opus.transport);
 });
 
 // ---- claim: success, idempotency, partial writes --------------------------
@@ -724,7 +763,7 @@ test("claim posts the marked comment, then sets In progress, under a single lock
   const [comment] = world.issues[3].comments;
   assert.ok(comment.body.startsWith("<!-- claim:v1 issue=3 -->\n"), "exact marker on the first line");
   for (const needle of [
-    "mbelinkie/brainstorm #3", SELF, "claude/lifecycle-wrapper-1", BASE_OID, "claude-sonnet-5-5", "`effort:high`", "../quiz-lifecycle", "Owner: mbelinkie",
+    "mbelinkie/brainstorm #3", SELF, "claude/lifecycle-wrapper-1", BASE_OID, "deepseek-v4-pro", "`effort:high`", "effective `high`", "../quiz-lifecycle", "Owner: mbelinkie",
   ]) assert.ok(comment.body.includes(needle), `claim comment should contain ${needle}`);
   assert.equal(world.issues[3].items[0].status, "In progress");
   assert.equal(transport.mutations()[1].variables.option, STATUS_OPTIONS["In progress"]);
@@ -745,6 +784,23 @@ test("a repeat claim by the same execution reconciles instead of posting a secon
   assert.equal(again.alreadyClaimed, true);
   assertNoWrites(second.transport);
   assert.equal(world.issues[3].comments.length, 1);
+});
+
+test("claim records the effective effort separately and refuses a wrong effective effort", async () => {
+  const world = readyWorld();
+  world.issues[3].labels = ["model:standard", "effort:medium"];
+  const { lifecycle, transport } = setup({ world });
+  const ok = await lifecycle.claim(3, claimOpts({ effort: "medium" }));
+  assert.equal(ok.ok, true);
+  assert.match(world.issues[3].comments[0].body, /effort `medium` \(effective `high`\)/);
+  assert.equal(transport.mutationNames().length, 2);
+
+  const w2 = readyWorld();
+  w2.issues[3].labels = ["model:standard", "effort:medium"];
+  const b = setup({ world: w2 });
+  const refused = await b.lifecycle.claim(3, claimOpts({ effort: "medium", effectiveEffort: "low" }));
+  assert.equal(refused.code, "EFFECTIVE_EFFORT_MISMATCH");
+  assertNoWrites(b.transport);
 });
 
 test("partial write: claim comment posted but the status write failed; a re-run finishes the status and posts no second comment", async () => {
@@ -842,7 +898,7 @@ test("block refuses a routing change without the full written justification, bef
   for (const missing of Object.keys(full)) {
     const justification = { ...full, [missing]: "" };
     const { lifecycle, transport } = setup({ world: readyWorld() });
-    const result = await lifecycle.block(3, { cause: "stuck", needs: "a decision", routingChange: "escalation:opus", approvedBy: "mbelinkie", justification });
+    const result = await lifecycle.block(3, { cause: "stuck", needs: "a decision", routingChange: "effort:medium", justification });
     assert.equal(result.code, "ROUTING_JUSTIFICATION_REQUIRED", missing);
     assert.equal(transport.calls.length, 0, missing);
   }
@@ -851,24 +907,24 @@ test("block refuses a routing change without the full written justification, bef
   assert.equal(noJustification.transport.calls.length, 0);
 });
 
-test("block rejects a routing change to something the policy does not define, and Opus without the owner's go-ahead", async () => {
+test("block rejects a routing change to something the policy does not define (including retired escalation:opus)", async () => {
   const justification = { attemptedChecks: "a", failure: "b", remainingRisk: "c", nextScope: "d" };
   const unknown = setup({ world: readyWorld() });
   assert.equal((await unknown.lifecycle.block(3, { cause: "x", needs: "y", routingChange: "model:advanced", justification })).code, "ROUTING_CHANGE_UNKNOWN");
   assert.equal(unknown.transport.calls.length, 0);
-  const noApproval = setup({ world: readyWorld() });
-  assert.equal((await noApproval.lifecycle.block(3, { cause: "x", needs: "y", routingChange: "escalation:opus", justification })).code, "ESCALATION_APPROVAL_REQUIRED");
-  assert.equal(noApproval.transport.calls.length, 0);
+  const opus = setup({ world: readyWorld() });
+  assert.equal((await opus.lifecycle.block(3, { cause: "x", needs: "y", routingChange: "escalation:opus", justification })).code, "ROUTING_CHANGE_UNKNOWN");
+  assert.equal(opus.transport.calls.length, 0);
 });
 
 test("block records a justified routing proposal in the comment but never edits labels", async () => {
   const world = readyWorld();
   const { lifecycle, transport } = setup({ world });
   const justification = { attemptedChecks: "two attempts at the partial-write test", failure: "status replay posts a second comment", remainingRisk: "duplicate claims", nextScope: "the reconcile branch only" };
-  const result = await lifecycle.block(3, { cause: "partial-write test red", needs: "go-ahead to escalate", routingChange: "escalation:opus", approvedBy: "mbelinkie", justification });
+  const result = await lifecycle.block(3, { cause: "partial-write test red", needs: "a cheaper model for this slice", routingChange: "model:economy", justification });
   assert.equal(result.ok, true);
   const body = world.issues[3].comments[0].body;
-  for (const needle of ["Routing change proposed: `escalation:opus`", "two attempts at the partial-write test", "status replay posts a second comment", "duplicate claims", "the reconcile branch only", "Owner go-ahead: mbelinkie"]) {
+  for (const needle of ["Routing change proposed: `model:economy`", "two attempts at the partial-write test", "status replay posts a second comment", "duplicate claims", "the reconcile branch only"]) {
     assert.ok(body.includes(needle), needle);
   }
   assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);

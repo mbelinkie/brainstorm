@@ -20,9 +20,9 @@ import {
   renderReviewComment,
   renderVerifyComment,
   resolveExecutionId,
+  resolveOwnExecutionId,
   sameCommit,
   staleReport,
-  SESSION_ID_ENV,
 } from "./lifecycle-core.mjs";
 
 const CLOSE_ISSUE = `mutation LifecycleCloseIssue($id: ID!) {
@@ -282,7 +282,8 @@ export function createFinish({ gate, config, env, now, thisRepo, trusted, evalua
     }
     const stopped = text(opts.stoppedExecution).toLowerCase();
     if (!UUID.test(stopped)) return refuse("EXECUTION_ID_INVALID", "--stopped-execution must be the stopped run's UUID");
-    if (stopped === String(env[SESSION_ID_ENV] ?? "").trim().toLowerCase()) {
+    const own = resolveOwnExecutionId(env);
+    if (own.ok && own.executionId === stopped) {
       return refuse("SELF_RELEASE", "this run is evidently still running; it cannot release its own claim as stopped");
     }
 

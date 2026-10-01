@@ -76,17 +76,13 @@
   },
   "crossRepoPrerequisites": [],
   "routing": {
-    "_comment": "Machine-readable mirror of docs/roadmap/routing.md (issue #3). Change the policy there first.",
+    "_comment": "Machine-readable mirror of docs/roadmap/routing.md (issue #3). Model IDs are Codex DeepSeek provider IDs; efforts are logical labels mapped to the runner's effective effort below.",
     "profiles": {
-      "economy": { "model": "Haiku 4.5", "modelId": "claude-haiku-4-5-20251001", "efforts": ["low", "medium"] },
-      "standard": { "model": "Sonnet 5.5", "modelId": "claude-sonnet-5-5", "efforts": ["low", "medium", "high"], "ceiling": true }
+      "economy": { "model": "DeepSeek Flash", "modelId": "deepseek-flash", "efforts": ["low", "medium", "high"] },
+      "standard": { "model": "DeepSeek V4 Pro", "modelId": "deepseek-v4-pro", "efforts": ["low", "medium", "high"] }
     },
     "efforts": ["low", "medium", "high"],
-    "acceptanceClasses": ["Automated", "External", "Producer"],
-    "escalation": {
-      "label": "escalation:opus",
-      "changesModelLabel": false,
-      "requiredRecord": ["attempted checks and results", "failure or remaining risk", "smallest next scope", "owner go-ahead"]
-    }
+    "effectiveEfforts": { "low": "low", "medium": "high", "high": "high" },
+    "acceptanceClasses": ["Automated", "External", "Producer"]
   }
 }

@@ -62,8 +62,12 @@ routing, dependency and claim parsing); `lifecycle.mjs` does the reads and write
 always inside `gate.session()` so one lock covers the re-check and the writes.
 
 - `inspect` never writes. `ready --dry-run` verifies and reports without writing.
-- `claim` needs `--execution-id`, which must equal the runner's own
-  `CLAUDE_CODE_SESSION_ID` and must not equal a parent-session variable.
+- `claim` needs `--execution-id`, which must equal the runner's own identity: the
+  Codex runner's `CODEX_THREAD_ID` (its `CODEX_SESSION_ID` only counts when it
+  equals the thread id), or the legacy `CLAUDE_CODE_SESSION_ID` when no Codex id
+  is set. A conflicting or ambiguous environment is refused. `--effort` is the
+  logical label; `--effective-effort` records the runner's real effort (`medium`
+  and `high` both run as `high`).
 - Only the repository owner's `complete:v1`/`release:v1` comments end a claim or
   count as a prerequisite's acceptance record; anyone's `claim:v1` counts as live.
 - `block` records a routing change as a proposal; the owner edits the labels.

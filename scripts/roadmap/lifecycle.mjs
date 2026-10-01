@@ -15,6 +15,7 @@ import { createGate } from "./gate.mjs";
 import { createGhTransport } from "./github-transport.mjs";
 import { createFinish } from "./lifecycle-finish.mjs";
 import {
+  effectiveEffort,
   evaluateRouting,
   isRepoName,
   hasCompletionRecord,
@@ -298,13 +299,18 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
     }
     if (typeof opts.model !== "string" || !opts.model.trim()) return refuse("MODEL_MISSING", "state the exact model id this run is using");
     if (!config.routing.efforts.includes(opts.effort)) return refuse("EFFORT_INVALID", `effort must be one of ${config.routing.efforts.join(", ")}`);
+    const effective = effectiveEffort(opts.effort, config.routing);
+    if (!effective) return refuse("EFFORT_INVALID", `effort:${opts.effort} has no runner effective effort defined`);
+    if (opts.effectiveEffort !== undefined && String(opts.effectiveEffort).trim() !== effective) {
+      return refuse("EFFECTIVE_EFFORT_MISMATCH", `the runner's effective effort for effort:${opts.effort} is ${effective}, not ${opts.effectiveEffort}; record the real effective effort`);
+    }
     const worktree = (opts.worktree ?? "").trim() || "not recorded";
     if (/^(?:[A-Za-z]:[\\/]|[\\/]|~)/.test(worktree)) {
       return refuse("WORKTREE_PATH_PRIVATE", "this repository is public; name the worktree (for example ../quiz-name), do not give an absolute local path");
     }
     return {
       ok: true, executionId: id.executionId, branch: opts.branch.trim(), startCommit: opts.startCommit.trim().toLowerCase(),
-      model: opts.model.trim(), effort: opts.effort, worktree, owner: (opts.owner ?? repoOwner).trim(), allowMismatch: (opts.allowMismatch ?? "").trim(),
+      model: opts.model.trim(), effort: opts.effort, effectiveEffort: effective, worktree, owner: (opts.owner ?? repoOwner).trim(), allowMismatch: (opts.allowMismatch ?? "").trim(),
     };
   }
 
@@ -350,15 +356,12 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
       }
 
       const mismatches = routingMismatch(facts, snap);
-      if (/opus/i.test(facts.model) && !snap.routing.escalation) {
-        return refuse("ROUTING_MISMATCH", "Opus may only be used on an issue carrying the escalation:opus label; Sonnet 5.5 is the ceiling", { mismatches });
-      }
       if (mismatches.length > 0 && !facts.allowMismatch) {
         return refuse("ROUTING_MISMATCH", `this run does not match the issue's routing: ${mismatches.join("; ")}. Fix the run, or pass --allow-mismatch with a written reason`, { mismatches });
       }
 
       const body = renderClaimComment({
-        repo: thisRepo, number, executionId: facts.executionId, owner: facts.owner, model: facts.model, effort: facts.effort,
+        repo: thisRepo, number, executionId: facts.executionId, owner: facts.owner, model: facts.model, effort: facts.effort, effectiveEffort: facts.effectiveEffort,
         labels: { model: `model:${snap.routing.profile}`, effort: `effort:${snap.routing.effort}` },
         startCommit: facts.startCommit, branch: facts.branch, worktree: facts.worktree,
         mismatch: mismatches.length > 0 ? `${facts.allowMismatch} (${mismatches.join("; ")})` : "",
@@ -388,7 +391,6 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
       const known = [
         ...Object.keys(config.routing.profiles).map((p) => `model:${p}`),
         ...config.routing.efforts.map((e) => `effort:${e}`),
-        config.routing.escalation.label,
       ];
       if (!known.includes(change)) return refuse("ROUTING_CHANGE_UNKNOWN", `${change} is not defined by the routing policy (${known.join(", ")})`);
       const j = opts.justification ?? {};
@@ -396,13 +398,10 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
       if (missing.length > 0) {
         return refuse("ROUTING_JUSTIFICATION_REQUIRED", `a routing change needs a written justification; missing: ${missing.join(", ")}`, { missing });
       }
-      if (change === config.routing.escalation.label && !text(opts.approvedBy)) {
-        return refuse("ESCALATION_APPROVAL_REQUIRED", "escalation:opus needs the owner's recorded go-ahead (--approved-by)");
-      }
     }
     return {
       ok: true, cause: text(opts.cause), needs: text(opts.needs), executionId, routingChange: change || null,
-      justification: opts.justification ?? null, approvedBy: text(opts.approvedBy) || null,
+      justification: opts.justification ?? null,
     };
   }
 
@@ -450,9 +449,12 @@ Operations
   claim <n>     under one lock: re-check Ready, refuse another live claim, post the
                 claim:v1 comment, set In progress
                   --execution-id <id>   this run's own id (required; must equal the
-                                        runner's own CLAUDE_CODE_SESSION_ID)
+                                        runner's own CODEX_THREAD_ID, or the legacy
+                                        CLAUDE_CODE_SESSION_ID when no Codex id is set)
                   --branch <name> --start-commit <sha> --model <id>
                   --effort <low|medium|high>   (default: CLAUDE_EFFORT)
+                  --effective-effort <low|high>  the runner's real effort; validated
+                                        against the mapping and recorded separately
                   --worktree <name>   a name such as ../quiz-x, never an absolute path
                   --allow-mismatch <reason>   record a run that differs from the labels
   review <n>    claim holder records the tested commit, commands, exclusions and
@@ -471,9 +473,8 @@ Operations
   block <n>     post a block:v1 comment and set Blocked; scope and priority untouched
                   --cause <text> --needs <text>
                   --routing-change <label> with --attempted-checks --failure
-                    --remaining-risk --next-scope (all required); escalation:opus also
-                    needs --approved-by. The wrapper records the proposal; the owner
-                    changes labels.
+                    --remaining-risk --next-scope (all required). The wrapper records
+                    the proposal; the owner changes labels.
 
 Exit codes: 0 done, 1 refused (the code and reason are printed), 2 bad usage.
 
@@ -562,7 +563,7 @@ export async function runCli(argv, { lifecycle, env = process.env, out = (s) => 
   else if (op === "claim") {
     result = await lifecycle.claim(number, {
       executionId: flags["execution-id"], branch: flags.branch, startCommit: flags["start-commit"], model: flags.model,
-      effort, worktree: flags.worktree, owner: flags.owner, allowMismatch: flags["allow-mismatch"],
+      effort, effectiveEffort: flags["effective-effort"], worktree: flags.worktree, owner: flags.owner, allowMismatch: flags["allow-mismatch"],
     });
   } else if (op === "review") {
     result = await lifecycle.review(number, {
@@ -580,7 +581,6 @@ export async function runCli(argv, { lifecycle, env = process.env, out = (s) => 
   } else {
     result = await lifecycle.block(number, {
       cause: flags.cause, needs: flags.needs, executionId: flags["execution-id"], routingChange: flags["routing-change"],
-      approvedBy: flags["approved-by"],
       justification: { attemptedChecks: flags["attempted-checks"], failure: flags.failure, remainingRisk: flags["remaining-risk"], nextScope: flags["next-scope"] },
     });
   }

@@ -369,7 +369,7 @@ test("claim age is reported but is never evidence that the execution stopped", a
   assert.ok(report.liveClaim.ageHours > 1000);
   noWrites(transport);
   const takeover = setup({ world, env: { CLAUDE_CODE_SESSION_ID: VERIFIER } });
-  assert.equal((await takeover.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "claude-sonnet-5-5", effort: "high" })).code, "CLAIM_HELD");
+  assert.equal((await takeover.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "deepseek-v4-pro", effort: "high" })).code, "CLAIM_HELD");
   noWrites(takeover.transport);
 });
 
@@ -412,7 +412,7 @@ test("release records the confirmation, ends the claim, and returns the issue to
   assert.equal(statusOf(world), "Ready");
   assert.equal(parseClaims(world.issues[3].comments, 3, { endAuthors: ["mbelinkie"] }).live, null);
   const next = setup({ world, env: { CLAUDE_CODE_SESSION_ID: VERIFIER } });
-  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "claude-sonnet-5-5", effort: "high" });
+  const claimed = await next.lifecycle.claim(3, { executionId: VERIFIER, branch: "claude/x", startCommit: COMMIT, model: "deepseek-v4-pro", effort: "high" });
   assert.equal(claimed.ok, true);
 });
 

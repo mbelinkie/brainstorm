@@ -20,6 +20,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 - `scripts/roadmap/probe.mjs`: read-only budget diagnostic.
 - `scripts/roadmap/lifecycle.mjs` (+ `lifecycle-core.mjs`, pure): inspect, ready, claim, block (#3). Uses `gate.session()` only.
 - `scripts/roadmap/lifecycle-finish.mjs`: review, verify, complete, stale, release (#45). Uses `gate.session()` and `ops.rest` only.
+- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): the DeepSeek batch dispatcher (#51). Uses `gate.read` for the project scan and `gate.rest` for PR lookup/creation and merge; it never starts `gh`. It spawns `git`, `npm` and `codex` (allowed under `tools/`, which the bypass check does not scan), which is the git transport plus the provider, not the GitHub API.
 - Future: the progress view (#5).
 
 ## Not covered, and why

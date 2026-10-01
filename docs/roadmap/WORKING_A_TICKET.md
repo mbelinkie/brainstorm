@@ -1,6 +1,6 @@
 # Working a ticket: instructions for a new machine
 
-For anyone (a person, or a Claude Code session) picking up work on the Brainstorm
+For anyone (a person, or a Codex DeepSeek session) picking up work on the Brainstorm
 quiz platform from a machine that has access to `mbelinkie/brainstorm`. It covers
 finding a ticket you may work, claiming it, doing the work, reporting it, and
 stopping at the right place.
@@ -32,10 +32,12 @@ format it can read back.
 6. **Public repo.** No tokens, passwords, `.env.local` contents, private
    recordings, personal data or absolute local paths in issues, comments, commits
    or logs.
-7. **Sonnet 5.5 is the model ceiling.** `model:standard` means Sonnet 5.5,
-   `model:economy` means Haiku 4.5 (efforts low or medium only). Opus is used only
-   on one issue, only after Sonnet has failed, only with the `escalation:opus`
-   label and Matthew's recorded go-ahead (`docs/roadmap/routing.md`).
+7. **Routing is DeepSeek.** `model:standard` means DeepSeek V4 Pro
+   (`deepseek-v4-pro`), `model:economy` means DeepSeek Flash (`deepseek-flash`).
+   Effort labels stay `low`/`medium`/`high`, but the runner runs `medium` and
+   `high` both at effective effort `high`; the claim records the effective effort
+   separately so a `medium` ticket is not misread. There is no active Opus
+   escalation (`docs/roadmap/routing.md`).
 8. **The wrapper does not replace judgment.** If it refuses, read the reason. Do
    not work around a refusal; fix its cause or ask.
 
@@ -131,14 +133,14 @@ records the branch, the starting commit and the worktree.
 ```bash
 git fetch origin
 git worktree list                        # confirm you are not about to use someone's checkout
-git worktree add ../quiz-<short-name> -b claude/<short-name> origin/main
+git worktree add ../quiz-<short-name> -b codex/<short-name> origin/main
 cd ../quiz-<short-name>
 npm ci                                   # every worktree gets its own install
 git status --short --branch              # report this; it should be clean
 git stash list                           # should be empty
 ```
 
-- Use `claude/<short-name>` for Claude sessions; people may use their own prefix.
+- Use `codex/<short-name>` for Codex sessions; people may use their own prefix.
 - Start from `main` unless the issue's **Starting baseline** says otherwise.
 - Never share `node_modules` between worktrees. Never start in a checkout that
   another session is using.
@@ -151,27 +153,30 @@ the ticket is still Ready, refuses if someone else holds a live claim, posts the
 
 ```bash
 node scripts/roadmap/lifecycle.mjs claim N \
-  --execution-id "$CLAUDE_CODE_SESSION_ID" \
-  --branch claude/<short-name> \
+  --execution-id "$CODEX_THREAD_ID" \
+  --branch codex/<short-name> \
   --start-commit "$(git rev-parse --short origin/main)" \
-  --model claude-sonnet-5-5 \
+  --model deepseek-v4-pro \
   --effort high \
+  --effective-effort high \
   --worktree ../quiz-<short-name>
 ```
 
 - **The execution ID must be this run's own.** It has to equal the runner's
-  `CLAUDE_CODE_SESSION_ID` (a UUID), and it must not equal a parent-session ID.
-  Claude Code sets `CLAUDE_CODE_SESSION_ID` and `CLAUDE_EFFORT` automatically.
-  It is never guessed.
+  `CODEX_THREAD_ID` (a UUID; its `CODEX_SESSION_ID` only counts when it equals the
+  thread id), or the legacy `CLAUDE_CODE_SESSION_ID` when no Codex id is set. It
+  must not equal a parent-session ID. A conflicting or ambiguous environment is
+  refused. It is never guessed, and the orchestrator never forges it for a worker.
 - **A person at a plain terminal has no such variable**, and the claim is refused:
-  `REFUSED EXECUTION_ID_MISSING: CLAUDE_CODE_SESSION_ID is not set`. The simplest
-  supported route is to do the work through a Claude Code session. Ask Matthew
-  before setting the variable by hand: it would satisfy the check, but it is
-  self-asserted.
+  `REFUSED EXECUTION_ID_MISSING: no CODEX_THREAD_ID or CLAUDE_CODE_SESSION_ID is
+  set`. The supported route is to do the work through a Codex session (DeepSeek
+  profile). Ask Matthew before setting the variable by hand: it would satisfy the
+  check, but it is self-asserted.
 - **The run must match the labels.** `--model` must be the ID of the issue's
-  `model:` profile (`model:standard` = `claude-sonnet-5-5`, `model:economy` =
-  `claude-haiku-4-5-20251001`) and `--effort` its `effort:` level, or you get
-  `ROUTING_MISMATCH`. Opus is refused unless the issue carries `escalation:opus`.
+  `model:` profile (`model:standard` = `deepseek-v4-pro`, `model:economy` =
+  `deepseek-flash`) and `--effort` its `effort:` level, or you get
+  `ROUTING_MISMATCH`. `--effective-effort` states the runner's real effort
+  (`medium` and `high` run as `high`); it is validated and recorded separately.
   `--allow-mismatch "<reason>"` records a deliberate difference; ask first.
 - `--worktree` takes a name like `../quiz-x`, **never an absolute path** (the
   repo is public).
@@ -196,9 +201,9 @@ unused branch, and tell Matthew. Do not try to override it.
 - **Stage explicit paths only.** Never `git add -A` or `git add .`. Check
   `git show --stat HEAD` after every commit.
 - **Commits:** small and single-purpose with a `feat:` / `fix:` / `chore:` /
-  `docs:` prefix. For Claude sessions, end the body with
-  `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (use the model you
-  actually ran).
+  `docs:` prefix. Identify the model that did the work (for example
+  `Model: DeepSeek V4 Pro (deepseek-v4-pro)`); never attribute work to Claude you
+  did not run through Claude.
 - **Work log:** append an entry to `docs/CLAUDE_WORKLOG.md` for every session:
   date, branch, files touched, the slice, the commands you really ran, and what
   remains unproven. Add a `CHANGELOG.md` line only for completed, user-visible,
@@ -212,9 +217,9 @@ unused branch, and tell Matthew. Do not try to override it.
   Matthew assigned. Never edit or renumber an applied migration. Do not apply it
   yourself.
 - **Stuck?** After **two** evidence-based attempts without progress, stop. Write
-  down the confirmed facts and a focused reproduction and ask. If Sonnet cannot
+  down the confirmed facts and a focused reproduction and ask. If DeepSeek cannot
   get a required check green, record the failing checks and the smallest next
-  scope and ask Matthew about a bounded Opus escalation.
+  scope and ask Matthew; there is no Opus escalation in the current workflow.
 
 ### Product rules that must not regress
 
@@ -234,9 +239,10 @@ node scripts/roadmap/lifecycle.mjs block N \
 ```
 
 This posts a `block:v1` comment and sets Blocked. Scope and priority stay
-untouched. To propose a routing change (for example an Opus escalation) add
+untouched. To propose a routing change (for example moving to a cheaper model)
+add
 `--routing-change <label> --attempted-checks ... --failure ... --remaining-risk ...
---next-scope ...` (all required; `escalation:opus` also needs `--approved-by`).
+--next-scope ...` (all required).
 The wrapper only records the proposal; **the owner changes the labels.**
 
 Found a new problem? File a new issue (search open **and closed** issues for
@@ -244,17 +250,17 @@ duplicates first) rather than widening this one.
 
 ### Ready for review
 
-Commit, run `npm test`, push your branch (a person pushes as normal; a Claude
+Commit, run `npm test`, push your branch (a person pushes as normal; a Codex
 session pushes only when asked), then:
 
 ```bash
 node scripts/roadmap/lifecycle.mjs review N \
-  --execution-id "$CLAUDE_CODE_SESSION_ID" \
+  --execution-id "$CODEX_THREAD_ID" \
   --commit "$(git rev-parse HEAD)" \
   --commands "npm test: <N> pass, 0 fail; <other commands you ran>" \
   --exclusions "what you deliberately did not do" \
   --outstanding "the acceptance steps still waiting on someone" \
-  --branch claude/<short-name>
+  --branch codex/<short-name>
 ```
 
 Only the execution holding the live claim can record a review. An **External**
@@ -265,12 +271,12 @@ issue, do not mark it Done, and do not merge.
 ### Independent check (Automated issues)
 
 An Automated issue is not accepted on the implementer's own report. A **different**
-execution (its own `CLAUDE_CODE_SESSION_ID`) re-runs the checks on the tested
+execution (its own `CODEX_THREAD_ID`) re-runs the checks on the tested
 commit and records it:
 
 ```bash
 node scripts/roadmap/lifecycle.mjs verify N \
-  --execution-id "$CLAUDE_CODE_SESSION_ID" --commit <tested-sha> \
+  --execution-id "$CODEX_THREAD_ID" --commit <tested-sha> \
   --checks "what you ran and what you saw"
 ```
 
@@ -344,7 +350,7 @@ dropping the other side's entries. Delete merged branches with `git branch -d`
 - **Exit codes:** `0` done, `1` refused (the code and reason are printed), `2` bad
   usage. Add `--json` for machine-readable output.
 
-## 9. Starter prompt for a Claude Code session
+## 9. Starter prompt for a Codex DeepSeek session
 
 Launch it from the repository (or worktree) root so `CLAUDE.md` loads.
 
@@ -354,10 +360,10 @@ mbelinkie/brainstorm exactly as docs/roadmap/WORKING_A_TICKET.md describes: read
 CLAUDE.md, the playbook and that file first; run `node scripts/roadmap/lifecycle.mjs
 inspect <N>` and `ready <N> --dry-run` and report the result; create your own
 worktree and branch from origin/main; claim with `lifecycle.mjs claim` (your own
-CLAUDE_CODE_SESSION_ID; model and effort must match the labels); work test-first
+CODEX_THREAD_ID; model and effort must match the labels); work test-first
 inside the issue's scope; log your work; record `lifecycle.mjs review` with real
 evidence; and STOP at In review. Never merge, close, run `complete`, deploy, push
-to main, or choose a migration number. Sonnet 5.5 is the model ceiling. After two
+to main, or choose a migration number. Routing is DeepSeek (see routing.md). After two
 evidence-based failed attempts, stop and ask. Do not hand-write claim/review/block
 comments or edit board statuses; use the wrapper.
 ```
