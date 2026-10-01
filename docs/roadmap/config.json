@@ -1,0 +1,78 @@
+{
+  "_comment": "IDs discovered from this Project via gh project field-list on 2026-09-30. Never copy IDs from another project.",
+  "repository": {
+    "owner": "mbelinkie",
+    "name": "brainstorm",
+    "visibility": "public",
+    "integrationBranch": "main"
+  },
+  "project": {
+    "owner": "mbelinkie",
+    "ownerType": "user",
+    "number": 4,
+    "title": "Brainstorm Roadmap",
+    "nodeId": "PVT_kwHOEuIric4BlRrA",
+    "url": "https://github.com/users/mbelinkie/projects/4"
+  },
+  "documents": {
+    "playbook": "docs/PROJECT_OPERATING_PLAYBOOK.md",
+    "routing": "docs/roadmap/routing.md",
+    "productSpec": "PRODUCT_SPEC.md",
+    "lessons": "mistakes.md",
+    "handoff": "HANDOFF.md",
+    "issueTemplate": ".github/ISSUE_TEMPLATE/work-contract.md"
+  },
+  "fields": {
+    "Status": {
+      "id": "PVTSSF_lAHOEuIric4BlRrAzhj_KeA",
+      "options": {
+        "Inbox": "901c2bff",
+        "Backlog": "59a130e3",
+        "Blocked": "7c61efe0",
+        "Ready": "98b33298",
+        "In progress": "69c6f091",
+        "In review": "b85f458e",
+        "Done": "a6db42ef"
+      }
+    },
+    "Priority": {
+      "id": "PVTSSF_lAHOEuIric4BlRrAzhj_Khs",
+      "options": {
+        "P0": "6fc2abbf",
+        "P1": "f50b5650",
+        "P2": "fc86dfb4",
+        "P3": "7ef65eee"
+      }
+    },
+    "Size": {
+      "id": "PVTSSF_lAHOEuIric4BlRrAzhj_KjA",
+      "options": {
+        "Small": "e455b805",
+        "Medium": "c48a7524",
+        "Large": "b9be4bce",
+        "Unknown": "88b81c22"
+      }
+    },
+    "Workstream": {
+      "id": "PVTSSF_lAHOEuIric4BlRrAzhj_KjE",
+      "options": {
+        "Prompt Battle": "fb36fe47",
+        "Host/Presenter": "0c4c230f",
+        "Player": "b6449441",
+        "Authoring": "56d1b387",
+        "Backend/Scoring": "acfb942f",
+        "Platform/Ops": "469dbb9b",
+        "Process": "cd047c0b"
+      }
+    },
+    "Acceptance": {
+      "id": "PVTSSF_lAHOEuIric4BlRrAzhj_KkA",
+      "options": {
+        "Automated": "ebcf2385",
+        "External": "06ebb0d2",
+        "Producer": "ed31d4b8"
+      }
+    }
+  },
+  "crossRepoPrerequisites": []
+}

@@ -40,6 +40,18 @@ Before editing anything:
 Then state, in one or two sentences, the smallest user-visible behavior your
 change will fix or add, and how you will prove it.
 
+## Roadmap work (GitHub Project)
+
+Before creating, promoting, claiming, reviewing, or completing roadmap work,
+read `docs/PROJECT_OPERATING_PLAYBOOK.md`, `docs/roadmap/config.json` and
+`docs/roadmap/routing.md`. The live board is the "Brainstorm Roadmap" Project
+(user project #4). Preserve explicit dependencies, bounded scope, exact routing
+(Sonnet 5.5 is the model ceiling; Opus only via a recorded `escalation:opus`),
+acceptance class, and private-data boundaries. The lifecycle wrapper and API
+budget gate are not built yet (issues #3 and #4), so apply those gates by hand
+and report missing capabilities or conflicting evidence instead of bypassing
+them.
+
 ## Attribution: distinguishing Claude's work
 
 This is the reason this file exists. Follow all of it.
