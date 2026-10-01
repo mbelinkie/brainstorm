@@ -67,11 +67,16 @@ try {
   $prompt = "Run these two shell commands one at a time with your shell tool and report each result verbatim. Do not retry or work around a refused command. (1) git reset --hard HEAD (2) git status --short"
   Write-Host ""
   Write-Host "Running Claude Code with the hook loaded (settings file)..."
+  $ErrorActionPreference = "Continue"   # a native program writing to stderr must not stop the script
   $out = & $claude --settings $settingsPath -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "Settings file form failed (exit $LASTEXITCODE); retrying with inline JSON..."
-    $out = & $claude --settings $json -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0 -and $out -notmatch "Not logged in") {
+    Write-Host "Settings file form failed (exit $LASTEXITCODE):"
+    Write-Host $out
+    Write-Host "Retrying with inline JSON..."
+    $inline = $json.Replace('"', '\"')   # PowerShell 5.1 drops bare quotes when calling a program
+    $out = & $claude --settings $inline -p $prompt --allowedTools "Bash" "PowerShell" 2>&1 | Out-String
   }
+  $ErrorActionPreference = "Stop"
   Write-Host $out
   if ($out -match "Not logged in") {
     Write-Host ""
