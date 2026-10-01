@@ -1038,3 +1038,32 @@ scratch directory) and confirmed failing there first.
   so a skewed clock can never silence the shared screen, but a Presentation on a *second*
   machine with a >20s slow clock could reject a legitimate first cue after arming; pressing
   Play again issues a new cue and recovers.
+
+## 2026-09-30 — GitHub ticketing setup (PROJECT_OPERATING_PLAYBOOK)
+
+Branch: `claude/github-ticketing` (from `main` at `765e04b`). Model: Sonnet 5.5.
+
+**Slice:** stand up the playbook's GitHub Issues + Projects system for this repo.
+
+**Files added:** `docs/PROJECT_OPERATING_PLAYBOOK.md` (verbatim copy),
+`docs/roadmap/config.json` (live Project/field/option IDs), `docs/roadmap/routing.md`
+(Haiku 4.5 / Sonnet 5.5 ceiling, Opus escalation rule), `.github/ISSUE_TEMPLATE/work-contract.md`.
+
+**GitHub objects created (mbelinkie):** Project #4 "Brainstorm Roadmap" (linked to
+`mbelinkie/brainstorm`); Status options replaced with the 7 playbook values; fields Priority, Size,
+Workstream, Acceptance; labels `model:economy`, `model:standard`, `effort:low|medium|high`,
+`escalation:opus`, `setup-test`. Issues #1/#2 are `[SETUP TEST]` (closed); #3-#8 are Inbox
+placeholders for unbuilt playbook pieces.
+
+**Commands run:** `gh project create/field-create/link/item-add/item-edit`, a GraphQL
+`updateProjectV2Field` (Status options) and `addBlockedBy`, `gh label create`, `gh issue create/close`.
+Lifecycle test: #1 Inbox→Backlog→Ready→In progress→In review→closed→Done; #2 (blocked by #1) was
+moved to Ready only after a live read showed #1 CLOSED/COMPLETED. Final live read: both Done.
+
+**Unproven / pending:**
+- Gates were applied **by hand**. No lifecycle wrapper, API budget gate, or progress view exists (#3-#5).
+- Built-in Project workflows were not inspected (not exposed by API). Closing #1 did not set Done
+  by itself after the Status options were replaced, but the rule config itself is unverified (#8).
+- Board/table views, and a Backlog/auto-add rule, were not created (no API); UI step.
+- No backups claimed (#7). Worktree guards not built (#6).
+- Jira was initially assumed, then corrected to GitHub before any work started.
