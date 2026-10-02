@@ -4,6 +4,7 @@
 //   node tools/delegate/run.mjs start [--deadline-hours 8] [--usd 10]
 //   node tools/delegate/run.mjs run                 loop until done, deadline, budget or STOP file
 //   node tools/delegate/run.mjs ticket <n>          advance one ticket (must be Ready, or already in progress)
+//   --no-merge (run, ticket)                       stop Automated tickets after verification; the owner merges
 //   node tools/delegate/run.mjs status              one-page batch status
 //   node tools/delegate/run.mjs stop                ask a running batch to stop after the current step
 //   node tools/delegate/run.mjs check-sha <sha> [--ticket <n>]   the Verifier's one command
@@ -54,7 +55,7 @@ function readKey(config, env, home) {
   return fs.readFileSync(file, "utf8").trim();
 }
 
-async function fullContext({ env, out }) {
+async function fullContext({ env, out, stopBeforeMerge = false }) {
   const config = loadConfig();
   const home = delegateHome(env);
   const state = createState(home);
@@ -79,7 +80,7 @@ async function fullContext({ env, out }) {
     },
   });
   const runSession = (opts) => runCodexSession({ ...opts, command: config.codex.command, sandbox: config.codex.sandbox, extraConfig: config.codex.extraConfig, timeoutMs: config.codex.timeoutMs, env });
-  const pipeline = createPipeline({ config, repoRoot, state, exec: realExec, gate, lifecycle, deepseek, runSession, env, projectNumber: roadmapConfig.project?.number ?? null, log: (m) => out(`[${new Date().toISOString()}] ${m}`) });
+  const pipeline = createPipeline({ config, repoRoot, state, exec: realExec, gate, lifecycle, deepseek, runSession, env, projectNumber: roadmapConfig.project?.number ?? null, stopBeforeMerge, log: (m) => out(`[${new Date().toISOString()}] ${m}`) });
   return { config, state, gate, lifecycle, planner, deepseek, pipeline };
 }
 
@@ -177,7 +178,7 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env, 
     }
 
     if (command === "run" || command === "ticket") {
-      const ctx = await fullContext({ env, out });
+      const ctx = await fullContext({ env, out, stopBeforeMerge: flags["no-merge"] === true });
       const b = ctx.state.readBatch();
       if (!b) throw Object.assign(new Error("no batch started; run `start` first"), { code: "NO_BATCH" });
       if (b.runnerPid && b.runnerPid !== process.pid && pidAlive(b.runnerPid)) throw Object.assign(new Error(`another runner (pid ${b.runnerPid}) is live`), { code: "BATCH_LIVE" });
@@ -275,8 +276,8 @@ export function helpText() {
   return `Delegation harness (docs/delegation/HARNESS_SPEC.md)
 
   node tools/delegate/run.mjs start [--deadline-hours 8] [--usd 10]
-  node tools/delegate/run.mjs run
-  node tools/delegate/run.mjs ticket <n>
+  node tools/delegate/run.mjs run [--no-merge]
+  node tools/delegate/run.mjs ticket <n> [--no-merge]   (--no-merge: stop after verification; you merge and complete)
   node tools/delegate/run.mjs status
   node tools/delegate/run.mjs stop
   node tools/delegate/run.mjs check-sha <full-sha> [--ticket <n>]

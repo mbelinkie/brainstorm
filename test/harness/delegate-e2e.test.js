@@ -242,7 +242,7 @@ function setup(opts = {}) {
   };
   pipeline = createPipeline({
     config, repoRoot: repo, state, exec, gate: fakeGate(world, () => repo), lifecycle: fakeLifecycle(world), deepseek,
-    runSession: sessions.run, env: { ...process.env, CODEX_HOME: codexHome }, sleep: async () => {}, projectNumber: 4,
+    runSession: sessions.run, env: { ...process.env, CODEX_HOME: codexHome }, sleep: async () => {}, projectNumber: 4, stopBeforeMerge: opts.noMerge === true,
   });
   return { pipeline, state, world, deepseek, sessions, base, repo, root, config };
 }
@@ -447,4 +447,15 @@ test("e2e: files changed by an interrupted check are restored on resume; a retry
   assert.equal(retry.attempt, 2);
   assert.equal(retry.branch, "codex/delegate-7-2");
   assert.ok(fs.existsSync(t.worktree), "the first worktree is untouched");
+});
+
+test("e2e: --no-merge stops a verified Automated ticket before merge and leaves next steps", async () => {
+  const s = setup({ noMerge: true });
+  const t = await runTicket(s);
+  assert.equal(t.phase, "awaiting-owner", why(t));
+  assert.equal(t.stoppedBeforeMerge, true);
+  assert.deepEqual(s.world.merged, [], "nothing merged");
+  assert.deepEqual(s.world.completes, [], "not completed");
+  assert.equal(s.world.verified[7], true, "it was still independently verified");
+  assert.match(fs.readFileSync(path.join(s.state.ticketDir(7), "signoff.md"), "utf8"), /lifecycle\.mjs complete 7/);
 });

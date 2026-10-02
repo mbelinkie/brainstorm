@@ -11,15 +11,47 @@ The script that runs delegated batches: [process](../../docs/DELEGATION.md), [sp
 
 ## Smoke test before the first real batch
 
-The harness was built and tested with fake DeepSeek and fake Codex. Before trusting it, check the parts that could not be checked that way, on one low-risk Express ticket that Matthew has marked Ready:
+The harness was built and tested with fake DeepSeek and fake Codex. The first real run checks what fakes can't:
 
-1. `node tools/delegate/run.mjs start --deadline-hours 2 --usd 2`. Expect "models ok" and the balance baseline.
-2. `node tools/delegate/run.mjs ticket <n>`, then confirm:
-   - **Codex output was parsed:** `$DELEGATE_HOME/tickets/<n>/codex/*/events.jsonl` contains a `thread.started` event and `turn.completed` events with `usage`. If the field names differ, `core/codex.mjs` `parseEvents` needs updating.
-   - **Plan usage was read:** `node tools/delegate/run.mjs status` shows a plan reading, not "unknown". If it stays unknown, find the `rate_limits` fields in `~/.codex/sessions/**/rollout-*.jsonl` and update `parseRateLimits`. Until then the batch stops after one session. That is intended: unknown usage counts as exhausted. Setting `plan.requireUsageReading` to `false` turns this off deliberately.
-   - **The claim went through from inside the Codex sandbox** (it needs network access and the gh login). If it didn't, adjust `codex.extraConfig` in `config.json`.
-   - **The live claim's execution ID equals the session's thread ID.** The harness checks this and blocks on a mismatch.
-3. Read `$DELEGATE_HOME/tickets/<n>/bundle.md` and the PR. Have Sol review the harness once, as the spec requires, before widening to Standard tickets.
+- Codex's real output format;
+- plan-usage reading;
+- the lifecycle claim from inside Codex's sandbox;
+- DeepSeek on real prompts.
+
+**Prerequisite:** PR #62 is merged to `main`. Ticket worktrees start from `main` and need its lifecycle config and `AGENTS.md`.
+
+1. **Use a dedicated clone of the harness branch** (for example `~/delegate/brainstorm` on `claude/delegate-harness`), not your everyday checkout:
+   - ticket worktrees are created next to it;
+   - the Verifier's sandbox must be able to write to its git directory.
+
+   Then run `npm ci`, `npm test` and `npm run test:harness`.
+2. **Use a dedicated Codex home on the one account:**
+
+   ```bash
+   export CODEX_HOME=~/.codex-delegate
+   codex login
+   ```
+
+   The harness reads plan usage from this home's session logs.
+3. **Point the harness at the key.** Set `export DEEPSEEK_KEY_FILE=<your existing private key file>`, and make sure the file is `chmod 600`.
+4. **Pick one small, low-risk Automated ticket** and make it the planner's top Ready ticket:
+
+   ```bash
+   node tools/codex-batch.mjs --dry-run
+   ```
+
+   should select it.
+5. **Start a short batch** with `node tools/delegate/run.mjs start --deadline-hours 2 --usd 2`. Expect "models ok" and the balance baseline.
+6. **Run the ticket** with `node tools/delegate/run.mjs ticket <n> --no-merge`. It stops after independent verification and leaves the PR for you to merge.
+7. **Check the run** (in `$DELEGATE_HOME`, default `~/.local/share/brainstorm-delegate`):
+   - **Codex output was parsed:** `tickets/<n>/codex/*/events.jsonl` has a `thread.started` event and `turn.completed` events with `usage`. If not, update `parseEvents` in `core/codex.mjs`.
+   - **Plan usage was read:** `run.mjs status` shows a plan reading, not "unknown". If not, find the `rate_limits` fields in `$CODEX_HOME/sessions/**/rollout-*.jsonl` and update `parseRateLimits`. Until then the batch stops after one session, deliberately.
+   - **The claim went through from inside the sandbox.** If it didn't, adjust `codex.extraConfig` in `config.json`.
+   - **The claim on the issue names the Luna session's thread ID.** The harness also checks this.
+   - **DeepSeek behaved:** `tickets/<n>/bundle-S1.md` reads sensibly, and the PR diff does what the ticket asks.
+8. **Finish by hand:** follow `tickets/<n>/signoff.md`. Merge with a merge commit, run `npm test` on `main`, then run lifecycle `complete`.
+
+After a clean pilot, have Sol review the harness once before running without `--no-merge`.
 
 ## Running a batch
 

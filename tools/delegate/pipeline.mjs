@@ -43,7 +43,7 @@ const stop = (code, message) => Object.assign(new Error(message), { code });
 const TRIAGE_REPLY = '{"n":<n>,"fit":"ok|flag","lane":"express|standard|protected","decisions":["..."],"escalate":null|"reason","cases":[{"id":"A1","kind":"normal|failure|invariant","given":"...","expect":"..."}],"scope":["globs"],"allow":[],"slices":null|[{"id":"S1","goal":"...","scope":["globs"],"cases":["A1"]}]';
 
 export function createPipeline(ctx) {
-  const { config, repoRoot, state, exec, gate, lifecycle, deepseek, runSession, now = Date.now, log = () => {}, env = process.env, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), projectNumber = null } = ctx;
+  const { config, repoRoot, state, exec, gate, lifecycle, deepseek, runSession, now = Date.now, log = () => {}, env = process.env, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), projectNumber = null, stopBeforeMerge = false } = ctx;
   const repo = config.repository;
   const promptDir = ctx.promptDir ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "prompts");
   const prompt = (name) => fs.readFileSync(path.join(promptDir, name), "utf8");
@@ -173,7 +173,9 @@ export function createPipeline(ctx) {
     const room = await waitForHeadroom();
     const b = batch();
     const used = (t.codexSessions ?? []).length;
-    const input = renderSessionInput({ card: role.card, step, body, commands, reply });
+    // Absolute path from the harness checkout: a ticket worktree starts from main
+    // and may not have the current cards.
+    const input = renderSessionInput({ card: path.resolve(repoRoot, role.card), step, body, commands, reply });
     const dir = path.join(state.ticketDir(t.n), "codex", `${String(used + 1).padStart(2, "0")}-${roleName}-${step.replace(/\W+/g, "-")}`);
     const workdir = cwd ?? t.worktree ?? repoRoot;
     const guarded = list.filter((o) => o.worktree && fs.existsSync(o.worktree));
@@ -1075,6 +1077,16 @@ export function createPipeline(ctx) {
   }
 
   async function finish(t) {
+    if (stopBeforeMerge && t.acceptanceClass === "Automated") {
+      // Pilot mode (--no-merge): verified and published, but the owner merges and completes.
+      writePrivate(t, "signoff.md", `${signoffText(t)}\nPilot run (--no-merge): after reviewing, merge PR ${t.prUrl ?? t.prNumber} with a merge commit (no squash or rebase), run npm test on main, then: node scripts/roadmap/lifecycle.mjs complete ${t.n}\n`);
+      t.phase = "awaiting-owner";
+      t.stoppedBeforeMerge = true;
+      save(t);
+      ledger(t, "awaiting-owner");
+      log(`#${t.n} verified; stopped before merge (--no-merge). Next steps: ${ticketPath(t, "signoff.md")}`);
+      return t;
+    }
     if (t.acceptanceClass === "Producer") {
       writePrivate(t, "signoff.md", signoffText(t));
       t.phase = "awaiting-owner";
