@@ -24,9 +24,8 @@
 // through parseResponses -- see addendum section 2.3. This module never
 // calls fetch() or a binding's .run() itself.
 //
-// Only the workers_ai adapter is implemented in this slice (addendum
-// section 4). openrouter, vertex, and the Kaplan proxy are deliberately
-// absent from ENGINES until a later slice adds them.
+// Adapter status: workers_ai and kaplan_proxy are implemented; openrouter and
+// vertex are not yet present.
 
 const WORKERS_AI_MAX_PROMPT = 2048;
 
@@ -143,6 +142,130 @@ export const ENGINES = {
           ? "The image model declined that prompt."
           : null,
         partial: images.length > 0 && images.length < expectedVariants
+      };
+    }
+  },
+
+  kaplan_proxy: {
+    async resolveAuth(env) {
+      const base = env?.KAPLAN_PROXY_URL;
+      if (typeof base !== "string" || base.trim() === "") {
+        throw new Error("Kaplan proxy URL is not configured");
+      }
+
+      let url;
+      try {
+        const parsed = new URL(base);
+        if (parsed.protocol !== "https:") {
+          throw new Error("not https");
+        }
+        url = new URL("/generate", base).href;
+      } catch {
+        throw new Error("Kaplan proxy URL must be a valid HTTPS URL");
+      }
+
+      const secret = env?.KAPLAN_PROXY_SECRET;
+      if (typeof secret !== "string" || secret.trim() === "") {
+        throw new Error("Kaplan proxy secret is not configured");
+      }
+
+      return {
+        url,
+        headers: {
+          Authorization: `Bearer ${secret}`
+        }
+      };
+    },
+
+    buildRequests(config) {
+      if (!Number.isInteger(config?.variants) || config.variants < 1 || config.variants > 4) {
+        throw new Error("kaplan_proxy.buildRequests requires variants to be an integer between 1 and 4");
+      }
+
+      const auth = config.auth;
+      if (!auth || typeof auth !== "object" || typeof auth.url !== "string" || typeof auth.headers !== "object") {
+        throw new Error("kaplan_proxy.buildRequests requires the resolved auth object from resolveAuth");
+      }
+
+      return [{
+        kind: "http",
+        url: auth.url,
+        headers: {
+          "content-type": "application/json",
+          ...auth.headers
+        },
+        body: {
+          prompt: config.prompt,
+          model: config.model,
+          variants: config.variants
+        }
+      }];
+    },
+
+    parseResponses({ results, expectedVariants }) {
+      if (!Number.isInteger(expectedVariants) || expectedVariants < 1 || expectedVariants > 4) {
+        throw new Error("kaplan_proxy.parseResponses requires expectedVariants to be an integer between 1 and 4");
+      }
+
+      if (!Array.isArray(results) || results.length === 0) {
+        throw new Error("Unaccounted proxy outcome: Kaplan proxy returned no fulfilled results");
+      }
+
+      let costUsd = 0;
+      const images = [];
+      let explicitBlocked = false;
+      let explicitBlockReason = null;
+
+      for (const result of results) {
+        if (!result || result.ok !== true) {
+          throw new Error("Unaccounted proxy outcome: Kaplan proxy request did not fulfill cleanly");
+        }
+
+        const body = result.body;
+        if (!body || typeof body !== "object") {
+          throw new Error("Unaccounted proxy outcome: Kaplan proxy fulfilled without a parseable body");
+        }
+
+        const cost = body.costUsd;
+        if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) {
+          throw new Error("Unaccounted proxy outcome: Kaplan proxy fulfilled without a valid numeric costUsd");
+        }
+
+        costUsd += cost;
+        if (!Number.isFinite(costUsd)) {
+          throw new Error("Unaccounted proxy outcome: Kaplan proxy cost total is not finite");
+        }
+
+        const rawImages = Array.isArray(body.images) ? body.images : [];
+        for (const entry of rawImages) {
+          if (!entry || typeof entry !== "object") continue;
+          const mimeType = entry.mimeType;
+          const bytesBase64 = entry.bytesBase64;
+          if (typeof mimeType !== "string" || mimeType.trim() === "" || !mimeType.startsWith("image/")) continue;
+          if (typeof bytesBase64 !== "string" || bytesBase64.trim() === "") continue;
+          images.push({ mimeType, bytesBase64 });
+        }
+
+        if (body.blocked === true) {
+          explicitBlocked = true;
+        }
+        if (typeof body.blockReason === "string" && body.blockReason.trim() !== "") {
+          if (explicitBlockReason === null) {
+            explicitBlockReason = body.blockReason;
+          }
+        }
+      }
+
+      const imageCount = images.length;
+      const blocked = imageCount === 0 && (explicitBlocked || explicitBlockReason !== null);
+      const blockReason = blocked ? explicitBlockReason : null;
+
+      return {
+        images,
+        costUsd,
+        blocked,
+        blockReason,
+        partial: imageCount > 0 && imageCount < expectedVariants
       };
     }
   }
