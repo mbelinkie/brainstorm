@@ -2088,3 +2088,17 @@ Branch `claude/delegation-v3`, base `2198c09`. Claude (cloud session, not a Code
 **Checks:** `npm ci` exit 0; baseline `npm test` 638/638; after changes 639/639 (new test: Luna controller claim accepted only with written mismatch; `gpt-6-luna` removed from the unsupported-model list, `gpt-6-astra` used instead).
 
 **Unproven:** the harness does not exist yet; budgets, ladder cut-offs and audit rates are starting values to tune from the ledger; the field names for Codex's rate-limit usage, and whether credits are drawn automatically past the plan limit, are unconfirmed; Luna's adequacy as Controller in this repo is unmeasured until the pilot.
+
+### 2026-10-02 — delegation harness, minimum version (tools/delegate)
+
+Branch `claude/delegate-harness`, stacked on `claude/delegation-v3` (PR #62). Claude (cloud session) at Matthew's request ("go ahead and build it"). No ticket claimed, no batch started, no product code changed, no DeepSeek or Codex request made.
+
+**Built:** `tools/delegate/` per `docs/delegation/HARNESS_SPEC.md` build steps 1–6 plus recon (step 7) and the run loop (step 9): config and validation; artifact validation with atomic in-memory staging; eleven guards; JUnit parsing (attribute-aware: node leaves `>` unescaped in attributes), red-on-base and the acceptance lock; DeepSeek client (no tools, every response recorded, length retry, spend stop, cost estimate; JSON mode opt-in); the repair ladder; review bundle; Codex session launcher (identity variables stripped, usage and decision parsing, budgets, credits, plan headroom with fail-closed unknown usage); pipeline from intake to finish through the roadmap gate and lifecycle only; `check-sha` under the OS temp dir for the sandboxed Verifier; idempotent PR open and merge (re-read before write); worktree fingerprint around every role session; CLI (`start`, `run`, `ticket`, `status`, `stop`, `check-sha`). Cards, spec, process doc and routing updated to match; README with setup and a first-run smoke test.
+
+**Found and fixed while testing:** the static guards ran before the suite and treated the not-yet-measured test count as unknown, so no attempt could pass; `node --test` started from inside a test run inherits `NODE_TEST_CONTEXT` and skips the JUnit reporter (the runner now strips it).
+
+**Not built:** mutant check and pre-review (step 7); batched triage (one ticket at a time, triage combined with claim); Protected lane execution (blocked with a Sol handoff).
+
+**Checks:** `npm test` 691/691 (51 new harness tests plus one bypass test; six end-to-end runs on a throwaway repository with a bare origin, real git and `node --test`, fake DeepSeek/Codex/lifecycle/gate). Running the real Codex CLI against a local mock model server to confirm its JSON event format was refused by this session's sandbox policy, so Codex event and session-log field names come from strings in the codex-cli 0.160.0 binary.
+
+**Unproven:** everything that needs Matthew's Mac: real Codex event and rate-limit fields, network for lifecycle commands inside the Codex sandbox, DeepSeek behaviour with these prompts, and the harness on the real repository. The README smoke test covers each; Sol reviews the harness once before Standard-lane use.

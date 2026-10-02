@@ -1,0 +1,147 @@
+// Pure helpers for recon and triage: candidate-file selection for the Scout
+// (which has no tools), quote verification, and validation of the Scout's
+// and the Controller's JSON.
+
+import { matchesAny, isSafeRelativePath } from "./paths.mjs";
+
+const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "must", "should", "when", "then", "none", "only", "each", "issue", "test", "tests", "file", "files", "code", "work", "also", "will", "have", "does", "make", "used", "uses", "user", "after", "before", "under", "true", "false", "null"]);
+
+// Words and identifiers worth searching for, from the ticket text.
+export function ticketTerms(text) {
+  const t = String(text ?? "");
+  const terms = new Set();
+  for (const m of t.matchAll(/`([^`\n]{3,80})`/g)) terms.add(m[1].trim());
+  for (const m of t.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:[.-][A-Za-z0-9_]+)*)\b/g)) {
+    const w = m[1];
+    if (w.length >= 5 && !STOP.has(w.toLowerCase()) && (/[A-Z_]/.test(w.slice(1)) || /[.-]/.test(w) || w.length >= 7)) terms.add(w);
+  }
+  return [...terms].slice(0, 60);
+}
+
+// Exported symbol names for a repository map line.
+export function exportedSymbols(source) {
+  const names = new Set();
+  for (const m of String(source ?? "").matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1]);
+  for (const m of String(source ?? "").matchAll(/^export\s*\{([^}]+)\}/gm)) {
+    for (const part of m[1].split(",")) {
+      const name = part.trim().split(/\s+as\s+/).pop();
+      if (name) names.add(name);
+    }
+  }
+  return [...names].slice(0, 25);
+}
+
+export const estimateTokens = (text) => Math.ceil(String(text ?? "").length / 4);
+
+// files: tracked repository-relative paths; readFile(path) -> string|null.
+// Returns { map, chosen: [{path, reason}], tokens }.
+export function selectContext({ files, ticketText, readFile, excludes = [], tokenCap = 200_000, maxFiles = 40 }) {
+  const usable = files.filter((f) => isSafeRelativePath(f) && !matchesAny(f, excludes) && /\.(?:m?js|cjs|ts|json|sql|md|html|css|toml|jsonc)$/.test(f));
+  const terms = ticketTerms(ticketText);
+  const sources = new Map();
+  const read = (f) => {
+    if (!sources.has(f)) sources.set(f, readFile(f) ?? "");
+    return sources.get(f);
+  };
+  const map = usable.map((f) => {
+    const syms = /\.m?js$/.test(f) ? exportedSymbols(read(f)) : [];
+    return syms.length ? `${f}: ${syms.join(", ")}` : f;
+  });
+
+  const scored = [];
+  for (const f of usable) {
+    const text = read(f);
+    let score = 0;
+    const hits = [];
+    for (const term of terms) {
+      if (f.includes(term)) { score += 5; hits.push(term); continue; }
+      if (text.includes(term)) { score += 1; hits.push(term); }
+    }
+    if (score > 0) scored.push({ path: f, score, hits });
+  }
+  scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+
+  const chosen = [];
+  let tokens = estimateTokens(map.join("\n"));
+  const take = (f, reason) => {
+    if (chosen.some((c) => c.path === f) || chosen.length >= maxFiles) return;
+    const cost = estimateTokens(read(f));
+    if (tokens + cost > tokenCap) return;
+    tokens += cost;
+    chosen.push({ path: f, reason });
+  };
+  for (const s of scored.slice(0, Math.ceil(maxFiles / 2))) take(s.path, `matches ${s.hits.slice(0, 4).join(", ")}`);
+  // Direct importers of the chosen files.
+  for (const c of [...chosen]) {
+    const base = c.path.replace(/\.[^.]+$/, "").split("/").pop();
+    for (const f of usable) {
+      if (f === c.path) continue;
+      const text = read(f);
+      if (new RegExp(`from\\s+["'][^"']*${base.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")}(?:\\.m?js)?["']`).test(text)) take(f, `imports ${c.path}`);
+    }
+  }
+  return { map: map.join("\n"), chosen, tokens, terms };
+}
+
+const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+
+// Each claim must quote text that really appears in its file's line range.
+export function verifyClaims(claims, readFile) {
+  const verified = [];
+  const unverified = [];
+  for (const claim of claims ?? []) {
+    const content = isSafeRelativePath(claim?.path) ? readFile(claim.path) : null;
+    const lines = content === null || content === undefined ? null : content.split("\n");
+    const start = Number(claim?.start);
+    const end = Number(claim?.end);
+    const ok = lines !== null && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && end >= start && end <= lines.length + 1
+      && norm(claim.quote).length > 0
+      && norm(lines.slice(start - 1, end).join("\n")).includes(norm(claim.quote));
+    (ok ? verified : unverified).push(claim);
+  }
+  return { verified, unverified, total: (claims ?? []).length };
+}
+
+const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+
+export function validateRecon(recon) {
+  const problems = [];
+  if (!isObj(recon)) return ["recon is not an object"];
+  if (typeof recon.summary !== "string") problems.push("summary missing");
+  for (const key of ["claims", "files_to_change", "callers", "proposed_cases", "open_questions", "risk_flags", "contract_drift"]) {
+    if (!Array.isArray(recon[key])) problems.push(`${key} must be an array`);
+  }
+  if (!["coding", "design", "research", "mixed"].includes(recon.work_type)) problems.push("work_type invalid");
+  if (!["yes", "no"].includes(recon.testable_done)) problems.push("testable_done must be yes or no");
+  if (!["express", "standard", "protected"].includes(recon.suggested_lane)) problems.push("suggested_lane invalid");
+  for (const c of recon.proposed_cases ?? []) {
+    if (!isObj(c) || !/^[A-Z]\d+$/.test(c.id ?? "") || typeof c.given !== "string" || typeof c.expect !== "string") problems.push("each proposed case needs id (A1), given, expect");
+  }
+  for (const f of recon.files_to_change ?? []) if (!isSafeRelativePath(f)) problems.push(`unsafe path ${f}`);
+  return problems;
+}
+
+// Controller triage decision: { tickets: [{ n, fit, lane, decisions, escalate, cases, scope, allow }] }
+export function validateTriage(value, expectedNumbers) {
+  const problems = [];
+  if (!isObj(value) || !Array.isArray(value.tickets)) return { ok: false, problems: ["triage needs a tickets array"] };
+  const byN = new Map();
+  for (const t of value.tickets) {
+    if (!isObj(t) || !Number.isInteger(t.n)) { problems.push("each ticket needs integer n"); continue; }
+    const where = `#${t.n}`;
+    if (!["ok", "flag"].includes(t.fit)) problems.push(`${where} fit must be ok or flag`);
+    if (t.fit === "ok") {
+      if (!["express", "standard", "protected"].includes(t.lane)) problems.push(`${where} lane invalid`);
+      if (!Array.isArray(t.scope) || t.scope.length === 0 || !t.scope.every((g) => typeof g === "string" && !g.startsWith("/") && !g.includes(".."))) problems.push(`${where} scope must be non-empty relative globs`);
+      // A scope must name where the work goes; a whole-repository glob is not a scope.
+      else if (t.scope.some((g) => /^(?:\*\*?(?:\/\*\*?)*(?:\/\*(?:\.\w+)?)?|\*\.\w+)$/.test(g.trim()))) problems.push(`${where} scope is too broad (${t.scope.join(", ")})`);
+      if (!Array.isArray(t.cases)) problems.push(`${where} cases must be an array`);
+      else if (t.lane === "standard" && t.cases.length === 0 && !t.escalate) problems.push(`${where} standard lane needs at least one case`);
+      for (const c of t.cases ?? []) if (!isObj(c) || !/^[A-Z]\d+$/.test(c.id ?? "") || typeof c.expect !== "string") problems.push(`${where} case needs id and expect`);
+      if (t.allow !== undefined && (!Array.isArray(t.allow) || !t.allow.every((a) => ["deps", "config", "suppressions"].includes(a)))) problems.push(`${where} allow invalid`);
+    }
+    byN.set(t.n, t);
+  }
+  for (const n of expectedNumbers) if (!byN.has(n)) problems.push(`#${n} missing from triage`);
+  return problems.length ? { ok: false, problems } : { ok: true, byN };
+}

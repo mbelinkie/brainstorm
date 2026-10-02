@@ -14,35 +14,30 @@ This is what to build so the [process](../DELEGATION.md) runs. The harness is th
 
 ## 2. Commands
 
-`node tools/delegate/run.mjs <command>`:
+`node tools/delegate/run.mjs <command>`. Setup and the first-run smoke test are in [`tools/delegate/README.md`](../../tools/delegate/README.md).
 
 | Command | Does |
 | --- | --- |
-| `start --deadline 8h --usd 10` | Starts a batch on the owner's instruction only. Records a fresh deadline, the DeepSeek `/user/balance` baseline, a `/models` check, and the dispatcher lock. Refuses if another batch lock is live |
-| `next` | Runs the planner (`tools/codex-batch.mjs` core) and Gate 0 labels, then intake for the next eligible ticket |
-| `recon <n>` | Runs the Scout, verifies quotes, runs the reproduction command, and blocks on contract drift |
-| `triage` | Writes the trimmed triage view for pending tickets and launches one Controller triage session |
-| `tests <n>` | Runs the test author, the red-on-base check and the lock |
-| `implement <n>` | Runs the ladder with guards after each attempt, then the mutant check and pre-review |
-| `bundle <n>` | Writes `bundle.md` |
-| `gate <n>` | Resumes the claimant for its decision and routes it |
-| `publish <n>` | Pushes the branch, opens the PR, and records the full SHA |
-| `verify <n>` | Launches the Verifier session, which runs `check-sha` |
-| `check-sha <sha>` | Clean detached checkout, `npm ci`, full suite plus acceptance tests, then prints a summary of 30 lines or fewer. The only command the Verifier runs |
-| `finish <n>` | Merges preserving the SHA, tests integrated main, runs lifecycle `complete`, writes the ledger and evidence file. For an owner sign-off ticket, writes the sign-off summary instead |
-| `claim <n>` | After triage returns `fit=ok`, launches the claimant session (Luna, or Sol for Protected) to run the claim command. Nothing in the worktree changes before this succeeds |
-| `run` | Loops until there's no eligible work, the deadline passes, a budget stops it, or a stop file appears. Each pass: `next` and `recon` for up to 10 eligible tickets, one `triage`, then `claim` through `finish` for each ticket in turn |
-| `status` | Prints the one-page batch status. A resumed session reads this, not history |
-| `resume` | Re-reads live GitHub, Git and claim state and reconciles with the private checkpoint before any write |
+| `start [--deadline-hours 8] [--usd 10]` | Starts a batch on the owner's instruction only. Checks DeepSeek `/models` for every configured model, records the `/user/balance` baseline, the deadline and the spend cap. Refuses while another runner is live |
+| `run` | Loops until there's no eligible work, the deadline passes, a budget or plan limit stops it, or a STOP file appears. Resumes unfinished tickets first, then asks the read-only planner for the next Ready ticket |
+| `ticket <n>` | Advances one ticket (it must be the planner's selected Ready ticket, or already in progress in the harness) |
+| `status` | One-page batch status: deadline, spend, plan reading, and each ticket's phase. A resumed session reads this, not history |
+| `stop` | Writes the STOP file; the running batch stops after its current step |
+| `check-sha <sha> [--ticket <n>]` | Clean detached checkout under the OS temp dir, `npm ci`, the full suite and the acceptance tests, then a summary of 30 lines or fewer. The only command the Verifier runs |
 
-Every command is **idempotent**. It re-reads live state and compares stable markers before any write, so a crash or rerun never duplicates a claim, comment, PR or merge.
+Inside `run`, each ticket moves through these phases, one step each (`tools/delegate/pipeline.mjs`):
+
+`intake` (planner selection, Gate 0 labels, worktree) → `recon` (Scout, quote check, contract drift and fit) → `triage-and-claim` (one Luna session decides fit, lane, cases and scope, then claims) → `tests` (test author, red-on-base, commit, lock) → `implement` (ladder with guards) → `gate` (Luna decides; REPAIR once; ESCALATE to Sol) → `publish` (commit, evidence file, push) → open PR → `review` (claimant records it) → `verify` (separate Luna session runs `check-sha`) → `finish` (merge at the verified SHA, test integrated main, lifecycle `complete`; Producer tickets stop for owner sign-off).
+
+Every step is **safe to re-run**. Ticket state is checkpointed after each step; lifecycle writes re-read before writing; opening a PR and merging re-read GitHub first, so a crash or rerun never duplicates a claim, comment, PR or merge.
 
 ## 3. Launching Codex sessions
 
 Use `codex exec` with an explicit model and effort per role, a working directory, and JSON event output. Confirm the flags with `codex exec --help`. The prompt is: the role card path + the harness-written input file + the exact lifecycle commands to run, pre-filled except for the execution ID.
 
 - **Identity.** The session runs lifecycle commands itself, so its genuine `CODEX_THREAD_ID` is recorded. Apply the documented `env -u CODEX_SESSION_ID` rule for spawned children. The harness never sets or invents an execution ID.
-- **Claimant.** One Controller thread per Express or Standard ticket (Sol for Protected). Its steps: claim → (harness work) → gate decision → lifecycle review. Each step is an `exec resume` of the same thread with a new small input. Record the thread ID at launch.
+- **Claimant.** One Controller thread per Express or Standard ticket. Its steps: triage-and-claim → (harness work) → gate decision → lifecycle review. Each later step is an `exec resume` of the same thread with a new small input. The harness confirms the live claim's execution ID equals the session's thread ID before any work.
+- **No file edits.** The harness fingerprints the ticket worktree before and after every role session in it; any change blocks the ticket.
 - **Verifier.** A new thread, never the claimant's.
 - **Triage and escalation.** One-shot threads. Their output is a decision file the harness parses. Invalid output gets one retry, then a block.
 - **Never waits in a model.** The harness waits on processes and files. No Codex session waits, polls or supervises another.
@@ -172,3 +167,23 @@ Each step is a Standard-lane slice with its own tests. Pure cores come first.
 - every guard has a test that fails when the guard is removed;
 - one end-to-end dry run on a throwaway ticket with fake DeepSeek and fake Codex binaries;
 - one real Express ticket with Sol watching the bundle and evidence.
+
+## 10. Implementation status (October 2, 2026)
+
+Built and tested (`test/delegate-*.test.js`, 51 tests, plus a bypass check in `test/roadmap-bypass.test.js`; six of them are end-to-end runs on a throwaway repository with real git and `node --test`, fake DeepSeek, fake Codex, fake lifecycle and gate):
+
+- Build steps 1–6: config, artifact validation and atomic staging, all eleven guards (each with a test that fails when the guard is removed), JUnit parsing, red-on-base, the acceptance lock, the DeepSeek client (recording, length retry, spend stop, cost estimate), the ladder, the bundle, the Codex session launcher (usage, decisions, budgets, credits, plan headroom), lifecycle and gate integration, `check-sha`, publish, PR, merge and `finish`.
+- From step 7: recon (context selection without tools, quote verification, contract drift and the scout's fit check).
+- From step 9: `run`, `status`, `stop`, the runner lock and resume-from-checkpoint.
+
+Not built yet:
+
+- **Mutant check and pre-review** (step 7). Bundles and evidence say "not run".
+- **Batched triage.** Triage runs one ticket at a time, combined with the claim, because the planner selects one Ready ticket at a time.
+- **Protected lane.** A ticket triaged as Protected is blocked with a handoff for Sol; the harness does not run Sol-led design.
+
+Unconfirmed until the first real run (see the README smoke test):
+
+- Codex's JSON event and session-log field names (read from the codex-cli 0.160.0 binary, not from a live run).
+- Network access for lifecycle commands inside the Codex sandbox (`sandbox_workspace_write.network_access=true`).
+- Whether DeepSeek accepts `response_format` with thinking enabled (`deepseek.jsonMode` is off by default).

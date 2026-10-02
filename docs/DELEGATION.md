@@ -54,7 +54,7 @@ The dispatcher re-read its whole growing history on every action, including whil
 
 - DeepSeek is **artifact-only**. It receives source text and a packet, and returns JSON artifacts. It gets no tools, shell, filesystem, Git, GitHub, network or credentials.
 - The harness validates and applies every artifact (§8).
-- No Codex model writes product code or fixes. The single exception is in the Controller card: an edit of 5 lines or fewer when that is cheaper than another repair cycle, with the harness rerunning all guards afterwards. The project's routing table may forbid even that.
+- No Codex model writes product code or fixes. The harness fingerprints the ticket worktree around every role session and blocks the ticket if a session changed it.
 
 ---
 
@@ -154,19 +154,19 @@ The harness then:
 - runs the reproduction command.
 - blocks the ticket if `contract_drift` is non-empty. The contract is outdated, and an agent must not improvise around it.
 
-### 3. Triage (Controller, batched)
+### 3. Triage (Controller)
 
-One Luna session receives a harness-trimmed view of up to 10 recon reports and returns one block per ticket:
+One Luna session receives a harness-trimmed view of the recon report and returns its decisions. The design allows batching up to 10 tickets per session. The current harness triages one ticket at a time and combines triage with the claim in the same session (see the harness spec's implementation status). The decisions cover:
 
-```text
-#<n>: fit=<ok|flag> lane=<express|standard|protected>
-  decisions: <one line per open question, or ESCALATE>
-  cases: approve A1,A2; edit A3 -> "<expect>"; add A4 "<given> -> <expect>"
-```
+- **fit:** `ok`, or `flag` for design, research or visual-judgment work;
+- **lane:** Express, Standard or Protected;
+- **decisions** on the Scout's open questions, or an escalation reason;
+- **acceptance cases** (`A1`, `A2`, ...), approved, edited or added;
+- **write scope** (globs) and any allowed extras (`deps`, `config`, `suppressions`).
 
-The Controller does not open source files during triage. Anything it cannot decide from the view goes to Sol or Protected.
+The decisions come back as one JSON object (the [controller card](delegation/cards/controller.md) defines it). The Controller does not open source files during triage. Anything it cannot decide from the view goes to Sol or Protected.
 
-**Claim.** Once triage returns `fit=ok`, the harness launches the claimant: the Luna Controller for Express and Standard, Sol for Protected. The claimant runs the project's claim command with its own native ID. Recon is read-only. Nothing in the worktree changes before the claim succeeds.
+**Claim.** Only when fit is `ok`, the lane is Express or Standard, and nothing is escalated, the same Luna session runs the pre-filled claim command with its own native ID. The harness then confirms the live claim's execution ID equals that session's thread ID. Recon is read-only, and nothing in the worktree changes before the claim succeeds. A Protected ticket is not claimed by Luna; the current harness blocks it with a handoff for Sol.
 
 ### 4. Acceptance tests (test author + harness)
 
@@ -244,7 +244,7 @@ The harness enforces all limits. Configured values live in the harness config; t
 | Codex tokens per Controller session | 300k input (cached included), 20k output | Stop the ticket and block it with the usage recorded |
 | Codex tokens per Verifier session | 150k input, 8k output | Same |
 | Codex tokens per Sol session | 1.5M input, 40k output | Same, and report to the owner |
-| Codex sessions per ticket | Express 2, Standard 4, Protected 6 (escalations count) | Block |
+| Codex sessions per ticket (distinct threads; resuming the claimant doesn't count) | Express 2, Standard 4, Protected 6 (escalations count) | Block |
 | DeepSeek USD per batch | $10 observed spend | Stop launching. A request already in flight may finish |
 | Batch deadline | 8 hours from a fresh start | Stop launching |
 | Plan headroom (§7) | 5-hour usage under 80% before starting a ticket | Don't start or resume; wait for the reset, or use credits if the owner allowed them |

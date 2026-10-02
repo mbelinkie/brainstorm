@@ -50,3 +50,12 @@ test("the transport inventory lists exactly the transports that exist", () => {
   assert.deepEqual(listed, actual);
   assert.deepEqual(listed, [...ALLOWED_TRANSPORT_FILES].sort());
 });
+
+test("the delegation harness reaches GitHub only through the gate", () => {
+  // tools/delegate starts git, npm, node and codex (so child_process is allowed
+  // there), but it must never start gh or call GitHub's API directly.
+  const harness = listScriptFiles(root, "tools/delegate");
+  assert.ok(harness.length >= 5, "should scan the harness modules");
+  const violations = findBypasses(harness).filter((v) => v.rule !== "child-process");
+  assert.deepEqual(violations, []);
+});
