@@ -297,6 +297,112 @@ test('parseVertexResponse accepts canonical padded base64 variants and rejects n
 test('parseVertexResponse maps safety to blocked when there are zero final images', () => {
   const result = parseVertexResponse(makeSafetyBody());
   assert.deepEqual(result, { images: [], blocked: true, blockReason: 'SAFETY' });
+
+  const safetyFinishReasons = [
+    'SAFETY',
+    'IMAGE_SAFETY',
+    'PROHIBITED_CONTENT',
+    'SPII',
+    'RECITATION',
+    'BLOCKLIST',
+    'IMAGE_PROHIBITED_CONTENT',
+    'IMAGE_RECITATION',
+    'MODEL_ARMOR'
+  ];
+  for (const finishReason of safetyFinishReasons) {
+    const body = {
+      candidates: [{ finishReason, content: { role: 'model', parts: [] } }]
+    };
+    const parsed = parseVertexResponse(body);
+    assert.deepEqual(parsed, { images: [], blocked: true, blockReason: 'SAFETY' }, finishReason);
+  }
+
+  for (const finishReason of ['IMAGE_OTHER', 'OTHER', 'NO_IMAGE']) {
+    const body = {
+      candidates: [{ finishReason, content: { role: 'model', parts: [] } }]
+    };
+    assert.throws(
+      () => parseVertexResponse(body),
+      (error) => error && error.code === 'NO_IMAGES',
+      finishReason
+    );
+  }
+});
+
+test('actual loopback HTTP classifies added blocked image finish reasons as safety when zero images', async () => {
+  const addedFinishReasons = ['IMAGE_PROHIBITED_CONTENT', 'IMAGE_RECITATION', 'MODEL_ARMOR'];
+
+  for (const finishReason of addedFinishReasons) {
+    const candidateBody = {
+      candidates: [{ finishReason, content: { role: 'model', parts: [] } }]
+    };
+
+    const fetchImpl = makeMetadataAndVertexFetch({
+      responseOverrides: [{ kind: 'body', body: candidateBody }]
+    });
+    const server = createProxyServer({ config: BASE_CONFIG, fetchImpl });
+    const port = await listen(server);
+
+    try {
+      const response = await postJson(port, '/generate', {
+        headers: {
+          Authorization: `Bearer ${BASE_CONFIG.sharedSecret}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(validBody())
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        images: [],
+        costUsd: 0,
+        blocked: true,
+        blockReason: 'SAFETY',
+        partial: false
+      });
+      assert.equal(fetchImpl.metadataCallCount(), 1);
+      assert.equal(fetchImpl.vertexCallCount(), 1);
+      assert.equal(fetchImpl.calls.length, 2);
+    } finally {
+      await close(server);
+    }
+  }
+});
+
+test('actual loopback HTTP preserves final-image override for added blocked image finish reasons', async () => {
+  const addedFinishReasons = ['IMAGE_PROHIBITED_CONTENT', 'IMAGE_RECITATION', 'MODEL_ARMOR'];
+
+  for (const finishReason of addedFinishReasons) {
+    const candidateBody = {
+      candidates: [{ finishReason, content: { role: 'model', parts: [makeImagePart(IMAGE_ONE)] } }]
+    };
+
+    const fetchImpl = makeMetadataAndVertexFetch({
+      responseOverrides: [{ kind: 'body', body: candidateBody }]
+    });
+    const server = createProxyServer({ config: BASE_CONFIG, fetchImpl });
+    const port = await listen(server);
+
+    try {
+      const response = await postJson(port, '/generate', {
+        headers: {
+          Authorization: `Bearer ${BASE_CONFIG.sharedSecret}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(validBody())
+      });
+
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.blocked, false);
+      assert.deepEqual(body.images, [FINAL_IMAGE_ONE]);
+      assert.equal(fetchImpl.metadataCallCount(), 1);
+      assert.equal(fetchImpl.vertexCallCount(), 1);
+      assert.equal(fetchImpl.calls.length, 2);
+    } finally {
+      await close(server);
+    }
+  }
 });
 
 test('parseVertexResponse returns images with blocked false even when safety is present', () => {

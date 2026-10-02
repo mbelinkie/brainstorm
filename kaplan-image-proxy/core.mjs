@@ -10,7 +10,10 @@ const SAFETY_FINISH_REASONS = new Set([
   'PROHIBITED_CONTENT',
   'SPII',
   'RECITATION',
-  'BLOCKLIST'
+  'BLOCKLIST',
+  'IMAGE_PROHIBITED_CONTENT',
+  'IMAGE_RECITATION',
+  'MODEL_ARMOR'
 ]);
 const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const LOCATION_MICRO_USD = { global: 67200, us: 73920, eu: 73920 };
