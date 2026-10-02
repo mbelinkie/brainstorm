@@ -189,7 +189,7 @@ instruction authorizes that coordination mismatch ([routing](routing.md)).
 start only on Matthew's explicit instruction. The harness is the dispatcher.
 No Codex conversation orchestrates, waits on or polls other sessions. The
 pipeline, lanes, the fit gate (design and research tickets are flagged, not
-worked), budgets, multi-account rules and evidence are defined in
+worked), budgets, account limits and evidence are defined in
 [the delegation process](../DELEGATION.md).
 
 **Before the harness exists.** Until its minimum version (spec §9, steps 1–6)

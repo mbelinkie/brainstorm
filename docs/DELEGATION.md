@@ -247,7 +247,8 @@ The harness enforces all limits. Configured values live in the harness config; t
 | Codex sessions per ticket | Express 2, Standard 4, Protected 6 (escalations count) | Block |
 | DeepSeek USD per batch | $10 observed spend | Stop launching. A request already in flight may finish |
 | Batch deadline | 8 hours from a fresh start | Stop launching |
-| Account headroom (§7) | 5-hour usage under 80% on the owning account | Don't start or resume; wait for the reset |
+| Plan headroom (§7) | 5-hour usage under 80% before starting a ticket | Don't start or resume; wait for the reset, or use credits if the owner allowed them |
+| Codex credits per batch (§7) | 0, unless the owner sets a cap | Pause until the plan window resets |
 
 Rules:
 
@@ -256,19 +257,33 @@ Rules:
 
 ---
 
-## 7. Multiple Codex accounts (codex-lb)
+## 7. One Codex account
 
-Codex traffic goes through codex-lb, which pools several ChatGPT accounts. Three consequences:
+The harness runs every Codex session on **one** ChatGPT account. It never
+rotates sessions across several accounts to get past per-account limits.
+OpenAI's Terms of Use prohibit circumventing "any rate limits or restrictions",
+and a suspension would stop the whole process.
 
-1. **A thread is pinned to its account.** A Codex thread with continuation state is bound to the account that started it. If that account is exhausted, the thread fails with `No available accounts` even when the rest of the pool is healthy.
-   - Before resuming a claimant thread, for example to record a review, the harness checks **that account's** headroom. If it is exhausted, the harness waits for the reset. It never replaces the claimant's identity.
-   - Claimant threads stay short (claim, triage, gate, review) so they rarely outlive a window.
-2. **A moved session loses its cache.** codex-lb keeps a session on one account "when possible" to keep the prompt cache warm. A moved session pays full uncached input on its whole context. Short sessions make that cheap.
-3. **Budget across the pool.** One account's usage percentage says little about the pool. The harness reads per-account usage from codex-lb and records which account served each session (spec §7).
+When the account nears its limits:
 
-Use codex-lb's capacity-weighted routing with sticky sessions on. Check OpenAI's current terms for pooled subscriptions; a suspension would stop the process entirely.
+1. **Before starting a ticket,** the harness checks that the 5-hour window has
+   room for the whole ticket (the §6 headroom threshold). If not, it waits for
+   the reset instead of starting work it can't finish.
+2. **Claimant threads simply wait.** A paused claimant resumes on the same
+   account after the reset, so claim identity is never at risk.
+3. **Weekly limit reached:** the batch stops and reports. Nothing waits for
+   days.
+4. **Credits (optional).** Plus and Pro accounts can buy extra Codex credits in
+   ChatGPT under Settings → Usage, charged at the rate card and usable from the
+   command-line tool. Only the owner buys them. If the owner sets a per-batch
+   credit cap, the harness continues past the plan limit until it has spent
+   that many credits, estimated from session usage at rate-card prices. Then
+   it pauses. Whether Codex draws on credits automatically once the plan limit
+   is hit is still to be confirmed.
 
----
+The harness reads the account's 5-hour and weekly usage from the rate-limit
+fields in Codex's own session output (spec §7). Missing usage counts as
+exhausted.
 
 ## 8. DeepSeek: models, calls and artifacts
 
@@ -378,7 +393,7 @@ The harness writes one row per ticket:
 
 - ticket, category, lane and final lane, fit result, base SHA;
 - recon quote pass rate, ladder attempts, models used, DeepSeek cost and cache-hit ratio, mutants killed out of total;
-- for each Codex session: role, model, effort, account, input / cached / output tokens;
+- for each Codex session: role, model, effort, input / cached / output tokens, and whether it ran on plan allowance or credits;
 - decisions, repairs, escalations;
 - PR, merge time, and whether the ticket reopened within 14 days, with the cause.
 
@@ -417,5 +432,5 @@ Credits are per million tokens. Include rework and reopens. Track DeepSeek USD p
 
 - DeepSeek: [pricing](https://api-docs.deepseek.com/quick_start/pricing), [changelog](https://api-docs.deepseek.com/updates), [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode), [context caching](https://api-docs.deepseek.com/guides/kv_cache)
 - OpenAI: [Codex models](https://learn.chatgpt.com/docs/models), [Codex rate card and plan limits](https://learn.chatgpt.com/docs/pricing)
-- codex-lb: [routing and session affinity](https://soju06.github.io/codex-lb/routing/)
+- OpenAI: [Terms of Use](https://openai.com/policies/terms-of-use/), [credits for flexible usage](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-personal-plans)
 - Background research: [research/deepseek-workflows-2026-10-01.md](research/deepseek-workflows-2026-10-01.md), [roadmap/LESSONS.md](roadmap/LESSONS.md)

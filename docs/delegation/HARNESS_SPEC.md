@@ -10,7 +10,7 @@ This is what to build so the [process](../DELEGATION.md) runs. The harness is th
 - **Private state:** all private state lives outside the repository in `$DELEGATE_HOME`. The default is `~/.local/share/brainstorm-delegate/`, holding `batches/<start-time>/`.
   - The DeepSeek key file is read by the request module only and never printed.
   - Public artifacts (PR bodies, lifecycle comments, the per-ticket evidence file) never contain absolute paths, keys or private responses.
-- **Config:** `tools/delegate/config.json` is committed. It holds the test command, the JUnit reporter flags, lane limits, protected-path globs, fit-gate labels, budgets, ladder settings, and the codex-lb endpoint and threshold. Secrets never go in it.
+- **Config:** `tools/delegate/config.json` is committed. It holds the test command, the JUnit reporter flags, lane limits, protected-path globs, fit-gate labels, budgets, ladder settings, the plan-headroom threshold and the owner's credit cap. Secrets never go in it.
 
 ## 2. Commands
 
@@ -42,7 +42,7 @@ Every command is **idempotent**. It re-reads live state and compares stable mark
 Use `codex exec` with an explicit model and effort per role, a working directory, and JSON event output. Confirm the flags with `codex exec --help`. The prompt is: the role card path + the harness-written input file + the exact lifecycle commands to run, pre-filled except for the execution ID.
 
 - **Identity.** The session runs lifecycle commands itself, so its genuine `CODEX_THREAD_ID` is recorded. Apply the documented `env -u CODEX_SESSION_ID` rule for spawned children. The harness never sets or invents an execution ID.
-- **Claimant.** One Controller thread per Express or Standard ticket (Sol for Protected). Its steps: claim → (harness work) → gate decision → lifecycle review. Each step is an `exec resume` of the same thread with a new small input. Record the thread ID and the serving account (§7) at launch.
+- **Claimant.** One Controller thread per Express or Standard ticket (Sol for Protected). Its steps: claim → (harness work) → gate decision → lifecycle review. Each step is an `exec resume` of the same thread with a new small input. Record the thread ID at launch.
 - **Verifier.** A new thread, never the claimant's.
 - **Triage and escalation.** One-shot threads. Their output is a decision file the harness parses. Invalid output gets one retry, then a block.
 - **Never waits in a model.** The harness waits on processes and files. No Codex session waits, polls or supervises another.
@@ -117,15 +117,23 @@ mutants 3/3 killed | recon quotes 9/9 verified | pre-review NONE
 - Successful logs are never included; a failure shows an excerpt of 40 lines or fewer.
 - A diff over 400 lines is not bundled. The ticket is split or escalated instead.
 
-## 7. Budgets and codex-lb
+## 7. Budgets and account limits
 
 - **Before** launching or resuming any Codex session, check:
   - the deadline;
   - the ticket's session and token budget;
-  - the serving account's 5-hour usage (process §6 and §7).
-- **For a resume,** the account is the thread's recorded owner.
-- **Reading account data.** Read per-account usage and the session-to-account mapping from codex-lb. Its documentation shows a dashboard, request logs and reports, but no documented usage API. **Confirm the interface first.** If none is usable, fall back to the rate-limit fields Codex reports in its own JSON events or session logs, and treat unknown as exhausted.
-- **On a stop:** block the ticket with the reason and usage, and keep going with work that doesn't need that account.
+  - the account's 5-hour usage against the headroom threshold (process §6 and §7).
+- **Reading usage.** Read the account's 5-hour and weekly usage from the
+  rate-limit fields Codex reports in its JSON events or session logs; confirm
+  the field names first. Update a small usage table after every session.
+  Missing or stale usage counts as exhausted.
+- **At the 5-hour limit:** if the owner's credit cap allows it, continue and
+  count credits spent at rate-card prices. Otherwise sleep until the reported
+  reset, if that's within the deadline, and resume. Claimant threads resume on
+  the same account.
+- **At the weekly limit:** stop the batch and write the status.
+- **Never** switch accounts, buy credits, or change plan settings. Those are
+  the owner's actions.
 
 ## 8. Outputs
 
@@ -154,7 +162,7 @@ Each step is a Standard-lane slice with its own tests. Pure cores come first.
 5. **Codex session launcher and usage parsing** (with a fake `codex` binary in the tests); budgets.
 6. **Lifecycle and gate integration:** claim and review via the session, publish, `check-sha`, finish. Reuse the planner core.
 7. **Recon assembly and quote verification; the mutant check and pre-review.**
-8. **codex-lb account checks** (after confirming its interface).
+8. **Plan usage reading, headroom checks, credit cap and reset sleep.**
 9. **The `run` loop, `status`, `resume`, the stop file and the dispatcher lock.**
 
 **Minimum useful version: steps 1–6.** It removes the dispatcher conversation and Codex's mechanical work, which is most of the saving. Steps 7–9 add the remaining Codex savings and safety.
