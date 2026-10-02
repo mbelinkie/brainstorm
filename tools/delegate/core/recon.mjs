@@ -121,6 +121,37 @@ export function validateRecon(recon) {
   return problems;
 }
 
+const BROAD_SCOPE = /^(?:\*\*?(?:\/\*\*?)*(?:\/\*(?:\.\w+)?)?|\*\.\w+)$/;
+
+function validateSlices(t, where) {
+  const problems = [];
+  if (!Array.isArray(t.slices) || t.slices.length === 0 || t.slices.length > 6) return [`${where} slices must be a list of 1-6`];
+  const caseIds = new Set((t.cases ?? []).map((c) => c.id));
+  const seen = new Map();
+  t.slices.forEach((slice, i) => {
+    const sw = `${where} slice ${i + 1}`;
+    if (!isObj(slice) || !/^S\d+$/.test(slice.id ?? "")) { problems.push(`${sw} needs id S1, S2...`); return; }
+    if (typeof slice.goal !== "string" || !slice.goal.trim()) problems.push(`${sw} needs a goal`);
+    if (!Array.isArray(slice.scope) || slice.scope.length === 0 || slice.scope.some((g) => typeof g !== "string" || g.startsWith("/") || g.includes("..") || BROAD_SCOPE.test(g.trim()))) problems.push(`${sw} scope must be narrow relative globs`);
+    if (!Array.isArray(slice.cases)) problems.push(`${sw} cases must list case ids`);
+    for (const id of slice.cases ?? []) {
+      if (!caseIds.has(id)) problems.push(`${sw} names unknown case ${id}`);
+      if (seen.has(id)) problems.push(`case ${id} is in two slices`);
+      seen.set(id, slice.id);
+    }
+  });
+  for (const id of caseIds) if (!seen.has(id)) problems.push(`${where} case ${id} is in no slice`);
+  return problems;
+}
+
+// Slices to run, in order. Without explicit slices the ticket is one slice.
+export function normalizeSlices(decision) {
+  if (Array.isArray(decision.slices) && decision.slices.length) {
+    return decision.slices.map((s) => ({ id: s.id, goal: s.goal, scope: s.scope, allow: s.allow ?? decision.allow ?? [], caseIds: s.cases ?? [] }));
+  }
+  return [{ id: "S1", goal: "the whole ticket", scope: decision.scope ?? [], allow: decision.allow ?? [], caseIds: (decision.cases ?? []).map((c) => c.id) }];
+}
+
 // Controller triage decision: { tickets: [{ n, fit, lane, decisions, escalate, cases, scope, allow }] }
 export function validateTriage(value, expectedNumbers) {
   const problems = [];
@@ -134,12 +165,14 @@ export function validateTriage(value, expectedNumbers) {
       if (!["express", "standard", "protected"].includes(t.lane)) problems.push(`${where} lane invalid`);
       if (!Array.isArray(t.scope) || t.scope.length === 0 || !t.scope.every((g) => typeof g === "string" && !g.startsWith("/") && !g.includes(".."))) problems.push(`${where} scope must be non-empty relative globs`);
       // A scope must name where the work goes; a whole-repository glob is not a scope.
-      else if (t.scope.some((g) => /^(?:\*\*?(?:\/\*\*?)*(?:\/\*(?:\.\w+)?)?|\*\.\w+)$/.test(g.trim()))) problems.push(`${where} scope is too broad (${t.scope.join(", ")})`);
+      else if (t.scope.some((g) => BROAD_SCOPE.test(g.trim()))) problems.push(`${where} scope is too broad (${t.scope.join(", ")})`);
       if (!Array.isArray(t.cases)) problems.push(`${where} cases must be an array`);
       else if (t.lane === "standard" && t.cases.length === 0 && !t.escalate) problems.push(`${where} standard lane needs at least one case`);
       for (const c of t.cases ?? []) if (!isObj(c) || !/^[A-Z]\d+$/.test(c.id ?? "") || typeof c.expect !== "string") problems.push(`${where} case needs id and expect`);
       if (t.allow !== undefined && (!Array.isArray(t.allow) || !t.allow.every((a) => ["deps", "config", "suppressions"].includes(a)))) problems.push(`${where} allow invalid`);
     }
+    if (t.fit === "ok" && t.slices !== undefined && t.slices !== null) problems.push(...validateSlices(t, where));
+    if (t.real_process_checks !== undefined && (!Array.isArray(t.real_process_checks) || !t.real_process_checks.every((c) => typeof c === "string" && c.trim()))) problems.push(`${where} real_process_checks must be strings`);
     byN.set(t.n, t);
   }
   for (const n of expectedNumbers) if (!byN.has(n)) problems.push(`#${n} missing from triage`);

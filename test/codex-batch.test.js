@@ -146,6 +146,7 @@ test("the planner scans #13–44 and selects the highest-priority ticket after o
   assert.equal(result.selected.mergeGate, "independent verification or owner acceptance");
   assert.equal(result.scanned, 32);
   assert.deepEqual(world.readyCalls.map((call) => call.number), [42, 20]);
+  assert.deepEqual(result.readyQueue.map((issue) => issue.number), [42, 20], "every eligible Ready ticket, in priority order");
   assert.ok(world.readyCalls.every((call) => call.options.dryRun === true));
   assert.equal(world.reads, 1);
   assert.equal(world.mutations, 0);

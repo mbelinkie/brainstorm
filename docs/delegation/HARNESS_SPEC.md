@@ -165,25 +165,51 @@ Each step is a Standard-lane slice with its own tests. Pure cores come first.
 **Acceptance for the harness itself:**
 
 - every guard has a test that fails when the guard is removed;
+- `npm test` and `npm run test:harness` both pass;
 - one end-to-end dry run on a throwaway ticket with fake DeepSeek and fake Codex binaries;
 - one real Express ticket with Sol watching the bundle and evidence.
 
 ## 10. Implementation status (October 2, 2026)
 
-Built and tested (`test/delegate-*.test.js`, 51 tests, plus a bypass check in `test/roadmap-bypass.test.js`; six of them are end-to-end runs on a throwaway repository with real git and `node --test`, fake DeepSeek, fake Codex, fake lifecycle and gate):
+Every feature in this spec and in the [process](../DELEGATION.md) is built.
 
-- Build steps 1–6: config, artifact validation and atomic staging, all eleven guards (each with a test that fails when the guard is removed), JUnit parsing, red-on-base, the acceptance lock, the DeepSeek client (recording, length retry, spend stop, cost estimate), the ladder, the bundle, the Codex session launcher (usage, decisions, budgets, credits, plan headroom), lifecycle and gate integration, `check-sha`, publish, PR, merge and `finish`.
-- From step 7: recon (context selection without tools, quote verification, contract drift and the scout's fit check).
-- From step 9: `run`, `status`, `stop`, the runner lock and resume-from-checkpoint.
+**Tests:** unit tests in `test/delegate-*.test.js` (part of `npm test`), a bypass check in `test/roadmap-bypass.test.js`, and thirteen end-to-end runs in `test/harness/` (`npm run test:harness`, about 50 seconds). The end-to-end runs are kept out of `npm test` because product tickets run the suite on every ladder attempt; run them after any harness change, and as part of Sol's harness review. They use a throwaway repository with real git and `node --test`, and fake DeepSeek, Codex, lifecycle and gate. Together they cover:
 
-Not built yet:
+- the full path, with mutants, pre-review and the audit sample;
+- a mutant that survives, strengthened tests and their re-proof;
+- pre-review with one extra attempt, and keeping the green version when that attempt regresses;
+- ladder climbing and the guards;
+- a capped ladder escalating;
+- one REPAIR;
+- two slices;
+- the Protected lane with Sol;
+- a category raised to Protected by the owner;
+- batched triage across two tickets;
+- Gate 0 flagging;
+- a role session editing the worktree;
+- crash recovery of scratch edits, and fresh names on a retry.
 
-- **Mutant check and pre-review** (step 7). Bundles and evidence say "not run".
-- **Batched triage.** Triage runs one ticket at a time, combined with the claim, because the planner selects one Ready ticket at a time.
-- **Protected lane.** A ticket triaged as Protected is blocked with a handoff for Sol; the harness does not run Sol-led design.
+**Covered:**
 
-Unconfirmed until the first real run (see the README smoke test):
+- **Build steps 1–6:** config, artifacts, guards, JUnit, red-on-base, the lock, the DeepSeek client, the ladder, the bundle, the Codex launcher, budgets, plan headroom, lifecycle and gate integration, `check-sha`, publish, PR, merge, finish.
+- **Step 7:**
+  - recon (context without tools, quote verification, drift and fit);
+  - the mutant check (in place, behind a crash-safe backup), with one strengthening round re-proven green on the implementation, red on base and fatal to the survivors, then re-locked and committed;
+  - pre-review, with one extra attempt that keeps the previous green version if it regresses.
+- **Step 8:** single-account plan headroom, the credit cap, sleeping until the reset, and stopping at the weekly limit.
+- **Step 9:** `run`, `ticket`, `status`, `stop`, the runner lock, resuming from checkpoints, restoring scratch edits after a crash.
+- **Beyond the steps:**
+  - slices;
+  - the Protected lane (Sol design-and-claim, gate, real-process check, review);
+  - routing to Sol for escalations and for owner category overrides;
+  - batched triage (`batch.triageBatchSize`);
+  - the Sol audit sample (`audit`);
+  - `reopens` and `report`, with tuning recommendations;
+  - workstream categories with `categoryOverrides` (`minLane`, `ladderStart`).
 
-- Codex's JSON event and session-log field names (read from the codex-cli 0.160.0 binary, not from a live run).
+**Unconfirmed until the first real run** (see the README smoke test):
+
+- Codex's JSON event and session-log field names. They were read from the codex-cli 0.160.0 binary, not from a live run.
 - Network access for lifecycle commands inside the Codex sandbox (`sandbox_workspace_write.network_access=true`).
-- Whether DeepSeek accepts `response_format` with thinking enabled (`deepseek.jsonMode` is off by default).
+- Whether DeepSeek accepts `response_format` with thinking enabled. `deepseek.jsonMode` is off by default.
+- How well DeepSeek follows the scout, mutant, pre-review and test-author prompts on real tickets.

@@ -156,7 +156,12 @@ The harness then:
 
 ### 3. Triage (Controller)
 
-One Luna session receives a harness-trimmed view of the recon report and returns its decisions. The design allows batching up to 10 tickets per session. The current harness triages one ticket at a time and combines triage with the claim in the same session (see the harness spec's implementation status). The decisions cover:
+A Luna session receives a harness-trimmed view of the recon report and returns its decisions. There are two modes, set by `batch.triageBatchSize`:
+
+- **One ticket at a time** (the default): the same session triages and then claims, so a ticket needs one Luna thread for triage, gate and review.
+- **Batched:** one session triages up to N tickets without claiming. Each ticket is then claimed by its own short Luna session, which becomes its claimant. The shared session's cost is split across its tickets in the ledger. It is not obviously cheaper, because every claim needs its own thread anyway. Measure before relying on it.
+
+The decisions cover:
 
 - **fit:** `ok`, or `flag` for design, research or visual-judgment work;
 - **lane:** Express, Standard or Protected;
@@ -166,7 +171,13 @@ One Luna session receives a harness-trimmed view of the recon report and returns
 
 The decisions come back as one JSON object (the [controller card](delegation/cards/controller.md) defines it). The Controller does not open source files during triage. Anything it cannot decide from the view goes to Sol or Protected.
 
-**Claim.** Only when fit is `ok`, the lane is Express or Standard, and nothing is escalated, the same Luna session runs the pre-filled claim command with its own native ID. The harness then confirms the live claim's execution ID equals that session's thread ID. Recon is read-only, and nothing in the worktree changes before the claim succeeds. A Protected ticket is not claimed by Luna; the current harness blocks it with a handoff for Sol.
+**Claim.** Only when fit is `ok`, the lane is Express or Standard, and nothing is escalated, Luna runs the pre-filled claim command with its own native ID. The harness then confirms the live claim's execution ID equals that session's thread ID. Recon is read-only, and nothing in the worktree changes before the claim succeeds.
+
+**Routed to Sol.** A Protected ticket, an escalated question, or a category the owner has raised to Protected goes to a Sol **design-and-claim** session:
+
+- Sol settles the open questions and decides the lane.
+- For Protected work, Sol also defines the cases, scopes, slices and planned real-process checks, and claims.
+- Otherwise Sol returns the decisions and Luna claims.
 
 ### 4. Acceptance tests (test author + harness)
 
@@ -227,11 +238,25 @@ The claimant Luna session reads the **review bundle** (spec §6) and its card, a
 
 ### Express lane differences
 
-Express runs steps 1, 2 (optional), 5, 7 and 8. It has no mutant check or pre-review and no new acceptance tests unless the ticket requires them.
+Express runs every step except the mutant check and pre-review. It needs no acceptance cases unless the ticket requires them; without cases, the regression suite is its acceptance.
+
+### Protected lane differences
+
+- Sol holds the claim, makes the gate decision (ACCEPT, one REPAIR, or RECLAIM; there is no escalation) and records the review.
+- DeepSeek still implements every slice under the same guards. The protected-path guard is off for Protected tickets, and their lane limits are larger.
+- After all slices are accepted and committed, Sol runs its planned **real-process checks** against the checkout, outside the worktree, with disposable resources. The evidence goes into the review and the evidence file.
+- Protected tickets are not part of the Luna audit sample.
 
 ### Slicing
 
-If a ticket is larger than one packet, the Scout proposes slices: one behavior, one main boundary, and about 1–3 production files per slice. The Controller approves them in triage. Dependent slices run in order. Independent slices may run in parallel only in separate worktrees with non-overlapping write scopes.
+If a ticket is larger than one packet, the Scout proposes slices: one behavior, one main boundary, and about 1–3 production files per slice. The Controller (or Sol) approves them in triage, giving each its own scope and cases; every case belongs to exactly one slice.
+
+Slices run in order in the ticket's worktree. Each slice goes through steps 4–7 and ends in a gate decision and a commit:
+
+- every earlier slice's acceptance file stays locked;
+- earlier slices' tests keep running in the regression suite.
+
+The ticket is published once, after its last slice. The harness does not run slices in parallel.
 
 ---
 

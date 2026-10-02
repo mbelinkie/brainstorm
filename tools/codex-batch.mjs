@@ -163,6 +163,9 @@ export function createBatchPlanner({ config, gate, lifecycle } = {}) {
       issueRange: [ISSUE_RANGE.min, ISSUE_RANGE.max],
       scanned: inspected.length,
       selected: selectedIssues[0] ?? null,
+      // Every eligible Ready ticket in priority order (read-only; the delegation
+      // harness uses it to triage several tickets in one session).
+      readyQueue: selectedIssues,
       promotionCandidates,
       skipped,
     };

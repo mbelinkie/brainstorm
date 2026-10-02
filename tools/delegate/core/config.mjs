@@ -30,6 +30,11 @@ export function validateConfig(cfg) {
   }
   need(isObj(cfg.budgets?.sessionsPerTicket), "budgets.sessionsPerTicket required");
   need(isObj(cfg.plan) && typeof cfg.plan.headroomPercent === "number" && typeof cfg.plan.creditCap === "number" && cfg.plan.creditCap >= 0, "plan.headroomPercent/creditCap required");
-  need(isObj(cfg.batch) && isPosInt(cfg.batch.deadlineHours), "batch.deadlineHours required");
+  need(isObj(cfg.batch) && isPosInt(cfg.batch.deadlineHours) && isPosInt(cfg.batch.triageBatchSize), "batch.deadlineHours/triageBatchSize required");
+  for (const role of ["scout", "testAuthor", "mutants", "preReview"]) {
+    need(isObj(cfg.deepseek?.[role]) && typeof cfg.deepseek[role].model === "string" && ["low", "high", "max"].includes(cfg.deepseek[role].effort), `deepseek.${role} needs model and effort`);
+  }
+  need(isObj(cfg.audit) && ["pilotAll", "earlyRate", "earlyUntil", "steadyRate"].every((k) => Number.isInteger(cfg.audit[k]) && cfg.audit[k] >= 0) && cfg.audit.earlyRate > 0 && cfg.audit.steadyRate > 0, "audit sampling settings required");
+  need(cfg.categoryOverrides === undefined || (isObj(cfg.categoryOverrides) && Object.values(cfg.categoryOverrides).every((o) => isObj(o) && (o.minLane === undefined || ["express", "standard", "protected"].includes(o.minLane)) && (o.ladderStart === undefined || (Number.isInteger(o.ladderStart) && o.ladderStart >= 0)))), "categoryOverrides entries need minLane and/or ladderStart");
   return problems;
 }

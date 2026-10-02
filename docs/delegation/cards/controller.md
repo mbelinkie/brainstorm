@@ -27,7 +27,19 @@ Your input holds the Scout's verified recon and the issue contract. Decide:
 - **scope:** the write-scope globs the implementer may change, as narrow as the work allows.
 - **allow:** extras only when the contract requires them: `deps`, `config`, `suppressions`.
 
-**Then claim, only if** fit is `ok`, lane is `express` or `standard`, and nothing is escalated. Run the pre-filled claim command exactly. If it is refused, report the refusal code and do not retry.
+- **slices:** only when the ticket needs more than one bounded change. Each slice is one behavior with its own narrow scope and its own cases (`S1`, `S2`, ... in dependency order); every case belongs to exactly one slice. Leave `slices` null otherwise.
+
+Scopes like `**`, `**/*` or `*.js` are refused: name where the work goes.
+
+**Then claim, only if** fit is `ok`, lane is `express` or `standard`, and nothing is escalated. Run the pre-filled claim command exactly. If it is refused, report the refusal code and do not retry. A Protected or escalated ticket goes to Sol; never claim it.
+
+## Batch-triage step
+
+Your input holds several tickets. Decide each exactly as above, but **do not claim anything**; the harness asks for each claim separately. Reply with `{"tickets": [ ...one decision per ticket... ]}`.
+
+## Claim step
+
+Triage is already done (by you in a batch, or by Sol). Run the pre-filled claim command and reply with whether it succeeded. You hold this ticket's claim from now on: the gate and review steps come back to this session.
 
 ## Gate step
 

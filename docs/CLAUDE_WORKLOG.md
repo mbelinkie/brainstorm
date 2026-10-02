@@ -2102,3 +2102,15 @@ Branch `claude/delegate-harness`, stacked on `claude/delegation-v3` (PR #62). Cl
 **Checks:** `npm test` 691/691 (51 new harness tests plus one bypass test; six end-to-end runs on a throwaway repository with a bare origin, real git and `node --test`, fake DeepSeek/Codex/lifecycle/gate). Running the real Codex CLI against a local mock model server to confirm its JSON event format was refused by this session's sandbox policy, so Codex event and session-log field names come from strings in the codex-cli 0.160.0 binary.
 
 **Unproven:** everything that needs Matthew's Mac: real Codex event and rate-limit fields, network for lifecycle commands inside the Codex sandbox, DeepSeek behaviour with these prompts, and the harness on the real repository. The README smoke test covers each; Sol reviews the harness once before Standard-lane use.
+
+### 2026-10-02 — delegation harness, remaining features
+
+Branch `claude/delegate-harness` (second commit). Claude (cloud session) at Matthew's request ("build the rest of it, all the features"). No ticket claimed, no batch started, no product code changed, no DeepSeek or Codex request made.
+
+**Built:** mutant check (in place behind per-level crash-safe backups) with one test-strengthening round that must stay green on the implementation, kill the survivors and stay red on base, then is re-locked and committed; pre-review with one extra attempt that keeps the previous green version if it regresses; ordered slices (per-slice tests, ladder, checks, gate and commit; earlier acceptance files stay locked); the Protected lane (Sol design-and-claim, Sol gate, Sol real-process check, Sol review); routing to Sol for escalated questions and for owner category overrides; batched triage (`batch.triageBatchSize`, planner `readyQueue`); the Sol audit sample; `reopens` and `report` with tuning recommendations; Project Workstream categories with `categoryOverrides`; fresh worktree/branch names when a terminal ticket is retried (nothing deleted). Cards, process doc, spec status and README updated.
+
+**Test layout:** the 13 end-to-end runs moved to `test/harness/` (`npm run test:harness`, ~50 s) so `npm test` stays ~8 s; product tickets run the suite on every ladder attempt. `test/harness/**` added to the protected paths.
+
+**Checks:** `npm test` 689/689; `npm run test:harness` 13/13 (full path with mutants, pre-review and audit; mutant survival and strengthening; pre-review extra attempt both ways; ladder and guards; capped escalation; REPAIR; two slices; Protected lane; category override; batched triage over two tickets; Gate 0; worktree tampering; nested scratch recovery and retry naming).
+
+**Unproven:** unchanged from the first harness entry: real Codex event and rate-limit fields, sandbox network for lifecycle commands, DeepSeek behaviour on these prompts, and the harness against the real repository. Batched triage is not shown to save tokens; measure before enabling it.

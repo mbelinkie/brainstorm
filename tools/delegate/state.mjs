@@ -49,9 +49,9 @@ export function createState(home) {
 }
 
 const LEDGER_COLUMNS = [
-  "ticket", "title", "lane", "final_lane", "fit", "base_sha", "outcome", "attempts", "models", "deepseek_usd",
-  "recon_quotes_verified", "codex_sessions", "codex_input", "codex_cached", "codex_output", "codex_credits",
-  "sol_sessions", "decision", "repairs", "escalated", "pr", "merged_sha", "finished_at",
+  "ticket", "title", "category", "lane", "final_lane", "fit", "base_sha", "outcome", "slices", "attempts", "models", "deepseek_usd",
+  "recon_quotes_verified", "mutants", "pre_review", "codex_sessions", "codex_input", "codex_cached", "codex_output", "codex_credits",
+  "sol_sessions", "decision", "repairs", "escalated", "audited", "pr", "merged_sha", "finished_at",
 ];
 
 const csvCell = (v) => {

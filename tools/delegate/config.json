@@ -14,6 +14,7 @@
     "scripts/roadmap/**",
     "scripts/guard/**",
     "tools/delegate/**",
+    "test/harness/**",
     "tools/codex-batch.mjs",
     "tools/batch-core.mjs",
     ".claude/**",
@@ -49,6 +50,8 @@
     "timeoutMs": 600000,
     "scout": { "model": "deepseek-flash", "effort": "low" },
     "testAuthor": { "model": "deepseek-v4-pro", "effort": "high" },
+    "mutants": { "model": "deepseek-flash", "effort": "low" },
+    "preReview": { "model": "deepseek-v4-pro", "effort": "high" },
     "contextTokenCap": 200000
   },
   "codex": {
@@ -71,5 +74,7 @@
     "sessionsPerTicket": { "express": 2, "standard": 4, "protected": 6 }
   },
   "plan": { "headroomPercent": 80, "creditCap": 0, "requireUsageReading": true },
-  "batch": { "deadlineHours": 8, "triageBatchSize": 10 }
+  "batch": { "deadlineHours": 8, "triageBatchSize": 1 },
+  "audit": { "pilotAll": 10, "earlyRate": 5, "earlyUntil": 30, "steadyRate": 20 },
+  "categoryOverrides": {}
 }

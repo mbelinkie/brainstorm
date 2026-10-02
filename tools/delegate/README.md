@@ -32,6 +32,25 @@ node tools/delegate/run.mjs stop             # stop after the current step
 
 `run` picks up unfinished tickets first, so re-running it after a crash resumes from the last checkpoint. Blocked and flagged tickets carry a lifecycle `block:v1` comment that says what is needed and from whom.
 
+## Measuring and tuning
+
+```bash
+node tools/delegate/run.mjs reopens          # record which finished tickets were reopened (last 14 days)
+node tools/delegate/run.mjs report           # credits per kept ticket, per-category stats, recommendations
+```
+
+`report` only recommends; you apply changes in `config.json`:
+
+- **`categoryOverrides`**, keyed by the Project's Workstream: `minLane` raises a category's lane (`"protected"` sends it straight to Sol), and `ladderStart: 2` starts it on the Pro rung.
+- **`budgets`:** per-session token limits.
+- **`deepseek.scout.model`.**
+- **`audit`:** the Sol audit sample. By default every one of the first 10 Luna-accepted tickets is audited, then 1 in 5 up to 30, then 1 in 20. Audit results are in `$DELEGATE_HOME/audits.json`, and a defect is printed in the batch log.
+- **`batch.triageBatchSize`:** above 1, several Ready tickets are triaged in one Luna session.
+
+## Changing the harness
+
+The harness is Protected-lane code. After any change, run `npm test` and `npm run test:harness` (the end-to-end runs; about 50 seconds), and have Sol review it.
+
 ## What lives where
 
 | Path | Contents |

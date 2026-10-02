@@ -7,6 +7,8 @@
 //   node tools/delegate/run.mjs status              one-page batch status
 //   node tools/delegate/run.mjs stop                ask a running batch to stop after the current step
 //   node tools/delegate/run.mjs check-sha <sha> [--ticket <n>]   the Verifier's one command
+//   node tools/delegate/run.mjs reopens             record which finished tickets were reopened
+//   node tools/delegate/run.mjs report              ledger statistics and tuning recommendations
 //
 // Batches start only on Matthew's instruction. The harness never deploys,
 // applies migrations, chooses migration numbers, or merges Producer/External work.
@@ -18,6 +20,7 @@ import { validateConfig } from "./core/config.mjs";
 import { createState, delegateHome } from "./state.mjs";
 import { realExec } from "./exec.mjs";
 import { createPipeline, isTerminal } from "./pipeline.mjs";
+import { buildReport, formatReport } from "./core/report.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const STOP_CODES = new Set(["SPEND_CAP", "BALANCE_UNRELIABLE", "USAGE_UNKNOWN", "WEEKLY_LIMIT", "RESET_UNKNOWN", "PLAN_RESET_AFTER_DEADLINE", "TRANSPORT", "HTTP_ERROR", "NO_BATCH"]);
@@ -76,7 +79,7 @@ async function fullContext({ env, out }) {
     },
   });
   const runSession = (opts) => runCodexSession({ ...opts, command: config.codex.command, sandbox: config.codex.sandbox, extraConfig: config.codex.extraConfig, timeoutMs: config.codex.timeoutMs, env });
-  const pipeline = createPipeline({ config, repoRoot, state, exec: realExec, gate, lifecycle, deepseek, runSession, env, log: (m) => out(`[${new Date().toISOString()}] ${m}`) });
+  const pipeline = createPipeline({ config, repoRoot, state, exec: realExec, gate, lifecycle, deepseek, runSession, env, projectNumber: roadmapConfig.project?.number ?? null, log: (m) => out(`[${new Date().toISOString()}] ${m}`) });
   return { config, state, gate, lifecycle, planner, deepseek, pipeline };
 }
 
@@ -108,6 +111,41 @@ export async function runCli(argv = process.argv.slice(2), { env = process.env, 
         out(`#${n} ${t.phase}${t.lane ? ` (${t.lane})` : ""}${t.blocked ? ` - ${t.blocked.cause}` : ""}${t.prUrl ? ` - ${t.prUrl}` : ""}`);
       }
       if (state.stopRequested()) out("STOP file present: the batch stops after its current step.");
+      return 0;
+    }
+
+    if (command === "report") {
+      const state = createState(delegateHome(env));
+      const tickets = state.listTickets().map((n) => state.readTicket(n)).filter(Boolean);
+      const reopens = readJsonFile(path.join(state.home, "reopens.json"));
+      const audits = readJsonFile(path.join(state.home, "audits.json"));
+      out(formatReport(buildReport({ tickets, reopens, audits })));
+      return 0;
+    }
+
+    if (command === "reopens") {
+      const config = loadConfig();
+      const state = createState(delegateHome(env));
+      const { createGate } = await import("../../scripts/roadmap/gate.mjs");
+      const { createGhTransport } = await import("../../scripts/roadmap/github-transport.mjs");
+      const gate = createGate({ transport: createGhTransport() });
+      const file = path.join(state.home, "reopens.json");
+      const record = readJsonFile(file);
+      const windowMs = Number(flags.days ?? 14) * 86_400_000;
+      let checked = 0;
+      for (const n of state.listTickets()) {
+        const t = state.readTicket(n);
+        if (t?.phase !== "finished" || !t.finishedAt || now() - Date.parse(t.finishedAt) > windowMs) continue;
+        const res = await gate.read({ query: "query DelegateReopen($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { issue(number: $n) { state } } }", variables: { o: config.repository.owner, r: config.repository.name, n } });
+        if (!res.ok) throw Object.assign(new Error(`issue #${n}: ${res.message}`), { code: res.code });
+        const reopened = res.data.repository.issue.state === "OPEN";
+        record[n] = { reopened: reopened || record[n]?.reopened === true, checkedAt: new Date(now()).toISOString() };
+        checked += 1;
+        if (reopened) out(`#${n} was reopened after the harness finished it`);
+      }
+      fs.mkdirSync(state.home, { recursive: true });
+      fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+      out(`checked ${checked} finished ticket(s) from the last ${flags.days ?? 14} days`);
       return 0;
     }
 
@@ -179,37 +217,58 @@ async function advanceOne(ctx, n, out) {
   return 0;
 }
 
-async function loop(ctx, out, now) {
+export async function loop(ctx, out, now) {
   const seen = new Set();
+  const batchSize = ctx.config.batch.triageBatchSize;
   for (;;) {
     const b = ctx.state.readBatch();
     if (ctx.state.stopRequested()) { out("stop file found; batch stopped"); return 0; }
     if (now() > b.deadlineMs) { out("deadline reached; batch stopped"); return 0; }
-    const pending = ctx.state.listTickets().map((n) => ctx.state.readTicket(n)).filter((t) => t && !isTerminal(t.phase));
-    let t = pending[0];
-    if (!t) {
-      const plan = await ctx.planner.plan();
-      if (!plan.selected) {
-        out(`no eligible Ready work${plan.promotionCandidates.length ? `; ${plan.promotionCandidates.length} promotion candidate(s) need Matthew` : ""}`);
-        return 0;
-      }
-      const n = plan.selected.number;
-      if (seen.has(n)) {
-        out(`#${n} is still selected after the harness finished with it (phase ${ctx.state.readTicket(n)?.phase}); stopping to avoid a loop`);
-        return 1;
-      }
-      seen.add(n);
-      t = await ctx.pipeline.intake(n, plan.selected);
-    }
+    const pending = ctx.state.listTickets().map((n) => ctx.state.readTicket(n)).filter((t) => t && !isTerminal(t.phase))
+      .sort((a, b2) => (a.queuedAt ?? 0) - (b2.queuedAt ?? 0) || a.n - b2.n);
+    let current = pending[0] ?? null;
     try {
-      t = await ctx.pipeline.advance(t);
-      out(`#${t.n} ${t.phase}${t.blocked ? `: ${t.blocked.cause}` : ""}${t.prUrl ? ` (${t.prUrl})` : ""}`);
+      if (pending.length === 0) {
+        // Take the next eligible Ready tickets (several when triage is batched) through intake and recon.
+        const plan = await ctx.planner.plan();
+        const queue = (plan.readyQueue ?? (plan.selected ? [plan.selected] : [])).filter((q) => !seen.has(q.number)).slice(0, batchSize);
+        if (queue.length === 0) {
+          const again = plan.selected && seen.has(plan.selected.number);
+          out(again
+            ? `#${plan.selected.number} is still selected after the harness finished with it (phase ${ctx.state.readTicket(plan.selected.number)?.phase}); stopping to avoid a loop`
+            : `no eligible Ready work${plan.promotionCandidates.length ? `; ${plan.promotionCandidates.length} promotion candidate(s) need Matthew` : ""}`);
+          return again ? 1 : 0;
+        }
+        for (const q of queue) {
+          seen.add(q.number);
+          current = await ctx.pipeline.intake(q.number, q);
+          if (!isTerminal(current.phase)) {
+            current.queuedAt = now();
+            ctx.state.writeTicket(current.n, current);
+            if (current.phase === "worktree") current = await ctx.pipeline.recon(current);
+          }
+          if (isTerminal(current.phase)) out(`#${current.n} ${current.phase}${current.blocked ? `: ${current.blocked.cause}` : ""}`);
+        }
+        continue;
+      }
+      const awaitingTriage = pending.filter((t) => t.phase === "recon");
+      if (batchSize > 1 && awaitingTriage.length >= 2) {
+        const triaged = await ctx.pipeline.batchTriage(awaitingTriage.slice(0, batchSize));
+        out(`batch triage: ${triaged.map((t) => `#${t.n} ${t.phase}`).join(", ")}`);
+        continue;
+      }
+      current = await ctx.pipeline.advance(current);
+      out(`#${current.n} ${current.phase}${current.blocked ? `: ${current.blocked.cause}` : ""}${current.prUrl ? ` (${current.prUrl})` : ""}`);
     } catch (error) {
       if (STOP_CODES.has(error.code)) { out(`batch stopped: ${error.code} ${error.message}`); return 1; }
-      out(`unexpected error on #${t.n}; batch stopped for safety: ${error.code ?? ""} ${error.message}`);
+      out(`unexpected error${current ? ` on #${current.n}` : ""}; batch stopped for safety: ${error.code ?? ""} ${error.message}`);
       return 1;
     }
   }
+}
+
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; }
 }
 
 export function helpText() {
@@ -221,6 +280,8 @@ export function helpText() {
   node tools/delegate/run.mjs status
   node tools/delegate/run.mjs stop
   node tools/delegate/run.mjs check-sha <full-sha> [--ticket <n>]
+  node tools/delegate/run.mjs reopens [--days 14]
+  node tools/delegate/run.mjs report
 
 Private state: $DELEGATE_HOME (default ~/.local/share/brainstorm-delegate).
 DeepSeek key: the file named by $DEEPSEEK_KEY_FILE, or $DELEGATE_HOME/deepseek.key (chmod 600).

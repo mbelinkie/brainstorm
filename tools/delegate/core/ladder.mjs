@@ -15,11 +15,12 @@
 // Outcomes: GREEN, CAPPED, PROMOTE_LANE, PROMOTE_PROTECTED, SPLIT_NEEDED,
 // WORKER_BLOCKED, STOPPED (spend/balance/provider; not a code defect).
 
-export async function runLadder({ rungs, startRung = 0, note = null, deps }) {
+export async function runLadder({ rungs, startRung = 0, note = null, maxAttempts = Infinity, deps }) {
   const attempts = [];
   let previous = null;
   let blockedInARow = 0;
-  for (let index = startRung; index < rungs.length; index += 1) {
+  const lastRung = Math.min(rungs.length, startRung + maxAttempts);
+  for (let index = startRung; index < lastRung; index += 1) {
     const rung = rungs[index];
     const attempt = attempts.length + 1;
 
