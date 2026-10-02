@@ -2076,3 +2076,15 @@ Prompt-order slice passed first try. Initial shipped test passed valid SQL but m
 Output-budget result: shipped test generation completed with30094tokens (26324reasoning), exceeding the former16384 cap, at documented65536 thinking budget; tests then required the recorded coverage repair. The prior #42 same-prompt retry fit under the old cap and was not causal proof; this larger complete output demonstrates why the larger ceiling matters, without claiming general reliability. Shared batch balance observed18.39->18.06 ($0.33, delayed cent-precision billing); Sol/Codex allowance is separate.
 
 Outstanding: independent exact-published-SHA Sol review; Matthew must apply0037 after his migration-ledger preflight and retain the actual has_table_privilege query result versus pre-application list. The new session_battle_generations table must not be newly unreadable by service_role. No production SQL, real-room write, deployment, provider generation, owner acceptance, merge or lifecycle completion occurred.
+
+### 2026-10-02 — delegation v3: harness-dispatched, Luna-controlled process (docs + routing)
+
+Branch `claude/delegation-v3`, base `2198c09`. Claude (cloud session, not a Codex execution) at Matthew's request. No ticket claimed, no batch started, no product code changed.
+
+**Why:** Codex's usage report for the October 1 batch (GPT-6.1 Sol rates) put ~85% of Codex credits in the single long dispatcher conversation (179M input tokens) and ~15% in all ticket sessions for #15–#17. Every session also read ~165 KB of process docs before starting.
+
+**Changes:** new portable `docs/DELEGATION.md` (fit gate for design/research tickets, Express/Standard/Protected lanes, script-run dispatcher, pre-authorized Flash→Pro ladder, DeepSeek-drafted locked acceptance tests with red-on-base and mutant checks, Codex token budgets, codex-lb account rules, ledger and Sol audit sampling); `docs/delegation/HARNESS_SPEC.md` (build spec for `tools/delegate/`, not yet built); role cards for Controller, Verifier and Sol (harness-launched sessions read only their card, ~5 KB with AGENTS.md); `model:controller` (`gpt-6-luna`) execution-role profile in config and routing; AGENTS.md, CLAUDE.md and WORKING_A_TICKET.md updated; October 1 rehearsal lessons and trial observations moved to `docs/roadmap/LESSONS.md`; old DeepSeek guide reduced to a pointer. Tickets claimed under the October 1 policy finish under it (linked at `2198c09`).
+
+**Checks:** `npm ci` exit 0; baseline `npm test` 638/638; after changes 639/639 (new test: Luna controller claim accepted only with written mismatch; `gpt-6-luna` removed from the unsupported-model list, `gpt-6-astra` used instead).
+
+**Unproven:** the harness does not exist yet; budgets, ladder cut-offs and audit rates are starting values to tune from the ledger; codex-lb's per-account usage interface is unconfirmed; Luna's adequacy as Controller in this repo is unmeasured until the pilot.

@@ -20,7 +20,7 @@ accounting, throttle handling, paging bounds and the sanitized log.
 - `scripts/roadmap/probe.mjs`: read-only budget diagnostic.
 - `scripts/roadmap/lifecycle.mjs` (+ `lifecycle-core.mjs`, pure): inspect, ready, claim, block (#3). Uses `gate.session()` only.
 - `scripts/roadmap/lifecycle-finish.mjs`: review, verify, complete, stale, release (#45). Uses `gate.session()` and `ops.rest` only.
-- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): read-only dry-run planner for issues #13–44. It reads through the gate and calls lifecycle `inspect` plus `ready(..., { dryRun: true })`; it cannot claim, spawn workers, access provider balances, publish, merge or complete. The Codex orchestrator assigns bounded DeepSeek Flash/Pro slices and launches native Sol coordination and independent review directly, following `docs/DEEPSEEK_CODING_GUIDE.md`.
+- `tools/codex-batch.mjs` (+ `tools/batch-core.mjs`, pure): read-only dry-run planner for issues #13–44. It reads through the gate and calls lifecycle `inspect` plus `ready(..., { dryRun: true })`; it cannot claim, spawn workers, access provider balances, publish, merge or complete. The delegation harness (`tools/delegate/`, planned; see `docs/delegation/HARNESS_SPEC.md`) will reuse its core and must use the gate for every GitHub read and write.
 - `scripts/roadmap/progress.mjs` (+ `progress-core.mjs`, pure): read-only progress view (#5). Uses `gate.readAll` and `gate.read` only; it has no write path.
 
 ## Not covered, and why
