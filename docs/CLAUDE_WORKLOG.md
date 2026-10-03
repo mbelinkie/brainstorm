@@ -2144,3 +2144,13 @@ Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac).
 **Luna root cause (no code change):** the harness calls `codex` from PATH, which was the standalone CLI 0.149.1 (`~/.local/bin/codex`, installed Aug 24). Codex's server offers models by client version: on the harness's own ChatGPT sign-in (`CODEX_HOME=~/.codex-delegate`, direct, no codex-lb), `codex debug models` from 0.149.1 lists only gpt-5.6-* and gpt-5.5, while the ChatGPT app's bundled CLI (0.159.0) lists gpt-6-luna and gpt-6.1-sol. Matthew's everyday `~/.codex/config.toml` has no provider override; his Luna use came from the app's newer CLI. Fixed by `codex update` (now 0.160.0, the version `core/codex.mjs` was written against). The Open item above is resolved: `gpt-6-luna` is correct.
 
 **Harness bug:** the refused session still counted toward `batch.sessionsRun`, so the batch's one session allowed without a usage reading was spent on nothing and the retry stopped on `USAGE_UNKNOWN`. A session that failed with no usage, no completed turn and an error now leaves the batch's count and reading unchanged. Test: an end-to-end run where Codex refuses the model, red before (sessionsRun 1) and green after. `npm test` 693/693; `npm run test:harness` 16/16.
+
+### 2026-10-02 — harness pilot fix: triage reply names the ticket number
+
+Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac).
+
+The retry of #44 ran Luna (gpt-6-luna on codex-cli 0.160.0) to a completed turn. Usage (`turn.completed.usage`) and the plan reading (5-hour window 7%) were both read, so those pilot checks pass. Luna's decision was sound (lane protected, escalate to Sol: the request-field mapping for resolution and output format is unspecified; no claim made), but it answered `"n":1`. The reply template said `{"n":<n>,...}`, so the harness found "#44 missing from triage" and blocked the ticket.
+
+**Fix:** one-ticket replies (triage-and-claim, Sol's design-and-claim) now spell out the ticket's number in the template; the batched reply keeps `<n>`. Test: an end-to-end check that both one-ticket prompts carry `{"n":7,` and no `<n>`, red before and green after. `npm test` 693/693; `npm run test:harness` 17/17.
+
+**Next on retry:** with this fixed, Luna's escalation sends #44 to a Sol design session (gpt-6.1-sol).

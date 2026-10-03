@@ -40,7 +40,9 @@ export const isTerminal = (phase) => TERMINAL.has(phase);
 const fail = (code, message, extra = {}) => ({ ok: false, code, message, ...extra });
 const stop = (code, message) => Object.assign(new Error(message), { code });
 
-const TRIAGE_REPLY = '{"n":<n>,"fit":"ok|flag","lane":"express|standard|protected","decisions":["..."],"escalate":null|"reason","cases":[{"id":"A1","kind":"normal|failure|invariant","given":"...","expect":"..."}],"scope":["globs"],"allow":[],"slices":null|[{"id":"S1","goal":"...","scope":["globs"],"cases":["A1"]}]';
+// n is the ticket's own number: a one-ticket reply spells it out, since a bare <n> was
+// answered as 1 in the pilot. A batched reply covers several tickets, so it keeps <n>.
+const triageReply = (n = "<n>") => `{"n":${n},"fit":"ok|flag","lane":"express|standard|protected","decisions":["..."],"escalate":null|"reason","cases":[{"id":"A1","kind":"normal|failure|invariant","given":"...","expect":"..."}],"scope":["globs"],"allow":[],"slices":null|[{"id":"S1","goal":"...","scope":["globs"],"cases":["A1"]}]`;
 
 export function createPipeline(ctx) {
   const { config, repoRoot, state, exec, gate, lifecycle, deepseek, runSession, now = Date.now, log = () => {}, env = process.env, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), projectNumber = null, stopBeforeMerge = false } = ctx;
@@ -367,7 +369,7 @@ export function createPipeline(ctx) {
       step: "triage-and-claim",
       body: `${triageView(t)}\n\nDecide fit, lane, decisions, approved cases, write scope and (only if needed) slices. Then, ONLY if fit is ok, lane is express or standard, and nothing is escalated, run the claim command below.`,
       commands: [claimCommand(t, "controller")],
-      reply: `${TRIAGE_REPLY},"claimed":true|false,"claim_refusal":null|"CODE"}`,
+      reply: `${triageReply(t.n)},"claimed":true|false,"claim_refusal":null|"CODE"}`,
     });
     if (!res.ok) return block(t, `triage session: ${res.code} ${res.message}`, "re-run the harness after the cause is fixed");
     const tri = validateTriage({ tickets: [res.decision] }, [t.n]);
@@ -392,7 +394,7 @@ export function createPipeline(ctx) {
       step: "batch-triage",
       cwd: repoRoot,
       body: `Triage each ticket below. Do not claim anything in this step.\n\n${tickets.map(triageView).join("\n\n")}`,
-      reply: `{"tickets":[${TRIAGE_REPLY}}]}`,
+      reply: `{"tickets":[${triageReply()}}]}`,
     });
     if (!res.ok) {
       for (const t of tickets) await block(t, `batch triage session: ${res.code} ${res.message}`, "re-run the harness after the cause is fixed");
@@ -443,7 +445,7 @@ export function createPipeline(ctx) {
         "Settle every open question. Decide the lane. For a protected ticket: define the acceptance cases (every invariant), narrow write scopes, slices for pure sub-pieces, and the real-process checks you will run before review (disposable resources, synthetic credentials, outside the worktree). Then claim with the command below ONLY if the lane is protected. If the lane is express or standard, do not claim; the Controller will.",
       ].filter(Boolean).join("\n"),
       commands: [claimCommand(t, "sol")],
-      reply: `${TRIAGE_REPLY},"real_process_checks":["..."],"claimed":true|false,"claim_refusal":null|"CODE"}`,
+      reply: `${triageReply(t.n)},"real_process_checks":["..."],"claimed":true|false,"claim_refusal":null|"CODE"}`,
     });
     if (!res.ok) return block(t, `Sol design session: ${res.code} ${res.message}`, "Sol takes this ticket interactively");
     const d = { ...res.decision, escalate: null };

@@ -214,9 +214,12 @@ function fakeSessions(world, getPipeline, opts) {
     if (step === "audit") { world.audits.push(n); return { ok: true, threadId: "66666666-6666-4666-8666-666666666666", usage, decision: { defect: false, detail: "fine", recommendation: "none" } }; }
     throw new Error(`unexpected step ${step} (cwd ${cwd})`);
   };
+  const prompts = [];
   return {
     steps,
+    prompts,
     run: async (args) => {
+      prompts.push(args.prompt);
       const res = await run(args);
       writeLog(res.threadId);
       return res;
@@ -478,4 +481,20 @@ test("e2e: a session Codex refuses before any turn does not count against the ba
   const b = s.state.readBatch();
   assert.equal(b.sessionsRun, 0, "nothing ran, so the first-session allowance is still unused");
   assert.equal(b.rateReading, null);
+});
+
+// Pilot regression: the reply template said {"n":<n>} and Luna answered n 1 for #44, so the
+// harness found "#44 missing from triage". A one-ticket reply names the ticket's own number.
+test("e2e: a one-ticket triage or design reply asks for the ticket's own number", async () => {
+  const s = setup({ category: "Platform/Ops", config: { categoryOverrides: { "Platform/Ops": { minLane: "protected" } } } });
+  const t = await runTicket(s);
+  assert.equal(t.phase, "finished", why(t));
+  const s2 = setup();
+  await runTicket(s2);
+  for (const step of ["design-and-claim", "triage-and-claim"]) {
+    const p = [...s.sessions.prompts, ...s2.sessions.prompts].find((x) => x.includes(`## Step: ${step}`));
+    assert.ok(p, `${step} ran`);
+    assert.match(p, /\{"n":7,/, `${step} reply names #7`);
+    assert.doesNotMatch(p, /<n>/, `${step} reply has no placeholder`);
+  }
 });
