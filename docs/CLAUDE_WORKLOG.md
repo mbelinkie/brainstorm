@@ -2088,3 +2088,97 @@ Branch `claude/delegation-v3`, base `2198c09`. Claude (cloud session, not a Code
 **Checks:** `npm ci` exit 0; baseline `npm test` 638/638; after changes 639/639 (new test: Luna controller claim accepted only with written mismatch; `gpt-6-luna` removed from the unsupported-model list, `gpt-6-astra` used instead).
 
 **Unproven:** the harness does not exist yet; budgets, ladder cut-offs and audit rates are starting values to tune from the ledger; the field names for Codex's rate-limit usage, and whether credits are drawn automatically past the plan limit, are unconfirmed; Luna's adequacy as Controller in this repo is unmeasured until the pilot.
+
+### 2026-10-02 — delegation harness, minimum version (tools/delegate)
+
+Branch `claude/delegate-harness`, stacked on `claude/delegation-v3` (PR #62). Claude (cloud session) at Matthew's request ("go ahead and build it"). No ticket claimed, no batch started, no product code changed, no DeepSeek or Codex request made.
+
+**Built:** `tools/delegate/` per `docs/delegation/HARNESS_SPEC.md` build steps 1–6 plus recon (step 7) and the run loop (step 9): config and validation; artifact validation with atomic in-memory staging; eleven guards; JUnit parsing (attribute-aware: node leaves `>` unescaped in attributes), red-on-base and the acceptance lock; DeepSeek client (no tools, every response recorded, length retry, spend stop, cost estimate; JSON mode opt-in); the repair ladder; review bundle; Codex session launcher (identity variables stripped, usage and decision parsing, budgets, credits, plan headroom with fail-closed unknown usage); pipeline from intake to finish through the roadmap gate and lifecycle only; `check-sha` under the OS temp dir for the sandboxed Verifier; idempotent PR open and merge (re-read before write); worktree fingerprint around every role session; CLI (`start`, `run`, `ticket`, `status`, `stop`, `check-sha`). Cards, spec, process doc and routing updated to match; README with setup and a first-run smoke test.
+
+**Found and fixed while testing:** the static guards ran before the suite and treated the not-yet-measured test count as unknown, so no attempt could pass; `node --test` started from inside a test run inherits `NODE_TEST_CONTEXT` and skips the JUnit reporter (the runner now strips it).
+
+**Not built:** mutant check and pre-review (step 7); batched triage (one ticket at a time, triage combined with claim); Protected lane execution (blocked with a Sol handoff).
+
+**Checks:** `npm test` 691/691 (51 new harness tests plus one bypass test; six end-to-end runs on a throwaway repository with a bare origin, real git and `node --test`, fake DeepSeek/Codex/lifecycle/gate). Running the real Codex CLI against a local mock model server to confirm its JSON event format was refused by this session's sandbox policy, so Codex event and session-log field names come from strings in the codex-cli 0.160.0 binary.
+
+**Unproven:** everything that needs Matthew's Mac: real Codex event and rate-limit fields, network for lifecycle commands inside the Codex sandbox, DeepSeek behaviour with these prompts, and the harness on the real repository. The README smoke test covers each; Sol reviews the harness once before Standard-lane use.
+
+### 2026-10-02 — delegation harness, remaining features
+
+Branch `claude/delegate-harness` (second commit). Claude (cloud session) at Matthew's request ("build the rest of it, all the features"). No ticket claimed, no batch started, no product code changed, no DeepSeek or Codex request made.
+
+**Built:** mutant check (in place behind per-level crash-safe backups) with one test-strengthening round that must stay green on the implementation, kill the survivors and stay red on base, then is re-locked and committed; pre-review with one extra attempt that keeps the previous green version if it regresses; ordered slices (per-slice tests, ladder, checks, gate and commit; earlier acceptance files stay locked); the Protected lane (Sol design-and-claim, Sol gate, Sol real-process check, Sol review); routing to Sol for escalated questions and for owner category overrides; batched triage (`batch.triageBatchSize`, planner `readyQueue`); the Sol audit sample; `reopens` and `report` with tuning recommendations; Project Workstream categories with `categoryOverrides`; fresh worktree/branch names when a terminal ticket is retried (nothing deleted). Cards, process doc, spec status and README updated.
+
+**Test layout:** the 13 end-to-end runs moved to `test/harness/` (`npm run test:harness`, ~50 s) so `npm test` stays ~8 s; product tickets run the suite on every ladder attempt. `test/harness/**` added to the protected paths.
+
+**Checks:** `npm test` 689/689; `npm run test:harness` 13/13 (full path with mutants, pre-review and audit; mutant survival and strengthening; pre-review extra attempt both ways; ladder and guards; capped escalation; REPAIR; two slices; Protected lane; category override; batched triage over two tickets; Gate 0; worktree tampering; nested scratch recovery and retry naming).
+
+**Unproven:** unchanged from the first harness entry: real Codex event and rate-limit fields, sandbox network for lifecycle commands, DeepSeek behaviour on these prompts, and the harness against the real repository. Batched triage is not shown to save tokens; measure before enabling it.
+
+### 2026-10-02 — harness pilot fix: recon context selection
+
+Branch `claude/delegate-harness` (third harness commit). Claude (cloud session), after the first real run on Matthew's Mac (`ticket 44 --no-merge`) blocked at recon with a false "contract drift".
+
+**Cause:** the Scout was given the wrong files. Term matching was dominated by issue-template boilerplate ("Outcome", "Automated", "npm test", the authorization paragraph), so the 25 chosen files were mostly roadmap tooling and process docs (about 147k tokens). Neither `image-engine.js`, its Kaplan test, nor the base design spec (which documents the OpenRouter adapter and `usage.cost` in §7.4) was included, and the Scout reported "no supplied file names `usage.cost`" as drift.
+
+**Fix:** process sections and headings are dropped before term extraction, and template vocabulary is a stop word; terms are weighted by rarity and ignored when most files contain them; files the ticket names (full path or unique basename) come first, then documents and code those named documents mention (one hop); roadmap and delegation process material is in `contextExcludes`. The Scout prompt (v1.1) says that something the files omit is an open question, not drift, and that a superseding document only obsoletes the part it supersedes. For #44 the selection is now the architecture, base and addendum specs, `image-engine.js`, both image-engine tests, `cloudflare-worker.js` and `CLAUDE.md` (about 37k tokens).
+
+**Checks:** three new tests in `test/delegate-recon.test.js`, red against the previous `recon.mjs` (3 of 8 failing) and green after; `npm test` 692/692; `npm run test:harness` 14/14.
+
+**Unproven:** the Scout's verdict on #44 with the corrected context; that is the retry on Matthew's Mac.
+
+### 2026-10-02 — harness pilot fix: rejected Codex sessions
+
+Branch `claude/delegate-harness`. The retry of #44 reached the first Luna session, which Codex rejected: "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account." The harness reported this as "controller session over budget: usage missing", because the budget check ran before the failure check.
+
+**Fix:** a session that failed with no usage now reports Codex's own error, and `parseEvents` unwraps the provider's JSON error into its message. Tests: the real event sequence from Matthew's Mac (structure only) in `test/delegate-codex.test.js`, and an end-to-end run where Codex rejects the model. `npm test` 693/693; `npm run test:harness` 15/15.
+
+**Learned from the real run:** `thread.started.thread_id`, `turn.started`, `error.message` and `turn.failed.error.message` match the parser. Usage and rate-limit fields are still unproven, because no turn completed.
+
+**Open:** the Codex model ID for Luna on a ChatGPT account (`gpt-6.1-sol` works; `gpt-6-luna` does not).
+
+### 2026-10-02 — harness pilot fix: refused sessions no longer use up the batch
+
+Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac).
+
+**Luna root cause (no code change):** the harness calls `codex` from PATH, which was the standalone CLI 0.149.1 (`~/.local/bin/codex`, installed Aug 24). Codex's server offers models by client version: on the harness's own ChatGPT sign-in (`CODEX_HOME=~/.codex-delegate`, direct, no codex-lb), `codex debug models` from 0.149.1 lists only gpt-5.6-* and gpt-5.5, while the ChatGPT app's bundled CLI (0.159.0) lists gpt-6-luna and gpt-6.1-sol. Matthew's everyday `~/.codex/config.toml` has no provider override; his Luna use came from the app's newer CLI. Fixed by `codex update` (now 0.160.0, the version `core/codex.mjs` was written against). The Open item above is resolved: `gpt-6-luna` is correct.
+
+**Harness bug:** the refused session still counted toward `batch.sessionsRun`, so the batch's one session allowed without a usage reading was spent on nothing and the retry stopped on `USAGE_UNKNOWN`. A session that failed with no usage, no completed turn and an error now leaves the batch's count and reading unchanged. Test: an end-to-end run where Codex refuses the model, red before (sessionsRun 1) and green after. `npm test` 693/693; `npm run test:harness` 16/16.
+
+### 2026-10-02 — harness pilot fix: triage reply names the ticket number
+
+Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac).
+
+The retry of #44 ran Luna (gpt-6-luna on codex-cli 0.160.0) to a completed turn. Usage (`turn.completed.usage`) and the plan reading (5-hour window 7%) were both read, so those pilot checks pass. Luna's decision was sound (lane protected, escalate to Sol: the request-field mapping for resolution and output format is unspecified; no claim made), but it answered `"n":1`. The reply template said `{"n":<n>,...}`, so the harness found "#44 missing from triage" and blocked the ticket.
+
+**Fix:** one-ticket replies (triage-and-claim, Sol's design-and-claim) now spell out the ticket's number in the template; the batched reply keeps `<n>`. Test: an end-to-end check that both one-ticket prompts carry `{"n":7,` and no `<n>`, red before and green after. `npm test` 693/693; `npm run test:harness` 17/17.
+
+**Next on retry:** with this fixed, Luna's escalation sends #44 to a Sol design session (gpt-6.1-sol).
+
+### 2026-10-02 — harness pilot: GitHub token for sessions, one-slice rule, worktree tidy
+
+Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac). Decisions are Matthew's, relayed from the cloud session.
+
+**Third retry of #44:** Luna ran and escalated (lane protected); Sol designed 17 cases in two slices (2.8 credits). Two problems stopped it. (1) Sol's claim was refused with `QUOTA_EXHAUSTED`: inside Codex's sandbox `gh` cannot read the keychain login (`gh auth status` there: "Failed to log in"), so it calls GitHub anonymously at 60 requests an hour; reproduced with `codex sandbox`. (2) Sol put A10 and A16 in both slices, a rule the prompts never stated.
+
+**GitHub token:** the harness reads `$DELEGATE_HOME/github.token` (`codex.githubTokenFile`; must be `chmod 600`, refused otherwise, like the DeepSeek key, now via the shared `core/secret-file.mjs`) and passes it as `GH_TOKEN` only into the Codex child environment. Any `GH_TOKEN`/`GITHUB_TOKEN` from the parent shell is dropped. `start`, `run` and `ticket` refuse to start without the file. Probe with a dummy value: Codex 0.160.0's default `shell_environment_policy` does not strip `*TOKEN*` variables, so no Codex config change is needed.
+
+**One-slice rule:** the Controller (one-ticket and batched) and Sol prompts now say every acceptance case belongs to exactly one slice, and to split a case that spans two. The validator reports one problem naming every duplicated id (`#44 cases in more than one slice: A10, A16 ...`).
+
+**Luna rejection, for the record:** fixed by `codex update` (0.149.1 to 0.160.0); the old CLI was not offered gpt-6 models.
+
+**Tidy:** removed worktrees `quiz-delegate-44`, `-44-2`, `-44-3` with `git worktree remove` (each at base `e20550a`, no commits, no changes, only `node_modules` ignored). Kept `-44-4`. Their local branches remain.
+
+### 2026-10-03 — harness: token path from config, nothing new hard-codes the project
+
+Branch `claude/delegate-harness`. The harness will become project-agnostic later (Matthew's plan); no refactor now. The GitHub token file is `env[codex.githubTokenFileEnv]` (`DELEGATE_GITHUB_TOKEN_FILE`), else `$DELEGATE_HOME/<codex.githubTokenFile>`; both names live in `tools/delegate/config.json`. The DeepSeek key path uses the same resolver. The token is named `delegate-harness`, scoped to selected repositories. `npm test` 700/700; `npm run test:harness` 18/18.
+
+**Existing project-specific spots in files touched this session (left as they are):** the default state folder `~/.local/share/brainstorm-delegate` (`state.mjs`, `run.mjs` help) and the verify temp folder `brainstorm-delegate-verify` (`pipeline.mjs`); `scripts/roadmap/*` (gate, lifecycle), `tools/codex-batch.mjs`, `tools/worktree-setup.mjs` and `docs/roadmap/config.json` are imported or run by path; Node-only test running (`node --test`, junit reporter, `npm ci`, `.test.js` acceptance file names); `exampleTest` reads `test/quiz-core.test.js`; conventions come from `CLAUDE.md` section titles; the Controller and Verifier cards say "Brainstorm ticket" and the Controller card lists quiz invariants.
+
+### 2026-10-03 — harness: allowlisted session environment; board-write split planned
+
+Branch `claude/delegate-harness`.
+
+**Allowlist:** a Codex session's environment is now built from PATH, HOME, USER, LANG, LC_*, TMPDIR, SHELL, TERM, CODEX_HOME, plus GH_TOKEN from the token file, instead of the parent shell minus a few names. One addition, proven by a test: DELEGATE_HOME, which the Verifier's in-session `check-sha` uses to find the harness's state. Tests: the exact allowlisted set; `AWS_SECRET_ACCESS_KEY` in the parent never reaches the spawned process. A real Luna session started with only the allowlisted variables signed in, ran `git` and `node`, and completed its turn. `npm test` 702/702; `npm run test:harness` 18/18.
+
+**Fine-grained token result:** it reads issue #44 but GitHub refuses it on the user-owned board ("Resource not accessible by personal access token"), so `inspect` and `ready --dry-run` fail with it. Matthew chose harness-side board writes over a classic token. The plan is `docs/delegation/BOARD_WRITE_SPLIT_PLAN.md`; not implemented. #44 stays Blocked; worktree `quiz-delegate-44-4` kept; the next retry starts a fresh batch.

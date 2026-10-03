@@ -4,7 +4,7 @@ Every executable product issue keeps exactly one `model:` label and one `effort:
 
 ## Implementation profiles
 
-DeepSeek implements every product slice and every fix through the [delegation harness](../delegation/HARNESS_SPEC.md). It is artifact-only: no tools, credentials or repository access. Codex models decide, verify and coordinate; they do not implement product code or fixes. The one exception is the Controller card's edit of 5 lines or fewer.
+DeepSeek implements every product slice and every fix through the [delegation harness](../delegation/HARNESS_SPEC.md). It is artifact-only: no tools, credentials or repository access. Codex models decide, verify and coordinate; they do not implement product code or fixes.
 
 | Label | Model | Model ID | Use |
 | --- | --- | --- | --- |
