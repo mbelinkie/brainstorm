@@ -2136,3 +2136,11 @@ Branch `claude/delegate-harness`. The retry of #44 reached the first Luna sessio
 **Learned from the real run:** `thread.started.thread_id`, `turn.started`, `error.message` and `turn.failed.error.message` match the parser. Usage and rate-limit fields are still unproven, because no turn completed.
 
 **Open:** the Codex model ID for Luna on a ChatGPT account (`gpt-6.1-sol` works; `gpt-6-luna` does not).
+
+### 2026-10-02 — harness pilot fix: refused sessions no longer use up the batch
+
+Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac).
+
+**Luna root cause (no code change):** the harness calls `codex` from PATH, which was the standalone CLI 0.149.1 (`~/.local/bin/codex`, installed Aug 24). Codex's server offers models by client version: on the harness's own ChatGPT sign-in (`CODEX_HOME=~/.codex-delegate`, direct, no codex-lb), `codex debug models` from 0.149.1 lists only gpt-5.6-* and gpt-5.5, while the ChatGPT app's bundled CLI (0.159.0) lists gpt-6-luna and gpt-6.1-sol. Matthew's everyday `~/.codex/config.toml` has no provider override; his Luna use came from the app's newer CLI. Fixed by `codex update` (now 0.160.0, the version `core/codex.mjs` was written against). The Open item above is resolved: `gpt-6-luna` is correct.
+
+**Harness bug:** the refused session still counted toward `batch.sessionsRun`, so the batch's one session allowed without a usage reading was spent on nothing and the retry stopped on `USAGE_UNKNOWN`. A session that failed with no usage, no completed turn and an error now leaves the batch's count and reading unchanged. Test: an end-to-end run where Codex refuses the model, red before (sessionsRun 1) and green after. `npm test` 693/693; `npm run test:harness` 16/16.

@@ -174,7 +174,7 @@ function fakeSessions(world, getPipeline, opts) {
     steps.push(step);
     const n = ticketOf(prompt);
     const usage = { input: 20000, cached: 15000, output: 800 };
-    if (opts.rejectModelAt === step) return { ok: false, threadId: thread(LUNA), usage: null, decision: null, errors: ["The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."] };
+    if (opts.rejectModelAt === step) return { ok: false, threadId: thread(LUNA), usage: null, turns: 0, decision: null, errors: ["The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."] };
     if (opts.tamperAt === step) fs.appendFileSync(path.join(getPipeline().worktreeOf(n), "lib.js"), "// controller edit\n");
     if (step === "triage-and-claim") {
       const d = triageDecision(n);
@@ -468,4 +468,14 @@ test("e2e: a session Codex rejects reports Codex's error, not a budget problem",
   assert.equal(t.phase, "blocked");
   assert.match(t.blocked.cause, /not supported when using Codex with a ChatGPT account/);
   assert.doesNotMatch(t.blocked.cause, /budget|usage missing/);
+});
+
+// Pilot regression: the refused session used up the batch's one session allowed without a
+// usage reading, so the retry stopped on USAGE_UNKNOWN before doing anything.
+test("e2e: a session Codex refuses before any turn does not count against the batch", async () => {
+  const s = setup({ rejectModelAt: "triage-and-claim" });
+  await runTicket(s);
+  const b = s.state.readBatch();
+  assert.equal(b.sessionsRun, 0, "nothing ran, so the first-session allowance is still unused");
+  assert.equal(b.rateReading, null);
 });

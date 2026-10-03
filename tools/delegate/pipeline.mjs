@@ -187,11 +187,16 @@ export function createPipeline(ctx) {
       o.codexSessions = [...(o.codexSessions ?? []), { role: roleName, step, threadId: res.threadId, model: role.model, effort: role.effort, usage: res.usage, credits: credits === null ? null : credits / list.length, shared: list.length > 1 ? list.length : undefined, exempt: exempt || undefined, onCredits: Boolean(room.onCredits), ok: res.ok }];
       save(o);
     }
-    // An unreadable reading is stored as null on purpose: the next session then
-    // stops the batch (unknown usage counts as exhausted) instead of trusting a stale one.
-    const reading = readRateLimits(res.threadId);
-    state.writeBatch({ ...state.readBatch(), sessionsRun: (b.sessionsRun ?? 0) + 1, rateReading: reading, creditsSpent: (b.creditsSpent ?? 0) + (room.onCredits ? credits ?? 0 : 0) });
-    if (!reading) log("warning: plan usage could not be read from this Codex session's log; the next session will stop the batch");
+    // A session Codex refused before any turn completed (rejected model, sign-in) used no
+    // plan, so it leaves the batch's count and reading as they were.
+    const refused = !res.ok && !res.usage && !res.turns && res.errors.length > 0;
+    if (!refused) {
+      // An unreadable reading is stored as null on purpose: the next session then
+      // stops the batch (unknown usage counts as exhausted) instead of trusting a stale one.
+      const reading = readRateLimits(res.threadId);
+      state.writeBatch({ ...state.readBatch(), sessionsRun: (b.sessionsRun ?? 0) + 1, rateReading: reading, creditsSpent: (b.creditsSpent ?? 0) + (room.onCredits ? credits ?? 0 : 0) });
+      if (!reading) log("warning: plan usage could not be read from this Codex session's log; the next session will stop the batch");
+    }
     if (changed.length) return fail("WORKTREE_CHANGED", `${roleName} session changed files in ${changed.map((o) => `#${o.n}`).join(", ")}; role sessions never edit files`, { session: res });
     // A session that never got a usable reply (rejected model, sign-in, network) reports its own error, not "usage missing".
     if (!res.ok && !res.usage && res.errors.length) return fail("SESSION_FAILED", `${roleName} session failed (${role.model}): ${res.errors[res.errors.length - 1]}`, { session: res });
