@@ -7,7 +7,7 @@ The script that runs delegated batches: [process](../../docs/DELEGATION.md), [sp
 1. **Private state folder.** The default is `~/.local/share/brainstorm-delegate`. Set `DELEGATE_HOME` to use another folder outside the repository.
 2. **DeepSeek key.** Put the key in `$DELEGATE_HOME/deepseek.key`, or point `DEEPSEEK_KEY_FILE` at the existing private key file, then `chmod 600` it. The harness refuses a key file other users can read, and never prints the key or puts it in a prompt.
 3. **Codex.** `codex` must be on `PATH`, logged in to the one ChatGPT account. Check that `codex exec --help` lists `--json`, `-o` and `--output-schema`.
-4. **GitHub.** `gh auth status` must show the `repo` and `project` scopes. The harness reaches GitHub only through the roadmap gate. Codex sessions also need `$DELEGATE_HOME/github.token` (`chmod 600`), because `gh` in the sandbox cannot use the keychain login.
+4. **GitHub.** `gh auth status` must show the `repo` and `project` scopes. The harness reaches GitHub only through the roadmap gate. Codex sessions also need a GitHub token file (`$DELEGATE_HOME/github.token` or `DELEGATE_GITHUB_TOKEN_FILE`, `chmod 600`), because `gh` in the sandbox cannot use the keychain login.
 
 ## Smoke test before the first real batch
 
@@ -33,7 +33,7 @@ The harness was built and tested with fake DeepSeek and fake Codex. The first re
    ```
 
    The harness reads plan usage from this home's session logs. It calls `codex` from PATH: run `codex update` first. An old CLI is not offered the gpt-6 models and Codex refuses them ("not supported when using Codex with a ChatGPT account").
-3. **Give Codex sessions a GitHub token.** Inside Codex's sandbox, `gh` cannot read the keychain login and calls GitHub anonymously, so the claim fails with `QUOTA_EXHAUSTED`. Save a token limited to this repository and the board (30-day expiry) as `$DELEGATE_HOME/github.token` (default `~/.local/share/brainstorm-delegate/github.token`), `chmod 600`. The harness refuses to start without it, and passes it only to Codex sessions, as `GH_TOKEN`. Do not export it in your shell.
+3. **Give Codex sessions a GitHub token.** Inside Codex's sandbox, `gh` cannot read the keychain login and calls GitHub anonymously, so the claim fails with `QUOTA_EXHAUSTED`. Save a fine-grained token limited to the repositories the harness works on (30-day expiry) as `$DELEGATE_HOME/github.token`, or point `DELEGATE_GITHUB_TOKEN_FILE` at it, and `chmod 600` it. The harness refuses to start without it, and passes it only to Codex sessions, as `GH_TOKEN`. Do not export it in your shell.
 4. **Point the harness at the key.** Set `export DEEPSEEK_KEY_FILE=<your existing private key file>`, and make sure the file is `chmod 600`.
 5. **Pick one small, low-risk Automated ticket** and make it the planner's top Ready ticket:
 

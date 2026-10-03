@@ -42,7 +42,7 @@ const stop = (code, message) => Object.assign(new Error(message), { code });
 
 // n is the ticket's own number: a one-ticket reply spells it out, since a bare <n> was
 // answered as 1 in the pilot. A batched reply covers several tickets, so it keeps <n>.
-// Validation refuses a case listed in two slices; the models were never told (#44 pilot).
+// Validation refuses a case listed in two slices; state the rule so the models follow it.
 const ONE_SLICE_RULE = "Every acceptance case belongs to exactly one slice. If a case covers work in two slices, split it into one case per slice.";
 
 const triageReply = (n = "<n>") => `{"n":${n},"fit":"ok|flag","lane":"express|standard|protected","decisions":["..."],"escalate":null|"reason","cases":[{"id":"A1","kind":"normal|failure|invariant","given":"...","expect":"..."}],"scope":["globs"],"allow":[],"slices":null|[{"id":"S1","goal":"...","scope":["globs"],"cases":["A1"]}]`;

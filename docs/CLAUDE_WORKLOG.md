@@ -2168,3 +2168,9 @@ Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac). Decis
 **Luna rejection, for the record:** fixed by `codex update` (0.149.1 to 0.160.0); the old CLI was not offered gpt-6 models.
 
 **Tidy:** removed worktrees `quiz-delegate-44`, `-44-2`, `-44-3` with `git worktree remove` (each at base `e20550a`, no commits, no changes, only `node_modules` ignored). Kept `-44-4`. Their local branches remain.
+
+### 2026-10-03 — harness: token path from config, nothing new hard-codes the project
+
+Branch `claude/delegate-harness`. The harness will become project-agnostic later (Matthew's plan); no refactor now. The GitHub token file is `env[codex.githubTokenFileEnv]` (`DELEGATE_GITHUB_TOKEN_FILE`), else `$DELEGATE_HOME/<codex.githubTokenFile>`; both names live in `tools/delegate/config.json`. The DeepSeek key path uses the same resolver. The token is named `delegate-harness`, scoped to selected repositories. `npm test` 700/700; `npm run test:harness` 18/18.
+
+**Existing project-specific spots in files touched this session (left as they are):** the default state folder `~/.local/share/brainstorm-delegate` (`state.mjs`, `run.mjs` help) and the verify temp folder `brainstorm-delegate-verify` (`pipeline.mjs`); `scripts/roadmap/*` (gate, lifecycle), `tools/codex-batch.mjs`, `tools/worktree-setup.mjs` and `docs/roadmap/config.json` are imported or run by path; Node-only test running (`node --test`, junit reporter, `npm ci`, `.test.js` acceptance file names); `exampleTest` reads `test/quiz-core.test.js`; conventions come from `CLAUDE.md` section titles; the Controller and Verifier cards say "Brainstorm ticket" and the Controller card lists quiz invariants.
