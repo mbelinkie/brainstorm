@@ -32,6 +32,35 @@ test("launched sessions get GH_TOKEN only from the harness's token file, never t
   assert.deepEqual(env, { PATH: "/bin", GH_TOKEN: "from-file" });
 });
 
+test("launched sessions get an allowlisted environment, not the parent shell minus a few names", () => {
+  const parent = {
+    PATH: "/bin", HOME: "/h", USER: "m", LANG: "en_US.UTF-8", LC_ALL: "C", LC_CTYPE: "UTF-8", TMPDIR: "/t", SHELL: "/bin/zsh", TERM: "xterm",
+    CODEX_HOME: "/c", DELEGATE_HOME: "/d",
+    AWS_SECRET_ACCESS_KEY: "sentinel-aws", OPENAI_API_KEY: "sentinel-openai", DEEPSEEK_KEY_FILE: "/k", NODE_OPTIONS: "--require x", GIT_DIR: "/elsewhere",
+    GH_TOKEN: "from-shell", CODEX_THREAD_ID: "parent",
+  };
+  assert.deepEqual(childEnv(parent, { githubToken: "from-file" }), {
+    PATH: "/bin", HOME: "/h", USER: "m", LANG: "en_US.UTF-8", LC_ALL: "C", LC_CTYPE: "UTF-8", TMPDIR: "/t", SHELL: "/bin/zsh", TERM: "xterm",
+    CODEX_HOME: "/c", DELEGATE_HOME: "/d", GH_TOKEN: "from-file",
+  });
+});
+
+// The one addition beyond Matthew's list: the Verifier runs check-sha inside its session,
+// and check-sha finds the harness's private state through DELEGATE_HOME.
+test("the session child finds the harness's state folder only because DELEGATE_HOME is passed", async () => {
+  const stateMjs = new URL("../tools/delegate/state.mjs", import.meta.url).href;
+  const probe = (env) => new Promise((resolve) => {
+    const child = realSpawn(process.execPath, ["--input-type=module", "-e", `import { delegateHome } from ${JSON.stringify(stateMjs)}; process.stdout.write(delegateHome());`], { env });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.on("close", () => resolve(out));
+  });
+  const parent = { PATH: process.env.PATH, HOME: "/h", DELEGATE_HOME: "/custom/state" };
+  assert.equal(await probe(childEnv(parent)), "/custom/state");
+  const { DELEGATE_HOME, ...without } = parent;
+  assert.notEqual(await probe(childEnv(without)), "/custom/state", "without it the child would read the default folder");
+});
+
 test("events: thread id, summed usage across turns, failures", () => {
   const jsonl = [
     JSON.stringify({ type: "thread.started", thread_id: "019a-abc" }),
@@ -155,18 +184,20 @@ test("session runner: a non-zero exit or unparseable decision is not ok", async 
   assert.equal(res.usage, null);
 });
 
-test("session runner: the GitHub token reaches the Codex process's environment and never its arguments or files", async () => {
+test("session runner: the GitHub token reaches the Codex process's environment and never its arguments or files; other secrets do not", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delegate-codex-"));
   const bin = path.join(dir, "probe.mjs");
   fs.writeFileSync(bin, `import fs from "node:fs";
-fs.writeFileSync(${JSON.stringify(path.join(dir, "env.json"))}, JSON.stringify({ gh: process.env.GH_TOKEN ?? null }));
+fs.writeFileSync(${JSON.stringify(path.join(dir, "env.json"))}, JSON.stringify({ gh: process.env.GH_TOKEN ?? null, aws: process.env.AWS_SECRET_ACCESS_KEY ?? null }));
 process.stdin.resume(); process.stdin.on("end", () => process.exit(0));`);
   await runCodexSession({
     command: process.execPath, role: { model: "gpt-6-luna", effort: "high" }, cwd: dir, prompt: "x", sessionDir: path.join(dir, "s"),
-    env: { PATH: process.env.PATH, GH_TOKEN: "parent-shell" }, githubToken: "sentinel-gh-token",
+    env: { PATH: process.env.PATH, GH_TOKEN: "parent-shell", AWS_SECRET_ACCESS_KEY: "sentinel-aws" }, githubToken: "sentinel-gh-token",
     spawnImpl: (cmd, args, opts) => realSpawn(cmd, [bin, ...args], opts), timeoutMs: 20_000,
   });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "env.json"), "utf8")).gh, "sentinel-gh-token");
+  const seen = JSON.parse(fs.readFileSync(path.join(dir, "env.json"), "utf8"));
+  assert.equal(seen.gh, "sentinel-gh-token");
+  assert.equal(seen.aws, null, "an unrelated secret in the parent shell never reaches the Codex process");
   for (const f of fs.readdirSync(path.join(dir, "s"))) {
     assert.doesNotMatch(fs.readFileSync(path.join(dir, "s", f), "utf8"), /sentinel-gh-token/, `${f} never holds the token`);
   }

@@ -10,13 +10,17 @@
 // Identity variables a launched session must set for itself, never inherit.
 export const IDENTITY_ENV = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"];
 
-// GitHub credentials a session may use come only from the harness's token file.
-const GITHUB_ENV = ["GH_TOKEN", "GITHUB_TOKEN"];
+// A session's environment is built from this allowlist, never the parent shell minus a few
+// names, so unrelated secrets in that shell never reach the model's tools. DELEGATE_HOME is
+// the one addition beyond Matthew's list: the Verifier's in-session check-sha reads the
+// harness's state through it.
+const ALLOWED_ENV = ["PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL", "TERM", "CODEX_HOME", "DELEGATE_HOME"];
+const allowed = (key) => ALLOWED_ENV.includes(key) || key.startsWith("LC_");
 
 export function childEnv(env, { githubToken = null } = {}) {
-  const out = { ...env };
-  for (const key of [...IDENTITY_ENV, ...GITHUB_ENV]) delete out[key];
-  // gh inside the sandbox cannot read the keychain login, so it would call GitHub anonymously.
+  const out = {};
+  for (const [key, value] of Object.entries(env)) if (allowed(key) && value !== undefined) out[key] = value;
+  // gh inside the sandbox cannot read the keychain login; the token comes only from the harness's file.
   if (githubToken) out.GH_TOKEN = githubToken;
   return out;
 }
