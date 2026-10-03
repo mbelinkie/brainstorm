@@ -2114,3 +2114,15 @@ Branch `claude/delegate-harness` (second commit). Claude (cloud session) at Matt
 **Checks:** `npm test` 689/689; `npm run test:harness` 13/13 (full path with mutants, pre-review and audit; mutant survival and strengthening; pre-review extra attempt both ways; ladder and guards; capped escalation; REPAIR; two slices; Protected lane; category override; batched triage over two tickets; Gate 0; worktree tampering; nested scratch recovery and retry naming).
 
 **Unproven:** unchanged from the first harness entry: real Codex event and rate-limit fields, sandbox network for lifecycle commands, DeepSeek behaviour on these prompts, and the harness against the real repository. Batched triage is not shown to save tokens; measure before enabling it.
+
+### 2026-10-02 — harness pilot fix: recon context selection
+
+Branch `claude/delegate-harness` (third harness commit). Claude (cloud session), after the first real run on Matthew's Mac (`ticket 44 --no-merge`) blocked at recon with a false "contract drift".
+
+**Cause:** the Scout was given the wrong files. Term matching was dominated by issue-template boilerplate ("Outcome", "Automated", "npm test", the authorization paragraph), so the 25 chosen files were mostly roadmap tooling and process docs (about 147k tokens). Neither `image-engine.js`, its Kaplan test, nor the base design spec (which documents the OpenRouter adapter and `usage.cost` in §7.4) was included, and the Scout reported "no supplied file names `usage.cost`" as drift.
+
+**Fix:** process sections and headings are dropped before term extraction, and template vocabulary is a stop word; terms are weighted by rarity and ignored when most files contain them; files the ticket names (full path or unique basename) come first, then documents and code those named documents mention (one hop); roadmap and delegation process material is in `contextExcludes`. The Scout prompt (v1.1) says that something the files omit is an open question, not drift, and that a superseding document only obsoletes the part it supersedes. For #44 the selection is now the architecture, base and addendum specs, `image-engine.js`, both image-engine tests, `cloudflare-worker.js` and `CLAUDE.md` (about 37k tokens).
+
+**Checks:** three new tests in `test/delegate-recon.test.js`, red against the previous `recon.mjs` (3 of 8 failing) and green after; `npm test` 692/692; `npm run test:harness` 14/14.
+
+**Unproven:** the Scout's verdict on #44 with the corrected context; that is the retry on Matthew's Mac.

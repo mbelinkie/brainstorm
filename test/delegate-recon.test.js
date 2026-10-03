@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ticketTerms, exportedSymbols, selectContext, verifyClaims, validateRecon, validateTriage } from "../tools/delegate/core/recon.mjs";
+import { ticketTerms, exportedSymbols, selectContext, verifyClaims, validateRecon, validateTriage, contractText, referencedFiles } from "../tools/delegate/core/recon.mjs";
 import { renderSessionInput, renderWorkerPacket } from "../tools/delegate/core/packet.mjs";
 import { shellQuote } from "../tools/delegate/exec.mjs";
 
@@ -23,6 +23,51 @@ test("recon context: ticket terms, exported symbols, matches plus importers, sec
   assert.ok(!chosen.includes(".env.local") && !ctx.map.includes(".env.local"), "secret files never reach DeepSeek");
   assert.ok(!chosen.includes("author.js"));
   assert.match(ctx.map, /quiz-core\.js: scoreAnswer, VERSION/);
+});
+
+// Pilot regression (issue #44): the template's process sections matched the
+// roadmap tooling, the spec named by "Source:" was missed, and the Scout
+// reported missing context as contract drift.
+const ISSUE_44 = [
+  "## Outcome", "Non-Kaplan events can use the image model through OpenRouter.",
+  "## Scope", "- `ENGINES.openrouter` per base spec section 7.4, with fixtures.",
+  "## Acceptance", "Automated", "- [ ] buildRequests and parseResponses covered from fixtures, including usage.cost.", "- [ ] `npm test` passes (real output pasted) and the tested commit ID is recorded.",
+  "## Boundaries and authorization", "Dispatch authorization: Matthew authorized promotion of eligible implementation tickets; production deployment boundaries remain.",
+  "## Routing and size rationale", "`model:standard` / `effort:medium` / Small.",
+  "Source: docs/specs/architecture.md (and the base design).",
+].join("\n");
+
+test("recon context: process sections and template words are not search terms", () => {
+  const text = contractText(ISSUE_44);
+  assert.ok(!/Dispatch|Routing|## /.test(text), "process sections and headings dropped");
+  assert.match(text, /ENGINES\.openrouter/);
+  const terms = ticketTerms(text);
+  for (const t of ["ENGINES.openrouter", "buildRequests", "parseResponses", "usage.cost"]) assert.ok(terms.includes(t), t);
+  for (const t of ["npm test", "Outcome", "Automated", "authorization", "model:standard"]) assert.ok(!terms.includes(t), t);
+});
+
+test("recon context: named files, one hop through named documents, distinctive terms beat boilerplate", () => {
+  const files = {
+    "docs/specs/architecture.md": "Corrections to `design.md` section 7.4. `image-engine.js` is pure. See `quiz.sample.json`.",
+    "docs/specs/design.md": "OpenRouter returns usage: { cost }.",
+    "image-engine.js": "export const ENGINES = { kaplan_proxy: { buildRequests() {}, parseResponses() {} } };\n",
+    "test/image-engine-kaplan.test.js": "import { ENGINES } from '../image-engine.js';\nENGINES.kaplan_proxy.buildRequests(); ENGINES.kaplan_proxy.parseResponses();\n",
+    "quiz.sample.json": "{}",
+    "docs/PLAYBOOK.md": "## Outcome\nAutomated acceptance, npm test passes, authorization, Dispatch, eligible implementation tickets, production deployment.\n",
+  };
+  for (let i = 0; i < 30; i += 1) files[`docs/notes-${i}.md`] = "adapter fixtures\n";
+  const ctx = selectContext({ files: Object.keys(files), ticketText: ISSUE_44, readFile: (p) => files[p] ?? null });
+  const chosen = ctx.chosen.map((c) => c.path);
+  assert.equal(ctx.chosen[0].reason, "named in the ticket");
+  for (const f of ["docs/specs/architecture.md", "docs/specs/design.md", "image-engine.js", "test/image-engine-kaplan.test.js"]) assert.ok(chosen.includes(f), f);
+  assert.ok(!chosen.includes("quiz.sample.json"), "fixtures a document mentions in passing are not pulled in");
+  assert.ok(!chosen.includes("docs/PLAYBOOK.md"), "template boilerplate does not select process documents");
+  assert.ok(!chosen.some((f) => f.startsWith("docs/notes-")), "terms most files contain carry no weight");
+});
+
+test("referenced files: full paths and unique basenames only", () => {
+  const files = ["docs/a/spec.md", "image-engine.js", "a/config.json", "b/config.json"];
+  assert.deepEqual(referencedFiles("see docs/a/spec.md, `image-engine.js` and config.json", files).sort(), ["docs/a/spec.md", "image-engine.js"]);
 });
 
 test("recon quotes are checked against the real file and line range", () => {

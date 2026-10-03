@@ -4,13 +4,15 @@
 
 import { matchesAny, isSafeRelativePath } from "./paths.mjs";
 
-const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "must", "should", "when", "then", "none", "only", "each", "issue", "test", "tests", "file", "files", "code", "work", "also", "will", "have", "does", "make", "used", "uses", "user", "after", "before", "under", "true", "false", "null"]);
+const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "must", "should", "when", "then", "none", "only", "each", "issue", "test", "tests", "file", "files", "code", "work", "also", "will", "have", "does", "make", "used", "uses", "user", "after", "before", "under", "true", "false", "null",
+  // Issue-template vocabulary: present in every ticket, so it matches the roadmap tooling rather than the product.
+  "outcome", "scope", "exclusions", "acceptance", "automated", "producer", "covered", "including", "recorded", "through", "section", "passes", "pasted", "commit", "npm test"]);
 
 // Words and identifiers worth searching for, from the ticket text.
 export function ticketTerms(text) {
   const t = String(text ?? "");
   const terms = new Set();
-  for (const m of t.matchAll(/`([^`\n]{3,80})`/g)) terms.add(m[1].trim());
+  for (const m of t.matchAll(/`([^`\n]{3,80})`/g)) if (!STOP.has(m[1].trim().toLowerCase())) terms.add(m[1].trim());
   for (const m of t.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:[.-][A-Za-z0-9_]+)*)\b/g)) {
     const w = m[1];
     if (w.length >= 5 && !STOP.has(w.toLowerCase()) && (/[A-Z_]/.test(w.slice(1)) || /[.-]/.test(w) || w.length >= 7)) terms.add(w);
@@ -33,11 +35,43 @@ export function exportedSymbols(source) {
 
 export const estimateTokens = (text) => Math.ceil(String(text ?? "").length / 4);
 
+// Issue-template sections about process (authorization, routing, baseline,
+// verification, dependencies) say nothing about the code, and their boilerplate
+// matched the roadmap tooling instead of the product files (pilot, issue #44).
+const PROCESS_HEADING = /^#{1,6}\s*(?:boundaries|routing|starting baseline|verification|dependencies|dispatch)/i;
+export function contractText(text) {
+  const out = [];
+  let skipping = false;
+  for (const line of String(text ?? "").split("\n")) {
+    if (/^#{1,6}\s/.test(line)) { skipping = PROCESS_HEADING.test(line); continue; } // headings are template words
+    if (!skipping) out.push(line);
+  }
+  return out.join("\n");
+}
+
+// Tracked files a text names, by full path or by a basename only one file has.
+export function referencedFiles(text, files) {
+  const t = String(text ?? "");
+  const found = new Set(files.filter((f) => f.includes("/") && t.includes(f)));
+  const byBase = new Map();
+  for (const f of files) {
+    const base = f.split("/").pop();
+    byBase.set(base, byBase.has(base) ? null : f);
+  }
+  for (const m of t.matchAll(/[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:md|m?js|cjs|sql|json|jsonc|html|css)\b/g)) {
+    const f = byBase.get(m[0]);
+    if (f) found.add(f);
+  }
+  return [...found];
+}
+
 // files: tracked repository-relative paths; readFile(path) -> string|null.
 // Returns { map, chosen: [{path, reason}], tokens }.
+// Order: files the ticket names, files those documents name (one hop), then
+// files matching the ticket's distinctive terms, then direct importers.
 export function selectContext({ files, ticketText, readFile, excludes = [], tokenCap = 200_000, maxFiles = 40 }) {
   const usable = files.filter((f) => isSafeRelativePath(f) && !matchesAny(f, excludes) && /\.(?:m?js|cjs|ts|json|sql|md|html|css|toml|jsonc)$/.test(f));
-  const terms = ticketTerms(ticketText);
+  const terms = ticketTerms(contractText(ticketText));
   const sources = new Map();
   const read = (f) => {
     if (!sources.has(f)) sources.set(f, readFile(f) ?? "");
@@ -48,14 +82,21 @@ export function selectContext({ files, ticketText, readFile, excludes = [], toke
     return syms.length ? `${f}: ${syms.join(", ")}` : f;
   });
 
+  // Rarer terms weigh more; a term most files contain says nothing.
+  const n = usable.length;
+  const weights = new Map();
+  for (const term of terms) {
+    const df = usable.filter((f) => f.includes(term) || read(f).includes(term)).length;
+    if (df > 0 && df <= Math.max(8, n * 0.1)) weights.set(term, Math.log(1 + n / df));
+  }
   const scored = [];
   for (const f of usable) {
     const text = read(f);
     let score = 0;
     const hits = [];
-    for (const term of terms) {
-      if (f.includes(term)) { score += 5; hits.push(term); continue; }
-      if (text.includes(term)) { score += 1; hits.push(term); }
+    for (const [term, w] of weights) {
+      if (f.includes(term)) { score += 3 * w; hits.push(term); continue; }
+      if (text.includes(term)) { score += w; hits.push(term); }
     }
     if (score > 0) scored.push({ path: f, score, hits });
   }
@@ -70,6 +111,12 @@ export function selectContext({ files, ticketText, readFile, excludes = [], toke
     tokens += cost;
     chosen.push({ path: f, reason });
   };
+  const named = referencedFiles(ticketText, usable);
+  for (const f of named) take(f, "named in the ticket");
+  for (const doc of named.filter((f) => f.endsWith(".md"))) {
+    // Documents and code only: fixtures and migrations a spec mentions in passing are large and rarely the subject.
+    for (const f of referencedFiles(read(doc), usable).filter((p) => /\.(?:md|m?js|cjs)$/.test(p)).slice(0, 12)) take(f, `named in ${doc}`);
+  }
   for (const s of scored.slice(0, Math.ceil(maxFiles / 2))) take(s.path, `matches ${s.hits.slice(0, 4).join(", ")}`);
   // Direct importers of the chosen files.
   for (const c of [...chosen]) {

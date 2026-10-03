@@ -85,7 +85,7 @@ export function renderScoutPacket({ ticket, title, body, map, files }) {
     ' "proposed_cases":[{"id":"A1","kind":"normal|failure|invariant","given":"...","expect":"..."}],',
     ' "open_questions":["..."],"work_type":"coding|design|research|mixed","testable_done":"yes|no",',
     ' "testable_reason":"one line","suggested_lane":"express|standard|protected","risk_flags":["..."],',
-    ' "contract_drift":["places where the issue contract disagrees with the current code"],',
+    ' "contract_drift":["places where the issue contract contradicts a supplied file (quote both); not things the files omit"],',
     ' "slices":null or [{"id":"S1","goal":"one behavior","scope":["paths"],"cases":["A1"]}]}',
     "Propose slices only when the ticket needs more than one bounded change: one behavior and about 1-3 production files each, in dependency order; every case in exactly one slice.",
     "",

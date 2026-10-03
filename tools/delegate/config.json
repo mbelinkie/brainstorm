@@ -26,7 +26,10 @@
   ],
   "configPaths": ["package.json", "package-lock.json", ".github/**", "wrangler.jsonc", ".nvmrc", ".node-version", ".claude/**"],
   "dependencyFiles": ["package.json", "package-lock.json"],
-  "contextExcludes": [".env*", "**/.env*", ".dev.vars", "node_modules/**", "**/*.pem", "**/*.key", "*.docx", "*.zip", "*.png", "*.jpg", "assets/**", "docs/CLAUDE_WORKLOG.md", "CHANGELOG.md"],
+  "contextExcludes": [".env*", "**/.env*", ".dev.vars", "node_modules/**", "**/*.pem", "**/*.key", "*.docx", "*.zip", "*.png", "*.jpg", "assets/**", "docs/CLAUDE_WORKLOG.md", "CHANGELOG.md",
+    "AGENTS.md", "docs/roadmap/**", "docs/delegation/**", "docs/DELEGATION.md", "docs/DEEPSEEK_CODING_GUIDE.md", "docs/PROJECT_OPERATING_PLAYBOOK.md", "docs/reviews/**", ".github/**",
+    "scripts/roadmap/**", "tools/**", "test/roadmap-*", "test/harness/**", "test/delegate-*", "test/helpers/roadmap-*", "test/codex-batch*", "test/batch-core*"],
+  "_contextExcludes": "Secrets, generated and binary files, logs, and the roadmap and delegation process material, which is never product context.",
   "lanes": {
     "express": { "maxFiles": 3, "maxLines": 60 },
     "standard": { "maxFiles": 12, "maxLines": 400 },
