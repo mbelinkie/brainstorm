@@ -35,6 +35,17 @@ export function buildExecArgs({ model, effort, sandbox = "workspace-write", extr
   return args;
 }
 
+// Codex wraps the provider's error as a JSON string; keep the readable part.
+const errorText = (raw) => {
+  const text = String(raw ?? "");
+  try {
+    const inner = JSON.parse(text);
+    const message = inner?.error?.message ?? inner?.message;
+    if (typeof message === "string" && message) return message.slice(0, 300);
+  } catch { /* not JSON */ }
+  return text.slice(0, 300);
+};
+
 export function parseEvents(jsonl) {
   const result = { threadId: null, usage: null, turns: 0, failed: false, errors: [], unparsed: 0 };
   for (const line of String(jsonl ?? "").split("\n")) {
@@ -54,9 +65,9 @@ export function parseEvents(jsonl) {
     }
     if (event.type === "turn.failed") {
       result.failed = true;
-      result.errors.push(String(event.error?.message ?? "turn failed").slice(0, 300));
+      result.errors.push(errorText(event.error?.message ?? "turn failed"));
     }
-    if (event.type === "error") result.errors.push(String(event.message ?? "error").slice(0, 300));
+    if (event.type === "error") result.errors.push(errorText(event.message ?? "error"));
   }
   return result;
 }

@@ -174,6 +174,7 @@ function fakeSessions(world, getPipeline, opts) {
     steps.push(step);
     const n = ticketOf(prompt);
     const usage = { input: 20000, cached: 15000, output: 800 };
+    if (opts.rejectModelAt === step) return { ok: false, threadId: thread(LUNA), usage: null, decision: null, errors: ["The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."] };
     if (opts.tamperAt === step) fs.appendFileSync(path.join(getPipeline().worktreeOf(n), "lib.js"), "// controller edit\n");
     if (step === "triage-and-claim") {
       const d = triageDecision(n);
@@ -458,4 +459,13 @@ test("e2e: --no-merge stops a verified Automated ticket before merge and leaves 
   assert.deepEqual(s.world.completes, [], "not completed");
   assert.equal(s.world.verified[7], true, "it was still independently verified");
   assert.match(fs.readFileSync(path.join(s.state.ticketDir(7), "signoff.md"), "utf8"), /lifecycle\.mjs complete 7/);
+});
+
+// Pilot regression: a rejected model reported "over budget: usage missing" instead of Codex's own error.
+test("e2e: a session Codex rejects reports Codex's error, not a budget problem", async () => {
+  const s = setup({ rejectModelAt: "triage-and-claim" });
+  const t = await runTicket(s);
+  assert.equal(t.phase, "blocked");
+  assert.match(t.blocked.cause, /not supported when using Codex with a ChatGPT account/);
+  assert.doesNotMatch(t.blocked.cause, /budget|usage missing/);
 });

@@ -41,6 +41,21 @@ test("events: thread id, summed usage across turns, failures", () => {
   assert.equal(parseEvents("").usage, null, "no usage is null, never zero");
 });
 
+test("events: the real shape of a rejected session (codex-cli on Matthew's Mac, 2026-10-02)", () => {
+  const msg = JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", message: "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account." } });
+  const e = parseEvents([
+    JSON.stringify({ type: "thread.started", thread_id: "01a0ffa2-7ebc-7351-80b4-ae3a47b67511" }),
+    JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "error", message: "warning" } }),
+    JSON.stringify({ type: "turn.started" }),
+    JSON.stringify({ type: "error", message: msg }),
+    JSON.stringify({ type: "turn.failed", error: { message: msg } }),
+  ].join("\n"));
+  assert.equal(e.threadId, "01a0ffa2-7ebc-7351-80b4-ae3a47b67511");
+  assert.equal(e.failed, true);
+  assert.equal(e.usage, null);
+  assert.equal(e.errors.at(-1), "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.", "the provider's message, unwrapped");
+});
+
 test("decisions: last fenced JSON object wins; prose or arrays are refused", () => {
   assert.deepEqual(parseDecision('thinking...\n```json\n{"decision":"REPAIR"}\n```\nmore\n```json\n{"decision":"ACCEPT"}\n```').value, { decision: "ACCEPT" });
   assert.deepEqual(parseDecision('{"verified":true}').value, { verified: true });

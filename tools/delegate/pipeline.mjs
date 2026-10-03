@@ -193,6 +193,8 @@ export function createPipeline(ctx) {
     state.writeBatch({ ...state.readBatch(), sessionsRun: (b.sessionsRun ?? 0) + 1, rateReading: reading, creditsSpent: (b.creditsSpent ?? 0) + (room.onCredits ? credits ?? 0 : 0) });
     if (!reading) log("warning: plan usage could not be read from this Codex session's log; the next session will stop the batch");
     if (changed.length) return fail("WORKTREE_CHANGED", `${roleName} session changed files in ${changed.map((o) => `#${o.n}`).join(", ")}; role sessions never edit files`, { session: res });
+    // A session that never got a usable reply (rejected model, sign-in, network) reports its own error, not "usage missing".
+    if (!res.ok && !res.usage && res.errors.length) return fail("SESSION_FAILED", `${roleName} session failed (${role.model}): ${res.errors[res.errors.length - 1]}`, { session: res });
     const budget = overBudget(res.usage, config.budgets[roleName]);
     if (budget.over) return fail("CODEX_BUDGET", `${roleName} session over budget: ${budget.reason}`, { session: res });
     if (!res.ok) return fail("SESSION_FAILED", `${roleName} session failed: ${res.decisionError ?? (res.errors.join("; ") || `exit ${res.exitCode}`)}`, { session: res });

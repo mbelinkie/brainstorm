@@ -2126,3 +2126,13 @@ Branch `claude/delegate-harness` (third harness commit). Claude (cloud session),
 **Checks:** three new tests in `test/delegate-recon.test.js`, red against the previous `recon.mjs` (3 of 8 failing) and green after; `npm test` 692/692; `npm run test:harness` 14/14.
 
 **Unproven:** the Scout's verdict on #44 with the corrected context; that is the retry on Matthew's Mac.
+
+### 2026-10-02 — harness pilot fix: rejected Codex sessions
+
+Branch `claude/delegate-harness`. The retry of #44 reached the first Luna session, which Codex rejected: "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account." The harness reported this as "controller session over budget: usage missing", because the budget check ran before the failure check.
+
+**Fix:** a session that failed with no usage now reports Codex's own error, and `parseEvents` unwraps the provider's JSON error into its message. Tests: the real event sequence from Matthew's Mac (structure only) in `test/delegate-codex.test.js`, and an end-to-end run where Codex rejects the model. `npm test` 693/693; `npm run test:harness` 15/15.
+
+**Learned from the real run:** `thread.started.thread_id`, `turn.started`, `error.message` and `turn.failed.error.message` match the parser. Usage and rate-limit fields are still unproven, because no turn completed.
+
+**Open:** the Codex model ID for Luna on a ChatGPT account (`gpt-6.1-sol` works; `gpt-6-luna` does not).
