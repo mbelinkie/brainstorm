@@ -7,7 +7,7 @@ The script that runs delegated batches: [process](../../docs/DELEGATION.md), [sp
 1. **Private state folder.** The default is `~/.local/share/brainstorm-delegate`. Set `DELEGATE_HOME` to use another folder outside the repository.
 2. **DeepSeek key.** Put the key in `$DELEGATE_HOME/deepseek.key`, or point `DEEPSEEK_KEY_FILE` at the existing private key file, then `chmod 600` it. The harness refuses a key file other users can read, and never prints the key or puts it in a prompt.
 3. **Codex.** `codex` must be on `PATH`, logged in to the one ChatGPT account. Check that `codex exec --help` lists `--json`, `-o` and `--output-schema`.
-4. **GitHub.** `gh auth status` must show the `repo` and `project` scopes. The harness reaches GitHub only through the roadmap gate.
+4. **GitHub.** `gh auth status` must show the `repo` and `project` scopes. The harness reaches GitHub only through the roadmap gate. Codex sessions also need `$DELEGATE_HOME/github.token` (`chmod 600`), because `gh` in the sandbox cannot use the keychain login.
 
 ## Smoke test before the first real batch
 
@@ -32,24 +32,25 @@ The harness was built and tested with fake DeepSeek and fake Codex. The first re
    codex login
    ```
 
-   The harness reads plan usage from this home's session logs.
-3. **Point the harness at the key.** Set `export DEEPSEEK_KEY_FILE=<your existing private key file>`, and make sure the file is `chmod 600`.
-4. **Pick one small, low-risk Automated ticket** and make it the planner's top Ready ticket:
+   The harness reads plan usage from this home's session logs. It calls `codex` from PATH: run `codex update` first. An old CLI is not offered the gpt-6 models and Codex refuses them ("not supported when using Codex with a ChatGPT account").
+3. **Give Codex sessions a GitHub token.** Inside Codex's sandbox, `gh` cannot read the keychain login and calls GitHub anonymously, so the claim fails with `QUOTA_EXHAUSTED`. Save a token limited to this repository and the board (30-day expiry) as `$DELEGATE_HOME/github.token` (default `~/.local/share/brainstorm-delegate/github.token`), `chmod 600`. The harness refuses to start without it, and passes it only to Codex sessions, as `GH_TOKEN`. Do not export it in your shell.
+4. **Point the harness at the key.** Set `export DEEPSEEK_KEY_FILE=<your existing private key file>`, and make sure the file is `chmod 600`.
+5. **Pick one small, low-risk Automated ticket** and make it the planner's top Ready ticket:
 
    ```bash
    node tools/codex-batch.mjs --dry-run
    ```
 
    should select it.
-5. **Start a short batch** with `node tools/delegate/run.mjs start --deadline-hours 2 --usd 2`. Expect "models ok" and the balance baseline.
-6. **Run the ticket** with `node tools/delegate/run.mjs ticket <n> --no-merge`. It stops after independent verification and leaves the PR for you to merge.
-7. **Check the run** (in `$DELEGATE_HOME`, default `~/.local/share/brainstorm-delegate`):
+6. **Start a short batch** with `node tools/delegate/run.mjs start --deadline-hours 2 --usd 2`. Expect "models ok" and the balance baseline.
+7. **Run the ticket** with `node tools/delegate/run.mjs ticket <n> --no-merge`. It stops after independent verification and leaves the PR for you to merge.
+8. **Check the run** (in `$DELEGATE_HOME`, default `~/.local/share/brainstorm-delegate`):
    - **Codex output was parsed:** `tickets/<n>/codex/*/events.jsonl` has a `thread.started` event and `turn.completed` events with `usage`. If not, update `parseEvents` in `core/codex.mjs`.
    - **Plan usage was read:** `run.mjs status` shows a plan reading, not "unknown". If not, find the `rate_limits` fields in `$CODEX_HOME/sessions/**/rollout-*.jsonl` and update `parseRateLimits`. Until then the batch stops after one session, deliberately.
    - **The claim went through from inside the sandbox.** If it didn't, adjust `codex.extraConfig` in `config.json`.
    - **The claim on the issue names the Luna session's thread ID.** The harness also checks this.
    - **DeepSeek behaved:** `tickets/<n>/bundle-S1.md` reads sensibly, and the PR diff does what the ticket asks.
-8. **Finish by hand:** follow `tickets/<n>/signoff.md`. Merge with a merge commit, run `npm test` on `main`, then run lifecycle `complete`.
+9. **Finish by hand:** follow `tickets/<n>/signoff.md`. Merge with a merge commit, run `npm test` on `main`, then run lifecycle `complete`.
 
 After a clean pilot, have Sol review the harness once before running without `--no-merge`.
 

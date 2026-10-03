@@ -25,6 +25,13 @@ test("launched sessions never inherit an execution identity", () => {
   assert.deepEqual(env, { PATH: "/bin", HOME: "/h" });
 });
 
+test("launched sessions get GH_TOKEN only from the harness's token file, never the parent shell", () => {
+  assert.equal(childEnv({ PATH: "/bin", GH_TOKEN: "from-shell", GITHUB_TOKEN: "also-shell" }).GH_TOKEN, undefined);
+  assert.equal(childEnv({ PATH: "/bin", GITHUB_TOKEN: "also-shell" }).GITHUB_TOKEN, undefined);
+  const env = childEnv({ PATH: "/bin", GH_TOKEN: "from-shell" }, { githubToken: "from-file" });
+  assert.deepEqual(env, { PATH: "/bin", GH_TOKEN: "from-file" });
+});
+
 test("events: thread id, summed usage across turns, failures", () => {
   const jsonl = [
     JSON.stringify({ type: "thread.started", thread_id: "019a-abc" }),
@@ -146,4 +153,21 @@ test("session runner: a non-zero exit or unparseable decision is not ok", async 
   assert.equal(res.ok, false);
   assert.equal(res.decisionError, "DECISION_UNPARSEABLE");
   assert.equal(res.usage, null);
+});
+
+test("session runner: the GitHub token reaches the Codex process's environment and never its arguments or files", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delegate-codex-"));
+  const bin = path.join(dir, "probe.mjs");
+  fs.writeFileSync(bin, `import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(path.join(dir, "env.json"))}, JSON.stringify({ gh: process.env.GH_TOKEN ?? null }));
+process.stdin.resume(); process.stdin.on("end", () => process.exit(0));`);
+  await runCodexSession({
+    command: process.execPath, role: { model: "gpt-6-luna", effort: "high" }, cwd: dir, prompt: "x", sessionDir: path.join(dir, "s"),
+    env: { PATH: process.env.PATH, GH_TOKEN: "parent-shell" }, githubToken: "sentinel-gh-token",
+    spawnImpl: (cmd, args, opts) => realSpawn(cmd, [bin, ...args], opts), timeoutMs: 20_000,
+  });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "env.json"), "utf8")).gh, "sentinel-gh-token");
+  for (const f of fs.readdirSync(path.join(dir, "s"))) {
+    assert.doesNotMatch(fs.readFileSync(path.join(dir, "s", f), "utf8"), /sentinel-gh-token/, `${f} never holds the token`);
+  }
 });

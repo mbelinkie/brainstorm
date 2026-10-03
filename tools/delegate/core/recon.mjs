@@ -175,6 +175,7 @@ function validateSlices(t, where) {
   if (!Array.isArray(t.slices) || t.slices.length === 0 || t.slices.length > 6) return [`${where} slices must be a list of 1-6`];
   const caseIds = new Set((t.cases ?? []).map((c) => c.id));
   const seen = new Map();
+  const dupes = new Set();
   t.slices.forEach((slice, i) => {
     const sw = `${where} slice ${i + 1}`;
     if (!isObj(slice) || !/^S\d+$/.test(slice.id ?? "")) { problems.push(`${sw} needs id S1, S2...`); return; }
@@ -183,10 +184,11 @@ function validateSlices(t, where) {
     if (!Array.isArray(slice.cases)) problems.push(`${sw} cases must list case ids`);
     for (const id of slice.cases ?? []) {
       if (!caseIds.has(id)) problems.push(`${sw} names unknown case ${id}`);
-      if (seen.has(id)) problems.push(`case ${id} is in two slices`);
+      if (seen.has(id)) dupes.add(id);
       seen.set(id, slice.id);
     }
   });
+  if (dupes.size) problems.push(`${where} cases in more than one slice: ${[...dupes].join(", ")} (every case belongs to exactly one slice)`);
   for (const id of caseIds) if (!seen.has(id)) problems.push(`${where} case ${id} is in no slice`);
   return problems;
 }

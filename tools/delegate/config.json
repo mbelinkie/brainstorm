@@ -59,6 +59,7 @@
   },
   "codex": {
     "command": "codex",
+    "githubTokenFile": "github.token",
     "sandbox": "workspace-write",
     "extraConfig": ["sandbox_workspace_write.network_access=true"],
     "roles": {

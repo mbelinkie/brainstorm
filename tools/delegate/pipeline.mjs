@@ -42,6 +42,9 @@ const stop = (code, message) => Object.assign(new Error(message), { code });
 
 // n is the ticket's own number: a one-ticket reply spells it out, since a bare <n> was
 // answered as 1 in the pilot. A batched reply covers several tickets, so it keeps <n>.
+// Validation refuses a case listed in two slices; the models were never told (#44 pilot).
+const ONE_SLICE_RULE = "Every acceptance case belongs to exactly one slice. If a case covers work in two slices, split it into one case per slice.";
+
 const triageReply = (n = "<n>") => `{"n":${n},"fit":"ok|flag","lane":"express|standard|protected","decisions":["..."],"escalate":null|"reason","cases":[{"id":"A1","kind":"normal|failure|invariant","given":"...","expect":"..."}],"scope":["globs"],"allow":[],"slices":null|[{"id":"S1","goal":"...","scope":["globs"],"cases":["A1"]}]`;
 
 export function createPipeline(ctx) {
@@ -367,7 +370,7 @@ export function createPipeline(ctx) {
     if (routedToSolByCategory(t)) return t;
     const res = await session(t, "controller", {
       step: "triage-and-claim",
-      body: `${triageView(t)}\n\nDecide fit, lane, decisions, approved cases, write scope and (only if needed) slices. Then, ONLY if fit is ok, lane is express or standard, and nothing is escalated, run the claim command below.`,
+      body: `${triageView(t)}\n\nDecide fit, lane, decisions, approved cases, write scope and (only if needed) slices. ${ONE_SLICE_RULE} Then, ONLY if fit is ok, lane is express or standard, and nothing is escalated, run the claim command below.`,
       commands: [claimCommand(t, "controller")],
       reply: `${triageReply(t.n)},"claimed":true|false,"claim_refusal":null|"CODE"}`,
     });
@@ -393,7 +396,7 @@ export function createPipeline(ctx) {
     const res = await session(tickets, "triage", {
       step: "batch-triage",
       cwd: repoRoot,
-      body: `Triage each ticket below. Do not claim anything in this step.\n\n${tickets.map(triageView).join("\n\n")}`,
+      body: `Triage each ticket below. Do not claim anything in this step. ${ONE_SLICE_RULE}\n\n${tickets.map(triageView).join("\n\n")}`,
       reply: `{"tickets":[${triageReply()}}]}`,
     });
     if (!res.ok) {
@@ -443,6 +446,7 @@ export function createPipeline(ctx) {
         triageView(t),
         "",
         "Settle every open question. Decide the lane. For a protected ticket: define the acceptance cases (every invariant), narrow write scopes, slices for pure sub-pieces, and the real-process checks you will run before review (disposable resources, synthetic credentials, outside the worktree). Then claim with the command below ONLY if the lane is protected. If the lane is express or standard, do not claim; the Controller will.",
+        ONE_SLICE_RULE,
       ].filter(Boolean).join("\n"),
       commands: [claimCommand(t, "sol")],
       reply: `${triageReply(t.n)},"real_process_checks":["..."],"claimed":true|false,"claim_refusal":null|"CODE"}`,

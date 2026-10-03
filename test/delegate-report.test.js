@@ -56,7 +56,12 @@ test("slices: every case in exactly one slice, narrow scopes; default is one sli
   const missing = { ...base, slices: [{ id: "S1", goal: "first", scope: ["a.js"], cases: ["A1"] }] };
   assert.match(validateTriage({ tickets: [missing] }, [1]).problems.join(), /A2 is in no slice/);
   const twice = { ...base, slices: [{ id: "S1", goal: "g", scope: ["a.js"], cases: ["A1", "A2"] }, { id: "S2", goal: "g", scope: ["b.js"], cases: ["A2"] }] };
-  assert.match(validateTriage({ tickets: [twice] }, [1]).problems.join(), /in two slices/);
+  assert.match(validateTriage({ tickets: [twice] }, [1]).problems.join(), /more than one slice: A2 /);
+  // Pilot (#44): Sol put A10 and A16 in both slices. One problem names every duplicated id, once.
+  const cases3 = [{ id: "A1", expect: "x" }, { id: "A2", expect: "y" }, { id: "A3", expect: "z" }];
+  const dup = { ...base, cases: cases3, slices: [{ id: "S1", goal: "g", scope: ["a.js"], cases: ["A1", "A2", "A3"] }, { id: "S2", goal: "g", scope: ["b.js"], cases: ["A2", "A3"] }, { id: "S3", goal: "g", scope: ["b.js"], cases: ["A3"] }] };
+  const dupProblems = validateTriage({ tickets: [dup] }, [1]).problems.filter((p) => /more than one slice/.test(p));
+  assert.deepEqual(dupProblems, ["#1 cases in more than one slice: A2, A3 (every case belongs to exactly one slice)"]);
   const broad = { ...base, slices: [{ id: "S1", goal: "g", scope: ["**"], cases: ["A1", "A2"] }] };
   assert.equal(validateTriage({ tickets: [broad] }, [1]).ok, false);
   assert.deepEqual(normalizeSlices(base), [{ id: "S1", goal: "the whole ticket", scope: ["a.js", "b.js"], allow: [], caseIds: ["A1", "A2"] }]);

@@ -10,9 +10,14 @@
 // Identity variables a launched session must set for itself, never inherit.
 export const IDENTITY_ENV = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"];
 
-export function childEnv(env) {
+// GitHub credentials a session may use come only from the harness's token file.
+const GITHUB_ENV = ["GH_TOKEN", "GITHUB_TOKEN"];
+
+export function childEnv(env, { githubToken = null } = {}) {
   const out = { ...env };
-  for (const key of IDENTITY_ENV) delete out[key];
+  for (const key of [...IDENTITY_ENV, ...GITHUB_ENV]) delete out[key];
+  // gh inside the sandbox cannot read the keychain login, so it would call GitHub anonymously.
+  if (githubToken) out.GH_TOKEN = githubToken;
   return out;
 }
 

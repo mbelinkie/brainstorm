@@ -29,14 +29,14 @@ export function runProcess({ command, args, cwd, input, env, timeoutMs, spawnImp
 }
 
 // role: { model, effort }; returns { ok, threadId, usage, decision, exitCode, errors, files }
-export async function runCodexSession({ command = "codex", role, cwd, prompt, sessionDir, resumeId = null, sandbox, extraConfig, schemaFile = null, timeoutMs = 1_800_000, env = process.env, spawnImpl }) {
+export async function runCodexSession({ command = "codex", role, cwd, prompt, sessionDir, resumeId = null, sandbox, extraConfig, schemaFile = null, timeoutMs = 1_800_000, env = process.env, githubToken = null, spawnImpl }) {
   fs.mkdirSync(sessionDir, { recursive: true });
   const outputFile = path.join(sessionDir, "last-message.txt");
   const eventsFile = path.join(sessionDir, "events.jsonl");
   const args = buildExecArgs({ model: role.model, effort: role.effort, sandbox, extraConfig, cwd, outputFile, schemaFile, resumeId });
   fs.writeFileSync(path.join(sessionDir, "prompt.md"), prompt);
   fs.writeFileSync(path.join(sessionDir, "args.json"), JSON.stringify(args, null, 2));
-  const result = await runProcess({ command, args, cwd, input: prompt, env: childEnv(env), timeoutMs, spawnImpl });
+  const result = await runProcess({ command, args, cwd, input: prompt, env: childEnv(env, { githubToken }), timeoutMs, spawnImpl });
   fs.writeFileSync(eventsFile, result.stdout);
   if (result.stderr) fs.writeFileSync(path.join(sessionDir, "stderr.txt"), result.stderr);
   const events = parseEvents(result.stdout);

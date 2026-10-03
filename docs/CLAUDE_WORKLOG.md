@@ -2154,3 +2154,17 @@ The retry of #44 ran Luna (gpt-6-luna on codex-cli 0.160.0) to a completed turn.
 **Fix:** one-ticket replies (triage-and-claim, Sol's design-and-claim) now spell out the ticket's number in the template; the batched reply keeps `<n>`. Test: an end-to-end check that both one-ticket prompts carry `{"n":7,` and no `<n>`, red before and green after. `npm test` 693/693; `npm run test:harness` 17/17.
 
 **Next on retry:** with this fixed, Luna's escalation sends #44 to a Sol design session (gpt-6.1-sol).
+
+### 2026-10-02 — harness pilot: GitHub token for sessions, one-slice rule, worktree tidy
+
+Branch `claude/delegate-harness`. Claude (desktop session, Matthew's Mac). Decisions are Matthew's, relayed from the cloud session.
+
+**Third retry of #44:** Luna ran and escalated (lane protected); Sol designed 17 cases in two slices (2.8 credits). Two problems stopped it. (1) Sol's claim was refused with `QUOTA_EXHAUSTED`: inside Codex's sandbox `gh` cannot read the keychain login (`gh auth status` there: "Failed to log in"), so it calls GitHub anonymously at 60 requests an hour; reproduced with `codex sandbox`. (2) Sol put A10 and A16 in both slices, a rule the prompts never stated.
+
+**GitHub token:** the harness reads `$DELEGATE_HOME/github.token` (`codex.githubTokenFile`; must be `chmod 600`, refused otherwise, like the DeepSeek key, now via the shared `core/secret-file.mjs`) and passes it as `GH_TOKEN` only into the Codex child environment. Any `GH_TOKEN`/`GITHUB_TOKEN` from the parent shell is dropped. `start`, `run` and `ticket` refuse to start without the file. Probe with a dummy value: Codex 0.160.0's default `shell_environment_policy` does not strip `*TOKEN*` variables, so no Codex config change is needed.
+
+**One-slice rule:** the Controller (one-ticket and batched) and Sol prompts now say every acceptance case belongs to exactly one slice, and to split a case that spans two. The validator reports one problem naming every duplicated id (`#44 cases in more than one slice: A10, A16 ...`).
+
+**Luna rejection, for the record:** fixed by `codex update` (0.149.1 to 0.160.0); the old CLI was not offered gpt-6 models.
+
+**Tidy:** removed worktrees `quiz-delegate-44`, `-44-2`, `-44-3` with `git worktree remove` (each at base `e20550a`, no commits, no changes, only `node_modules` ignored). Kept `-44-4`. Their local branches remain.

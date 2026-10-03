@@ -498,3 +498,15 @@ test("e2e: a one-ticket triage or design reply asks for the ticket's own number"
     assert.doesNotMatch(p, /<n>/, `${step} reply has no placeholder`);
   }
 });
+
+// Pilot regression: Sol was never told the one-slice rule and put two cases in both slices.
+test("e2e: the Controller and Sol prompts state that every case belongs to exactly one slice", async () => {
+  const s = setup({ category: "Platform/Ops", config: { categoryOverrides: { "Platform/Ops": { minLane: "protected" } } } });
+  await runTicket(s);
+  const s2 = setup();
+  await runTicket(s2);
+  for (const step of ["design-and-claim", "triage-and-claim"]) {
+    const p = [...s.sessions.prompts, ...s2.sessions.prompts].find((x) => x.includes(`## Step: ${step}`));
+    assert.match(p, /every acceptance case belongs to exactly one slice/i, step);
+  }
+});

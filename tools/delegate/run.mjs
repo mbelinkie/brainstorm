@@ -22,6 +22,7 @@ import { createState, delegateHome } from "./state.mjs";
 import { realExec } from "./exec.mjs";
 import { createPipeline, isTerminal } from "./pipeline.mjs";
 import { buildReport, formatReport } from "./core/report.mjs";
+import { readPrivateFile } from "./core/secret-file.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const STOP_CODES = new Set(["SPEND_CAP", "BALANCE_UNRELIABLE", "USAGE_UNKNOWN", "WEEKLY_LIMIT", "RESET_UNKNOWN", "PLAN_RESET_AFTER_DEADLINE", "TRANSPORT", "HTTP_ERROR", "NO_BATCH"]);
@@ -49,10 +50,12 @@ function parseArgs(argv) {
 
 function readKey(config, env, home) {
   const file = env[config.deepseek.keyFileEnv] || path.join(home, config.deepseek.defaultKeyFile);
-  if (!fs.existsSync(file)) throw Object.assign(new Error(`DeepSeek key file not found (set ${config.deepseek.keyFileEnv} or create ${path.join("$DELEGATE_HOME", config.deepseek.defaultKeyFile)})`), { code: "NO_KEY" });
-  const mode = fs.statSync(file).mode & 0o077;
-  if (mode !== 0) throw Object.assign(new Error("DeepSeek key file is readable by other users; chmod 600 it"), { code: "KEY_PERMISSIONS" });
-  return fs.readFileSync(file, "utf8").trim();
+  return readPrivateFile(file, { label: "DeepSeek key file", code: "NO_KEY", hint: `set ${config.deepseek.keyFileEnv} or create ${path.join("$DELEGATE_HOME", config.deepseek.defaultKeyFile)}` });
+}
+
+// Passed to Codex sessions as GH_TOKEN, so lifecycle calls inside the sandbox are authenticated.
+function readGithubToken(config, home) {
+  return readPrivateFile(path.join(home, config.codex.githubTokenFile), { label: "GitHub token file", code: "NO_GITHUB_TOKEN", hint: `create ${path.join("$DELEGATE_HOME", config.codex.githubTokenFile)}, chmod 600` });
 }
 
 async function fullContext({ env, out, stopBeforeMerge = false }) {
@@ -79,7 +82,8 @@ async function fullContext({ env, out, stopBeforeMerge = false }) {
       fs.writeFileSync(path.join(recordDir, `${entry.at.replace(/[:.]/g, "-")}-${String(entry.purpose).replace(/[^\w-]/g, "_")}.json`), JSON.stringify(entry, null, 2));
     },
   });
-  const runSession = (opts) => runCodexSession({ ...opts, command: config.codex.command, sandbox: config.codex.sandbox, extraConfig: config.codex.extraConfig, timeoutMs: config.codex.timeoutMs, env });
+  const githubToken = readGithubToken(config, home);
+  const runSession = (opts) => runCodexSession({ ...opts, command: config.codex.command, sandbox: config.codex.sandbox, extraConfig: config.codex.extraConfig, timeoutMs: config.codex.timeoutMs, env, githubToken });
   const pipeline = createPipeline({ config, repoRoot, state, exec: realExec, gate, lifecycle, deepseek, runSession, env, projectNumber: roadmapConfig.project?.number ?? null, stopBeforeMerge, log: (m) => out(`[${new Date().toISOString()}] ${m}`) });
   return { config, state, gate, lifecycle, planner, deepseek, pipeline };
 }
