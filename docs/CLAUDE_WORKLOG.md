@@ -2088,3 +2088,11 @@ Branch `claude/delegation-v3`, base `2198c09`. Claude (cloud session, not a Code
 **Checks:** `npm ci` exit 0; baseline `npm test` 638/638; after changes 639/639 (new test: Luna controller claim accepted only with written mismatch; `gpt-6-luna` removed from the unsupported-model list, `gpt-6-astra` used instead).
 
 **Unproven:** the harness does not exist yet; budgets, ladder cut-offs and audit rates are starting values to tune from the ledger; the field names for Codex's rate-limit usage, and whether credits are drawn automatically past the plan limit, are unconfirmed; Luna's adequacy as Controller in this repo is unmeasured until the pilot.
+
+### 2026-10-05 — routing: a Claude Code session may hold a claim
+
+Branch `claude/routing-claude-sonnet`. Claude Code (Opus 5.5), desktop session on Matthew's Mac. Files: `docs/roadmap/config.json`, `docs/roadmap/routing.md`, `test/roadmap-lifecycle.test.js`.
+
+Matthew froze the delegation harness and assigned Ready ticket #18 to an interactive Claude Code session, with a Claude Sonnet sub-agent implementing. The claim wrapper only accepted DeepSeek, Luna and Sol model ids (`MODEL_UNSUPPORTED` otherwise), so a truthful claim was impossible. Added the execution-role profile `claude` (`claude-opus-5-5`, efforts medium/high), never a product-issue label, plus its row and claim rule in routing.md. `npm test` 679/679.
+
+Unproven: the first real claim with it (#18).

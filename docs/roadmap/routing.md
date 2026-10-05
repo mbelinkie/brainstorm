@@ -12,11 +12,13 @@ DeepSeek implements every product slice and every fix through the [delegation ha
 | `model:standard` | DeepSeek Pro | `deepseek-v4-pro` | Normal feature and bug work. The ladder may start on Flash and climb to Pro (see below). |
 | `model:controller` | Luna controller (not implementation) | `gpt-6-luna` | Execution-role allowlist only. Claim holder and gate for Express and Standard lanes; also the Verifier. Never a product-issue label. |
 | `model:coordinator` | Sol coordinator (not implementation) | `gpt-6.1-sol` | Execution-role allowlist only. Claim holder for Protected-lane tickets; escalations and audits. Never a product-issue label. |
+| `model:claude` | Claude Code session (not implementation label) | `claude-opus-5-5` | Execution-role allowlist only. Claim holder when Matthew assigns a ticket to an interactive Claude Code session instead of the harness; that session may hand the implementation to a Claude sub-agent. Never a product-issue label. |
 
 ### Claims and verification
 
 - **Express and Standard lanes:** the Luna Controller claims with model `gpt-6-luna`, logical effort `medium`, effective effort `high`, and the written reason "Luna controls; DeepSeek implements all slices".
 - **Protected lane:** Sol claims with model `gpt-6.1-sol`, logical effort `medium`, effective effort `high`, and the written reason "Sol coordinates; DeepSeek implements all slices".
+- **Claude Code session (Matthew's assignment, outside the harness):** the session claims with its own `CLAUDE_CODE_SESSION_ID`, model `claude-opus-5-5`, the issue's logical effort, and a written reason naming Matthew's assignment and the implementing model (for example a Claude Sonnet sub-agent). Claude's effort setting is not the Codex scale; say so in the reason. Commits name the model that wrote them.
 - **Effort must be real.** Each claim holder must actually run at the effective effort it records.
 - **Verification** is by a separate Luna execution with its own native ID, at the final published SHA only.
 - **Execution IDs.** Never claim with an invented ID, and never put a DeepSeek API request ID into `CODEX_THREAD_ID`.
