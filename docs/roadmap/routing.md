@@ -1,30 +1,39 @@
 # Routing policy
 
-Executable product issues keep exactly one `model:` and one `effort:` label.
-The config mirrors the tables below; existing issue labels need no bulk edit.
+Every executable product issue keeps exactly one `model:` label and one `effort:` label. `config.json` mirrors the tables below; existing issue labels need no bulk edit. The full process is in [the delegation process](../DELEGATION.md). Sessions working a ticket read only their [role card](../delegation/cards/).
 
 ## Implementation profiles
 
-DeepSeek implements bounded behavior slices using
-[the coding guide](../DEEPSEEK_CODING_GUIDE.md). Sol defines contracts and
-acceptance, runs checks, publishes and coordinates; a separate `gpt-6.1-sol`
-execution independently reviews the exact published SHA. Sol does not take over
-product implementation or review fixes. No Luna or OpenAI coding fallback.
+DeepSeek implements every product slice and every fix through the [delegation harness](../delegation/HARNESS_SPEC.md). It is artifact-only: no tools, credentials or repository access. Codex models decide, verify and coordinate; they do not implement product code or fixes. The one exception is the Controller card's edit of 5 lines or fewer.
 
 | Label | Model | Model ID | Use |
 | --- | --- | --- | --- |
-| `model:economy` | DeepSeek Flash | `deepseek-flash` | Mechanical, fully specified slices; evaluate quality under the same acceptance gate. |
-| `model:standard` | DeepSeek Pro | `deepseek-v4-pro` | Normal feature and bug work, split into explicit slices. |
-| `model:coordinator` | Sol coordinator (not implementation) | `gpt-6.1-sol` | Execution-role allowlist only; never assign this label to product issues. |
+| `model:economy` | DeepSeek Flash | `deepseek-flash` | Mechanical, fully specified slices. The harness ladder starts here. |
+| `model:standard` | DeepSeek Pro | `deepseek-v4-pro` | Normal feature and bug work. The ladder may start on Flash and climb to Pro (see below). |
+| `model:controller` | Luna controller (not implementation) | `gpt-6-luna` | Execution-role allowlist only. Claim holder and gate for Express and Standard lanes; also the Verifier. Never a product-issue label. |
+| `model:coordinator` | Sol coordinator (not implementation) | `gpt-6.1-sol` | Execution-role allowlist only. Claim holder for Protected-lane tickets; escalations and audits. Never a product-issue label. |
 
-The coordinator profile lets the existing wrapper validate the real native Sol
-claim holder without disguising it as DeepSeek. Claim with actual model
-`gpt-6.1-sol`, logical effort `medium`, effective `high`, and a written
-`--allow-mismatch` reason: “Sol coordinates; DeepSeek implements all slices.”
-This coordination mismatch is authorized by Matthew’s instruction to adopt the
-sliced workflow; it is not permission for Sol implementation or model fallback.
-The coordinator must actually run at high effort. Never claim with an invented
-DeepSeek UUID or put a DeepSeek API request ID into `CODEX_THREAD_ID`.
+### Claims and verification
+
+- **Express and Standard lanes:** the Luna Controller claims with model `gpt-6-luna`, logical effort `medium`, effective effort `high`, and the written reason "Luna controls; DeepSeek implements all slices".
+- **Protected lane:** Sol claims with model `gpt-6.1-sol`, logical effort `medium`, effective effort `high`, and the written reason "Sol coordinates; DeepSeek implements all slices".
+- **Effort must be real.** Each claim holder must actually run at the effective effort it records.
+- **Verification** is by a separate Luna execution with its own native ID, at the final published SHA only.
+- **Execution IDs.** Never claim with an invented ID, and never put a DeepSeek API request ID into `CODEX_THREAD_ID`.
+
+### Pre-authorized implementation ladder
+
+Matthew authorized this ladder on October 2, 2026. Each step is recorded automatically as a routing decision; none is a silent replacement.
+
+| Attempt | Model | Thinking |
+| --- | --- | --- |
+| 1–2 | `deepseek-flash` | `high` |
+| 3 | `deepseek-v4-pro` | `high` |
+| 4 | `deepseek-v4-pro` | `max` |
+
+- The ladder is capped at 4 attempts, followed by at most one Controller REPAIR, which restarts at attempt 3.
+- The starting rung may be raised per category from ledger evidence.
+- `model:standard` issues may start at attempt 3 when the ledger shows Flash rarely passes for that category.
 
 ## Effort levels
 
@@ -40,49 +49,37 @@ DeepSeek UUID or put a DeepSeek API request ID into `CODEX_THREAD_ID`.
 | `medium` | `high` |
 | `high` | `high` |
 
-Enable thinking explicitly. Each slice records the issue’s logical label and
-DeepSeek’s actual mode/effort separately from the native coordinator claim.
-Coordinator logical `medium` or `high` means actual Sol `high`; its claim does
-not report DeepSeek effort. A different coordinator effort requires an explicit
-supported mapping; do not silently translate or misstate it.
+Enable thinking explicitly. Each slice records the issue's logical label and DeepSeek's actual mode and effort, separately from the native claim. A claim holder's logical `medium` or `high` means its actual model runs at `high`.
 
 ## Execution and evidence
 
-Use the official `https://api.deepseek.com` API and exact configured IDs. Confirm
-both IDs are available on `/models`, then verify the returned model on each
-response. The default harness is artifact-only Chat Completions with no tools:
-the orchestrator supplies relevant public source, accepts only allowlisted
-artifacts, and runs checks locally. The saved key stays in the private parent
-request wrapper; DeepSeek receives neither secrets nor credential/file/Git tools.
-Preserve Sol’s normal Codex configuration. A tool-enabled CLI harness requires
-separate evidence for identity, permissions, reasoning replay and side effects
-before use; the fixture trial did not verify it.
+Use the official `https://api.deepseek.com` API with exact configured IDs. Check `/models` at batch start, and check the returned model on every response.
 
-Record requested/returned model, fingerprint if exposed, request ID, thinking
-mode, effort, usage, balance observations, accepted base SHA, slice contract,
-repair count, checks and unverified boundaries. Unknown usage is unknown, never
-zero. DeepSeek reports are implementation evidence; Sol acceptance is separate.
+Record for each slice:
 
-Both models follow the same guide and one-localized-repair rule. Failed Flash
-work is preserved and reduced or blocked after that budget; switching to Pro
-requires an explicit recorded routing decision, not a silent retry. Measure
-accepted correctness, repairs, Sol time and total cost for comparable slices.
+- the requested and returned model, fingerprint, request ID, thinking mode and effort;
+- usage, balance observations, the accepted base SHA and the slice contract;
+- the ladder steps, the checks run and any unverified boundaries.
 
-[#17](https://github.com/mbelinkie/brainstorm/issues/17) through
-[PR #56](https://github.com/mbelinkie/brainstorm/pull/56) verified Pro for a sample
-fixture/test and RUNBOOK append: first-pass fixture, one documentation repair,
-603 passing tests in independent Sol and integrated main. It establishes no
-reliability for recovery, credential handling or live generation. Flash uses
-the same gates; retain its actual results rather than inferring parity.
+Unknown usage is unknown, never zero. DeepSeek output is implementation evidence; acceptance comes only from harness checks plus the Controller and Verifier records.
+
+Batch limits are in [the delegation process](../DELEGATION.md) §6: an 8-hour deadline, $10 of observed DeepSeek spend, and per-session Codex token budgets.
+
+**Evidence so far:**
+
+- [#17](https://github.com/mbelinkie/brainstorm/issues/17) through [PR #56](https://github.com/mbelinkie/brainstorm/pull/56) verified Pro for a fixture/test and a RUNBOOK append.
+- Earlier Flash and Pro observations are in [LESSONS.md](LESSONS.md).
+- Neither establishes reliability for recovery, credential handling or live generation.
 
 ## Historical records and restart
 
-Older Luna, Claude and DeepSeek records remain readable. Preserve live claims,
-published branches, pending acceptance and owner-assigned migration numbers.
-Reconcile stopped executions through lifecycle release before any replacement
-claim; changing this policy never ends an existing claim. Historical model/effort
-mappings describe their recorded runs, not the current defaults.
+Older Luna, Claude and DeepSeek records remain readable. Preserve:
 
-The planner remains read-only: `tools/codex-batch.mjs --dry-run` cannot claim,
-launch, publish, merge or complete. Batches start only on Matthew’s instruction;
-see [Working a ticket](WORKING_A_TICKET.md) for limits, publication and recovery.
+- live claims;
+- published branches;
+- pending acceptance;
+- owner-assigned migration numbers.
+
+**Tickets claimed under the October 1 policy finish under it.** A policy change never ends an existing claim. Reconcile stopped executions through lifecycle `release` before any replacement claim. Historical model and effort mappings describe their recorded runs, not the current defaults.
+
+The planner stays read-only: `tools/codex-batch.mjs --dry-run` cannot claim, launch, publish, merge or complete. Batches start only on Matthew's instruction. See [Working a ticket](WORKING_A_TICKET.md) for the lifecycle mechanics.
