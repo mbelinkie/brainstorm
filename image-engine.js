@@ -91,11 +91,13 @@ export const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images";
 //
 // Where the error body comes from: runBattleDescriptor() in
 // cloudflare-worker.js turns a non-2xx response into
-// { ok: false, status, error } with error.status set, but it does not read
-// the response body. This adapter reads OpenRouter's
-// { error: { code, message } } from result.error.body. Until a Worker
-// change sets error.body, a refusal arrives without its code and is refunded
-// as an ordinary unbilled failure (blocked stays false).
+// { ok: false, status, error } with error.status set, but today it does not
+// read the response body. This adapter reads OpenRouter's
+// { error: { code, message } } envelope from result.error.body. The Worker
+// ticket that enables openrouter must attach the parsed error body as
+// error.body in runBattleDescriptor (and pass config.auth to buildRequests).
+// Until then every OpenRouter failure is refused as an unaccounted outcome,
+// which is the safe direction: an unknown charge is never assumed to be zero.
 const OPENROUTER_REFUSAL_CODES = new Set(["content_policy_violation", "refusal"]);
 
 // Base64 prefixes of the PNG, JPEG and WebP file signatures, used only when
@@ -121,13 +123,17 @@ function openRouterMimeType(entry) {
   return null;
 }
 
-// A failed result is an OpenRouter error response only when it carries a
-// real non-2xx HTTP status. Status 0 (or none) means fetch never got a
-// response, or a 2xx body could not be parsed: either way the charge is
-// unknown.
+// A failed result is an unbilled OpenRouter error response only when it has
+// a real non-2xx HTTP status AND carries OpenRouter's { error: { ... } }
+// envelope at result.error.body (contract Decision 4). Anything else -- status
+// 0 or none (fetch never got a response, or a 2xx body would not parse), or a
+// non-2xx without that envelope (an edge timeout such as 524, or today's
+// Worker, which drops the body) -- is an unknown charge.
 function isOpenRouterErrorResponse(result) {
   const status = result.status;
-  return Number.isInteger(status) && status >= 100 && status <= 599 && (status < 200 || status > 299);
+  const isErrorStatus = Number.isInteger(status) && status >= 100 && status <= 599 && (status < 200 || status > 299);
+  const envelope = result.error?.body?.error;
+  return isErrorStatus && envelope !== null && typeof envelope === "object" && !Array.isArray(envelope);
 }
 
 export const ENGINES = {
@@ -399,15 +405,10 @@ export const ENGINES = {
           // charged and adds no images. Anything else is an unknown charge,
           // which is never assumed to be zero.
           if (!isOpenRouterErrorResponse(result)) {
-            throw openRouterUnaccounted("a request got no response, so its cost is unknown");
+            throw openRouterUnaccounted("a request got no response or no OpenRouter error body, so its cost is unknown");
           }
-          const providerError = result.error?.body?.error;
-          if (
-            !sawRefusal &&
-            providerError &&
-            typeof providerError === "object" &&
-            OPENROUTER_REFUSAL_CODES.has(providerError.code)
-          ) {
+          const providerError = result.error.body.error;
+          if (!sawRefusal && OPENROUTER_REFUSAL_CODES.has(providerError.code)) {
             sawRefusal = true;
             refusalMessage = typeof providerError.message === "string" && providerError.message.trim() !== ""
               ? providerError.message

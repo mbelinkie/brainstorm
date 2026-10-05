@@ -10,15 +10,19 @@
 //   rejected (non-2xx)         -> { ok: false, status: <HTTP status>, error }
 //                                 where runBattleDescriptor threw
 //                                 Error("<url> returned <status>") with
-//                                 error.status set
+//                                 error.status set (and, once the Worker
+//                                 ticket that enables openrouter lands,
+//                                 error.body = the parsed error JSON)
 //   rejected (no response)     -> { ok: false, status: 0, error }
 //                                 (fetch threw, or a 2xx body was not JSON;
 //                                 entry.reason?.status ?? 0)
 //
-// The current Worker discards the body of a non-2xx response. The adapter
-// reads OpenRouter's { error: { code, message } } body from error.body when
-// a Worker supplies it there (see the comment on OPENROUTER_REFUSAL_CODES in
-// image-engine.js); until then a refusal is refunded as an ordinary failure.
+// Contract Decision 4: a failed request is unbilled only when it has a
+// non-2xx status AND OpenRouter's { error: { code, message } } envelope at
+// error.body. The current Worker discards the body of a non-2xx response, so
+// until the Worker ticket attaches it, every OpenRouter failure is refused as
+// "Unaccounted OpenRouter outcome" (see the comment on
+// OPENROUTER_REFUSAL_CODES in image-engine.js).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ENGINES } from '../image-engine.js';
@@ -256,11 +260,10 @@ test('costs are summed exactly with no rounding, and more images than requested 
 // --- A3: mixed success and OpenRouter error ----------------------------
 
 test('A3 one success and one OpenRouter 502 error give one image, only the success cost, and partial true', () => {
-  // As the current Worker delivers it: status only, no error body.
   const parsed = openrouter.parseResponses({
     results: [
       success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.045),
-      httpFailure(502)
+      httpFailure(502, { error: { code: 502, message: 'Provider returned error' } })
     ],
     expectedVariants: 2
   });
@@ -272,18 +275,18 @@ test('A3 one success and one OpenRouter 502 error give one image, only the succe
     partial: true
   });
 
-  // The same with the OpenRouter error body attached.
-  const withBody = openrouter.parseResponses({
+  // The same with the error first.
+  const errorFirst = openrouter.parseResponses({
     results: [
       httpFailure(502, { error: { code: 502, message: 'Provider returned error' } }),
       success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.045)
     ],
     expectedVariants: 2
   });
-  assert.equal(withBody.images.length, 1);
-  assert.equal(withBody.costUsd, 0.045);
-  assert.equal(withBody.partial, true);
-  assert.equal(withBody.blocked, false);
+  assert.equal(errorFirst.images.length, 1);
+  assert.equal(errorFirst.costUsd, 0.045);
+  assert.equal(errorFirst.partial, true);
+  assert.equal(errorFirst.blocked, false);
 });
 
 // --- A4: all fail with OpenRouter errors -------------------------------
@@ -291,7 +294,7 @@ test('A3 one success and one OpenRouter 502 error give one image, only the succe
 test('A4 all requests failing with OpenRouter error responses give no images, costUsd 0 and blocked false', () => {
   const parsed = openrouter.parseResponses({
     results: [
-      httpFailure(502),
+      httpFailure(502, { error: { code: 502, message: 'Provider returned error' } }),
       httpFailure(429, { error: { code: 429, message: 'Rate limit exceeded' } }),
       httpFailure(400, { error: { code: 400, message: 'n must be 1 for this model' } })
     ],
@@ -313,7 +316,7 @@ test('A5 any request with no response throws Unaccounted OpenRouter outcome, eve
     [noResponse()],
     [success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.045), noResponse()],
     [noResponse(), success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.045)],
-    [httpFailure(502), noResponse()],
+    [httpFailure(502, { error: { code: 502, message: 'Provider returned error' } }), noResponse()],
     // A missing, 2xx or non-numeric status on a failed result is not proof
     // that OpenRouter answered with an error, so its cost is unknown too.
     [{ ok: false, error: new Error('timeout') }],
@@ -332,6 +335,36 @@ test('A5 any request with no response throws Unaccounted OpenRouter outcome, eve
     () => openrouter.parseResponses({ results: undefined, expectedVariants: 2 }),
     /Unaccounted OpenRouter outcome/
   );
+});
+
+test('a non-2xx failed result without an OpenRouter error body throws Unaccounted OpenRouter outcome, even when others succeeded', () => {
+  const ok = () => success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.045);
+  const scenarios = [
+    // Today's Worker: status only, body dropped.
+    [httpFailure(502)],
+    [ok(), httpFailure(502)],
+    // An edge timeout: the generation may still have finished and billed.
+    [ok(), httpFailure(524)],
+    [httpFailure(524), ok()],
+    // A body that is not the { error: { ... } } envelope.
+    [ok(), httpFailure(502, null)],
+    [ok(), httpFailure(502, '<html>Bad gateway</html>')],
+    [ok(), httpFailure(502, { message: 'no envelope' })],
+    [ok(), httpFailure(502, { error: 'string, not an object' })],
+    [ok(), httpFailure(502, { error: null })],
+    [ok(), httpFailure(502, { error: ['array'] })],
+    // An envelope on a 2xx or missing status is still not an error response.
+    [ok(), { ok: false, status: 200, error: Object.assign(new Error('x'), { body: { error: { code: 200 } } }) }],
+    [ok(), { ok: false, status: 0, error: Object.assign(new Error('x'), { body: { error: { code: 502 } } }) }],
+    // A refusal without its body cannot be recognised and is not a refund.
+    [httpFailure(400), httpFailure(400, { error: { code: 'refusal', message: 'Declined.' } })]
+  ];
+  for (const results of scenarios) {
+    assert.throws(
+      () => openrouter.parseResponses({ results, expectedVariants: 2 }),
+      /Unaccounted OpenRouter outcome/
+    );
+  }
 });
 
 // --- A6: bad usage.cost ------------------------------------------------
@@ -378,7 +411,7 @@ test('A7 no images and a content_policy_violation or refusal error give blocked 
   for (const code of ['content_policy_violation', 'refusal']) {
     const parsed = openrouter.parseResponses({
       results: [
-        httpFailure(502),
+        httpFailure(502, { error: { code: 502, message: 'Provider returned error' } }),
         httpFailure(400, { error: { code, message: `Declined (${code}).` } })
       ],
       expectedVariants: 2
@@ -404,6 +437,14 @@ test('A7 the first refusal message wins, and a refusal is not a block when any i
   assert.equal(first.blocked, true);
   assert.equal(first.blockReason, 'First reason.');
 
+  // A blank refusal message falls back to the workers_ai wording.
+  const blank = openrouter.parseResponses({
+    results: [httpFailure(400, { error: { code: 'refusal', message: '   ' } })],
+    expectedVariants: 1
+  });
+  assert.equal(blank.blocked, true);
+  assert.equal(blank.blockReason, 'The image model declined that prompt.');
+
   const withImage = openrouter.parseResponses({
     results: [
       success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.045),
@@ -416,12 +457,12 @@ test('A7 the first refusal message wins, and a refusal is not a block when any i
   assert.equal(withImage.partial, true);
 });
 
-test('A7 other error codes, and errors without a body, are not blocks', () => {
+test('A7 other error codes are not blocks', () => {
   const parsed = openrouter.parseResponses({
     results: [
       httpFailure(400, { error: { code: 400, message: 'Bad request' } }),
       httpFailure(403, { error: { code: 'moderation', message: 'Flagged' } }),
-      httpFailure(400)
+      httpFailure(400, { error: { message: 'no code at all' } })
     ],
     expectedVariants: 3
   });
