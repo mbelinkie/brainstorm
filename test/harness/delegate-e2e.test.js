@@ -113,7 +113,7 @@ function scoutFor(cases, extra = {}) {
 
 function fakeLifecycle(world) {
   return {
-    inspect: async (n) => ({ ok: true, labels: world.labels?.[n] ?? ["model:standard", "effort:medium"], acceptanceClass: "Automated", baseline: { oid: null }, claims: { live: world.claims[n] ? { executionId: world.claims[n] } : null }, review: world.reviews[n] ? { commit: world.reviews[n] } : null, independentVerification: Boolean(world.verified[n]) }),
+    inspect: async (n) => ({ ok: true, labels: world.labels?.[n] ?? ["model:standard", "effort:medium", "delegate:yes"], acceptanceClass: "Automated", baseline: { oid: null }, claims: { live: world.claims[n] ? { executionId: world.claims[n] } : null }, review: world.reviews[n] ? { commit: world.reviews[n] } : null, independentVerification: Boolean(world.verified[n]) }),
     block: async (n, { cause, needs }) => { world.blocks.push({ n, cause, needs }); return { ok: true }; },
     complete: async (n) => { world.completes.push(n); return { ok: true }; },
   };
@@ -412,7 +412,7 @@ test("e2e: batched triage decides several tickets in one session, then each is c
 });
 
 test("e2e: a design-labelled ticket is flagged at intake and never claimed", async () => {
-  const s = setup({ labels: { 7: ["type:design"] } });
+  const s = setup({ labels: { 7: ["type:design", "delegate:yes"] } });
   const t = await s.pipeline.intake(7, { number: 7, baseline: s.base, acceptance: "Producer" });
   assert.equal(t.phase, "flagged");
   assert.equal(s.sessions.steps.length, 0, "no Codex session ran");
@@ -509,4 +509,12 @@ test("e2e: the Controller and Sol prompts state that every case belongs to exact
     const p = [...s.sessions.prompts, ...s2.sessions.prompts].find((x) => x.includes(`## Step: ${step}`));
     assert.match(p, /every acceptance case belongs to exactly one slice/i, step);
   }
+});
+
+// Defence behind the planner: intake itself refuses a ticket without the fit label, before any write.
+test("e2e: intake refuses a ticket without the fit label and records nothing", async () => {
+  const s = setup({ labels: { 7: ["model:standard", "effort:medium"] } });
+  await assert.rejects(runTicket(s), (e) => e.code === "LABEL_REQUIRED" && /delegate:yes/.test(e.message));
+  assert.equal(s.state.readTicket(7), null, "no ticket state written");
+  assert.deepEqual(s.world.blocks, [], "nothing posted to the issue");
 });

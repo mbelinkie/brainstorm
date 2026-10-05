@@ -232,6 +232,9 @@ export function createPipeline(ctx) {
         projectItems(first: 10) { nodes { project { number } workstream: fieldValueByName(name: "Workstream") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`,
       variables: { o: repo.owner, r: repo.name, n },
     });
+    // The planner already skips unlabelled tickets; this refuses before any state or GitHub write.
+    const labels = inspected.labels ?? [];
+    if (!labels.includes(config.fitGate.requireLabel)) throw stop("LABEL_REQUIRED", `#${n} is not labelled ${config.fitGate.requireLabel}; the harness takes only tickets labelled for delegation`);
     if (!issue.ok) throw stop(issue.code, `issue read #${n}: ${issue.message}`);
     const node = issue.data.repository.issue;
     const item = (node.projectItems?.nodes ?? []).find((i) => projectNumber === null || i.project?.number === projectNumber);
@@ -239,7 +242,7 @@ export function createPipeline(ctx) {
       n,
       title: node.title,
       body: node.body,
-      labels: inspected.labels ?? [],
+      labels,
       category: item?.workstream?.name ?? "uncategorized",
       acceptanceClass: inspected.acceptanceClass ?? selected?.acceptance ?? null,
       baseSha: selected?.baseline ?? inspected.baseline?.oid,

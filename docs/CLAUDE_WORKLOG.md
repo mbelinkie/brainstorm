@@ -2182,3 +2182,13 @@ Branch `claude/delegate-harness`.
 **Allowlist:** a Codex session's environment is now built from PATH, HOME, USER, LANG, LC_*, TMPDIR, SHELL, TERM, CODEX_HOME, plus GH_TOKEN from the token file, instead of the parent shell minus a few names. One addition, proven by a test: DELEGATE_HOME, which the Verifier's in-session `check-sha` uses to find the harness's state. Tests: the exact allowlisted set; `AWS_SECRET_ACCESS_KEY` in the parent never reaches the spawned process. A real Luna session started with only the allowlisted variables signed in, ran `git` and `node`, and completed its turn. `npm test` 702/702; `npm run test:harness` 18/18.
 
 **Fine-grained token result:** it reads issue #44 but GitHub refuses it on the user-owned board ("Resource not accessible by personal access token"), so `inspect` and `ready --dry-run` fail with it. Matthew chose harness-side board writes over a classic token. The plan is `docs/delegation/BOARD_WRITE_SPLIT_PLAN.md`; not implemented. #44 stays Blocked; worktree `quiz-delegate-44-4` kept; the next retry starts a fresh batch.
+
+### 2026-10-05 — fit label required; Brainstorm backlog reviewed for delegation
+
+Branch `claude/delegate-harness`. Matthew's decisions: labels `delegate:yes` / `delegate:no`; the harness takes only labelled tickets; review every open Brainstorm ticket (splitting allowed).
+
+**Harness:** `fitGate.requireLabel` (`delegate:yes`) in `tools/delegate/config.json`, required by the config validator. The batch planner takes an optional `requireLabel`; with it, unlabelled tickets are skipped as `LABEL_REQUIRED`, are not dry-run promoted, and nothing is written. Without it the planner behaves as before. Intake refuses an unlabelled ticket before writing any state or touching GitHub. `npm test` 705/705; `npm run test:harness` 19/19.
+
+**Review:** all 33 open issues are `delegate:no`, each with a Harness fit section (adding it changes no contract check result; verified with `parseContract` and `assessIssueContract` before and after). Nothing was split: no split produced work an automated test can prove. The reasons are structural. The tests never execute SQL (migration tickets #20, #24, #25, #29, #30, #38). Screens live in `app.js` and are accepted by Matthew (Producer: #18, #23, #26-28, #31-33, #40). The rest are deploys, real-world checks, goals, money or privacy paths, or already in flight. Closest to yes: #34 after #30 lands, #41's rows after the playtest, and #44 if Sol's 2026-10-03 decisions go into its contract (still Sol lane).
+
+**Found:** `tools/batch-core.mjs` hard-codes `ISSUE_RANGE = { min: 13, max: 44 }`, so the planner never sees a ticket numbered 45 or above. A new delegable ticket would be invisible to the harness until that changes.

@@ -65,7 +65,9 @@ async function readIssueDetails({ config, gate }) {
   return issues;
 }
 
-export function createBatchPlanner({ config, gate, lifecycle } = {}) {
+// requireLabel: when set (the delegation harness passes its fit label), only tickets
+// carrying it are selected or offered for promotion; others are skipped without a write.
+export function createBatchPlanner({ config, gate, lifecycle, requireLabel = null } = {}) {
   if (!config || !gate || !lifecycle) throw new TypeError("createBatchPlanner needs config, gate, and lifecycle");
 
   async function plan() {
@@ -110,6 +112,7 @@ export function createBatchPlanner({ config, gate, lifecycle } = {}) {
       if (!Object.hasOwn(config.fields.Priority.options, issue.priority)) {
         throw fail("PRIORITY_UNKNOWN", `issue #${issue.number} has no recognized Project priority`);
       }
+      if (requireLabel && !issue.labels.includes(requireLabel)) { reason("LABEL_REQUIRED"); continue; }
       if (issue.liveClaim) { reason("CLAIM_HELD"); continue; }
       if (issue.acceptance === "External") { reason("EXTERNAL_ACCEPTANCE"); continue; }
       if (!issue.contract.allowed) {

@@ -8,7 +8,7 @@
   "testFileGlobs": ["test/**"],
   "acceptanceDir": "test",
   "evidenceDir": "docs/delegation/evidence",
-  "fitGate": { "flagLabels": ["type:design", "type:research", "design", "research"] },
+  "fitGate": { "requireLabel": "delegate:yes", "flagLabels": ["type:design", "type:research", "design", "research"] },
   "protectedPaths": [
     "supabase/migrations/**",
     "scripts/roadmap/**",

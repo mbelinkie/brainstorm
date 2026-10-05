@@ -279,3 +279,11 @@ test("the committed harness config is valid and protects the harness itself", ()
   broken.ladder = [];
   assert.ok(validateConfig(broken).length >= 2);
 });
+
+test("config: a missing or blank fit label is refused (the label is what admits a ticket)", () => {
+  for (const bad of [undefined, "", "  ", 7]) {
+    const broken = structuredClone(config);
+    broken.fitGate.requireLabel = bad;
+    assert.ok(validateConfig(broken).some((p) => /fitGate\.requireLabel/.test(p)), String(bad));
+  }
+});

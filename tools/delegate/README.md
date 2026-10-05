@@ -35,7 +35,7 @@ The harness was built and tested with fake DeepSeek and fake Codex. The first re
    The harness reads plan usage from this home's session logs. It calls `codex` from PATH: run `codex update` first. An old CLI is not offered the gpt-6 models and Codex refuses them ("not supported when using Codex with a ChatGPT account").
 3. **Give Codex sessions a GitHub token.** Inside Codex's sandbox, `gh` cannot read the keychain login and calls GitHub anonymously, so the claim fails with `QUOTA_EXHAUSTED`. Save a fine-grained token limited to the repositories the harness works on (30-day expiry) as `$DELEGATE_HOME/github.token`, or point `DELEGATE_GITHUB_TOKEN_FILE` at it, and `chmod 600` it. The harness refuses to start without it, and passes it only to Codex sessions, as `GH_TOKEN`. Do not export it in your shell.
 4. **Point the harness at the key.** Set `export DEEPSEEK_KEY_FILE=<your existing private key file>`, and make sure the file is `chmod 600`.
-5. **Pick one small, low-risk Automated ticket** and make it the planner's top Ready ticket:
+5. **Pick one small, low-risk Automated ticket** and label it `delegate:yes` (the harness takes nothing else; see `docs/delegation/TICKET_FIT_INSTRUCTIONS.md`), and make it the planner's top Ready ticket:
 
    ```bash
    node tools/codex-batch.mjs --dry-run

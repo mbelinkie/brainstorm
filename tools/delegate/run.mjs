@@ -72,7 +72,7 @@ async function fullContext({ env, out, stopBeforeMerge = false }) {
   const roadmapConfig = JSON.parse(fs.readFileSync(path.join(repoRoot, "docs/roadmap/config.json"), "utf8"));
   const gate = createGate({ transport: createGhTransport() });
   const lifecycle = createLifecycle({ gate, config: roadmapConfig, env });
-  const planner = createBatchPlanner({ config: roadmapConfig, gate, lifecycle });
+  const planner = createBatchPlanner({ config: roadmapConfig, gate, lifecycle, requireLabel: config.fitGate.requireLabel });
   const recordDir = path.join(home, "deepseek");
   const deepseek = createDeepSeek({
     baseUrl: config.deepseek.baseUrl,

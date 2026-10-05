@@ -46,3 +46,8 @@ test("config: the token file's env var and default name live in the harness conf
   assert.equal(config.codex.githubTokenFileEnv, "DELEGATE_GITHUB_TOKEN_FILE");
   assert.equal(config.codex.githubTokenFile, "github.token");
 });
+
+test("config: the harness takes only tickets carrying the configured fit label", () => {
+  const config = JSON.parse(fs.readFileSync(new URL("../tools/delegate/config.json", import.meta.url), "utf8"));
+  assert.equal(config.fitGate.requireLabel, "delegate:yes");
+});

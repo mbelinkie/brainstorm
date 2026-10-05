@@ -14,6 +14,7 @@ export function validateConfig(cfg) {
   for (const key of ["protectedPaths", "configPaths", "dependencyFiles", "testFileGlobs", "contextExcludes"]) need(isStrArray(cfg[key]), `${key} must be a string array`);
   need(typeof cfg.testGlob === "string", "testGlob required");
   need(isObj(cfg.fitGate) && isStrArray(cfg.fitGate.flagLabels), "fitGate.flagLabels required");
+  need(typeof cfg.fitGate?.requireLabel === "string" && cfg.fitGate.requireLabel.trim() !== "", "fitGate.requireLabel required (the label that admits a ticket)");
   for (const lane of ["express", "standard", "protected"]) {
     need(isObj(cfg.lanes?.[lane]) && isPosInt(cfg.lanes[lane].maxFiles) && isPosInt(cfg.lanes[lane].maxLines), `lanes.${lane} needs maxFiles/maxLines`);
   }
