@@ -1,0 +1,85 @@
+{
+  "_comment": "Delegation harness settings (docs/delegation/HARNESS_SPEC.md). No secrets here: the DeepSeek key is read from a private file outside the repository.",
+  "repository": { "owner": "mbelinkie", "name": "brainstorm", "integrationBranch": "main", "remote": "origin" },
+  "branchPrefix": "codex/delegate-",
+  "worktreeParent": "..",
+  "worktreePrefix": "quiz-delegate-",
+  "testGlob": "test/*.test.js",
+  "testFileGlobs": ["test/**"],
+  "acceptanceDir": "test",
+  "evidenceDir": "docs/delegation/evidence",
+  "fitGate": { "requireLabel": "delegate:yes", "flagLabels": ["type:design", "type:research", "design", "research"] },
+  "protectedPaths": [
+    "supabase/migrations/**",
+    "scripts/roadmap/**",
+    "scripts/guard/**",
+    "tools/delegate/**",
+    "test/harness/**",
+    "tools/codex-batch.mjs",
+    "tools/batch-core.mjs",
+    ".claude/**",
+    ".github/**",
+    ".env*",
+    ".dev.vars",
+    "wrangler.jsonc",
+    "prepare-deploy.mjs"
+  ],
+  "configPaths": ["package.json", "package-lock.json", ".github/**", "wrangler.jsonc", ".nvmrc", ".node-version", ".claude/**"],
+  "dependencyFiles": ["package.json", "package-lock.json"],
+  "contextExcludes": [".env*", "**/.env*", ".dev.vars", "node_modules/**", "**/*.pem", "**/*.key", "*.docx", "*.zip", "*.png", "*.jpg", "assets/**", "docs/CLAUDE_WORKLOG.md", "CHANGELOG.md",
+    "AGENTS.md", "docs/roadmap/**", "docs/delegation/**", "docs/DELEGATION.md", "docs/DEEPSEEK_CODING_GUIDE.md", "docs/PROJECT_OPERATING_PLAYBOOK.md", "docs/reviews/**", ".github/**",
+    "scripts/roadmap/**", "tools/**", "test/roadmap-*", "test/harness/**", "test/delegate-*", "test/helpers/roadmap-*", "test/codex-batch*", "test/batch-core*"],
+  "_contextExcludes": "Secrets, generated and binary files, logs, and the roadmap and delegation process material, which is never product context.",
+  "lanes": {
+    "express": { "maxFiles": 3, "maxLines": 60 },
+    "standard": { "maxFiles": 12, "maxLines": 400 },
+    "protected": { "maxFiles": 20, "maxLines": 800 }
+  },
+  "ladder": [
+    { "model": "deepseek-flash", "effort": "high", "fresh": true },
+    { "model": "deepseek-flash", "effort": "high", "fresh": false },
+    { "model": "deepseek-v4-pro", "effort": "high", "fresh": true },
+    { "model": "deepseek-v4-pro", "effort": "max", "fresh": true }
+  ],
+  "repairStartRung": 2,
+  "deepseek": {
+    "baseUrl": "https://api.deepseek.com",
+    "keyFileEnv": "DEEPSEEK_KEY_FILE",
+    "defaultKeyFile": "deepseek.key",
+    "jsonMode": false,
+    "maxTokens": 65536,
+    "lengthRetryMaxTokens": 131072,
+    "usdPerBatch": 10,
+    "timeoutMs": 600000,
+    "scout": { "model": "deepseek-flash", "effort": "low" },
+    "testAuthor": { "model": "deepseek-v4-pro", "effort": "high" },
+    "mutants": { "model": "deepseek-flash", "effort": "low" },
+    "preReview": { "model": "deepseek-v4-pro", "effort": "high" },
+    "contextTokenCap": 200000
+  },
+  "codex": {
+    "command": "codex",
+    "githubTokenFileEnv": "DELEGATE_GITHUB_TOKEN_FILE",
+    "githubTokenFile": "github.token",
+    "sandbox": "workspace-write",
+    "extraConfig": ["sandbox_workspace_write.network_access=true"],
+    "roles": {
+      "controller": { "model": "gpt-6-luna", "effort": "high", "card": "docs/delegation/cards/controller.md" },
+      "triage": { "model": "gpt-6-luna", "effort": "medium", "card": "docs/delegation/cards/controller.md" },
+      "verifier": { "model": "gpt-6-luna", "effort": "medium", "card": "docs/delegation/cards/verifier.md" },
+      "sol": { "model": "gpt-6.1-sol", "effort": "high", "card": "docs/delegation/cards/sol.md" }
+    },
+    "timeoutMs": 1800000
+  },
+  "budgets": {
+    "controller": { "input": 300000, "output": 20000 },
+    "triage": { "input": 300000, "output": 20000 },
+    "verifier": { "input": 150000, "output": 8000 },
+    "sol": { "input": 1500000, "output": 40000 },
+    "sessionsPerTicket": { "express": 2, "standard": 4, "protected": 6 }
+  },
+  "plan": { "headroomPercent": 80, "creditCap": 0, "requireUsageReading": true },
+  "batch": { "deadlineHours": 8, "triageBatchSize": 1 },
+  "audit": { "pilotAll": 10, "earlyRate": 5, "earlyUntil": 30, "steadyRate": 20 },
+  "categoryOverrides": {}
+}

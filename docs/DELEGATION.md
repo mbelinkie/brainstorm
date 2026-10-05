@@ -54,7 +54,7 @@ The dispatcher re-read its whole growing history on every action, including whil
 
 - DeepSeek is **artifact-only**. It receives source text and a packet, and returns JSON artifacts. It gets no tools, shell, filesystem, Git, GitHub, network or credentials.
 - The harness validates and applies every artifact (§8).
-- No Codex model writes product code or fixes. The single exception is in the Controller card: an edit of 5 lines or fewer when that is cheaper than another repair cycle, with the harness rerunning all guards afterwards. The project's routing table may forbid even that.
+- No Codex model writes product code or fixes. The harness fingerprints the ticket worktree around every role session and blocks the ticket if a session changed it.
 
 ---
 
@@ -154,19 +154,30 @@ The harness then:
 - runs the reproduction command.
 - blocks the ticket if `contract_drift` is non-empty. The contract is outdated, and an agent must not improvise around it.
 
-### 3. Triage (Controller, batched)
+### 3. Triage (Controller)
 
-One Luna session receives a harness-trimmed view of up to 10 recon reports and returns one block per ticket:
+A Luna session receives a harness-trimmed view of the recon report and returns its decisions. There are two modes, set by `batch.triageBatchSize`:
 
-```text
-#<n>: fit=<ok|flag> lane=<express|standard|protected>
-  decisions: <one line per open question, or ESCALATE>
-  cases: approve A1,A2; edit A3 -> "<expect>"; add A4 "<given> -> <expect>"
-```
+- **One ticket at a time** (the default): the same session triages and then claims, so a ticket needs one Luna thread for triage, gate and review.
+- **Batched:** one session triages up to N tickets without claiming. Each ticket is then claimed by its own short Luna session, which becomes its claimant. The shared session's cost is split across its tickets in the ledger. It is not obviously cheaper, because every claim needs its own thread anyway. Measure before relying on it.
 
-The Controller does not open source files during triage. Anything it cannot decide from the view goes to Sol or Protected.
+The decisions cover:
 
-**Claim.** Once triage returns `fit=ok`, the harness launches the claimant: the Luna Controller for Express and Standard, Sol for Protected. The claimant runs the project's claim command with its own native ID. Recon is read-only. Nothing in the worktree changes before the claim succeeds.
+- **fit:** `ok`, or `flag` for design, research or visual-judgment work;
+- **lane:** Express, Standard or Protected;
+- **decisions** on the Scout's open questions, or an escalation reason;
+- **acceptance cases** (`A1`, `A2`, ...), approved, edited or added;
+- **write scope** (globs) and any allowed extras (`deps`, `config`, `suppressions`).
+
+The decisions come back as one JSON object (the [controller card](delegation/cards/controller.md) defines it). The Controller does not open source files during triage. Anything it cannot decide from the view goes to Sol or Protected.
+
+**Claim.** Only when fit is `ok`, the lane is Express or Standard, and nothing is escalated, Luna runs the pre-filled claim command with its own native ID. The harness then confirms the live claim's execution ID equals that session's thread ID. Recon is read-only, and nothing in the worktree changes before the claim succeeds.
+
+**Routed to Sol.** A Protected ticket, an escalated question, or a category the owner has raised to Protected goes to a Sol **design-and-claim** session:
+
+- Sol settles the open questions and decides the lane.
+- For Protected work, Sol also defines the cases, scopes, slices and planned real-process checks, and claims.
+- Otherwise Sol returns the decisions and Luna claims.
 
 ### 4. Acceptance tests (test author + harness)
 
@@ -227,11 +238,25 @@ The claimant Luna session reads the **review bundle** (spec §6) and its card, a
 
 ### Express lane differences
 
-Express runs steps 1, 2 (optional), 5, 7 and 8. It has no mutant check or pre-review and no new acceptance tests unless the ticket requires them.
+Express runs every step except the mutant check and pre-review. It needs no acceptance cases unless the ticket requires them; without cases, the regression suite is its acceptance.
+
+### Protected lane differences
+
+- Sol holds the claim, makes the gate decision (ACCEPT, one REPAIR, or RECLAIM; there is no escalation) and records the review.
+- DeepSeek still implements every slice under the same guards. The protected-path guard is off for Protected tickets, and their lane limits are larger.
+- After all slices are accepted and committed, Sol runs its planned **real-process checks** against the checkout, outside the worktree, with disposable resources. The evidence goes into the review and the evidence file.
+- Protected tickets are not part of the Luna audit sample.
 
 ### Slicing
 
-If a ticket is larger than one packet, the Scout proposes slices: one behavior, one main boundary, and about 1–3 production files per slice. The Controller approves them in triage. Dependent slices run in order. Independent slices may run in parallel only in separate worktrees with non-overlapping write scopes.
+If a ticket is larger than one packet, the Scout proposes slices: one behavior, one main boundary, and about 1–3 production files per slice. The Controller (or Sol) approves them in triage, giving each its own scope and cases; every case belongs to exactly one slice.
+
+Slices run in order in the ticket's worktree. Each slice goes through steps 4–7 and ends in a gate decision and a commit:
+
+- every earlier slice's acceptance file stays locked;
+- earlier slices' tests keep running in the regression suite.
+
+The ticket is published once, after its last slice. The harness does not run slices in parallel.
 
 ---
 
@@ -244,7 +269,7 @@ The harness enforces all limits. Configured values live in the harness config; t
 | Codex tokens per Controller session | 300k input (cached included), 20k output | Stop the ticket and block it with the usage recorded |
 | Codex tokens per Verifier session | 150k input, 8k output | Same |
 | Codex tokens per Sol session | 1.5M input, 40k output | Same, and report to the owner |
-| Codex sessions per ticket | Express 2, Standard 4, Protected 6 (escalations count) | Block |
+| Codex sessions per ticket (distinct threads; resuming the claimant doesn't count) | Express 2, Standard 4, Protected 6 (escalations count) | Block |
 | DeepSeek USD per batch | $10 observed spend | Stop launching. A request already in flight may finish |
 | Batch deadline | 8 hours from a fresh start | Stop launching |
 | Plan headroom (§7) | 5-hour usage under 80% before starting a ticket | Don't start or resume; wait for the reset, or use credits if the owner allowed them |

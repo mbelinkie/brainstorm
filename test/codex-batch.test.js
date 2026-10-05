@@ -146,6 +146,7 @@ test("the planner scans #13–44 and selects the highest-priority ticket after o
   assert.equal(result.selected.mergeGate, "independent verification or owner acceptance");
   assert.equal(result.scanned, 32);
   assert.deepEqual(world.readyCalls.map((call) => call.number), [42, 20]);
+  assert.deepEqual(result.readyQueue.map((issue) => issue.number), [42, 20], "every eligible Ready ticket, in priority order");
   assert.ok(world.readyCalls.every((call) => call.options.dryRun === true));
   assert.equal(world.reads, 1);
   assert.equal(world.mutations, 0);
@@ -161,6 +162,24 @@ test("Producer work may be selected but carries an owner-acceptance merge gate",
   const result = await createBatchPlanner({ config, ...world }).plan();
   assert.equal(result.selected.number, 22);
   assert.equal(result.selected.mergeGate, "owner acceptance after review");
+});
+
+// The delegation harness passes the label from its config; only labelled tickets are taken.
+test("with a required label, unlabelled tickets are skipped quietly and labelled ones are selected", async () => {
+  const world = makeWorld();
+  ready(world, 22, { priority: "P0", labels: ["model:standard", "effort:high", "delegate:no"] });
+  ready(world, 23, { priority: "P1", labels: ["model:standard", "effort:high", "delegate:yes"] });
+  ready(world, 24, { priority: "P0" });
+  Object.assign(world.nodes.get(28), { status: "Backlog", priority: "P1" });
+  const result = await createBatchPlanner({ config, ...world, requireLabel: "delegate:yes" }).plan();
+  assert.equal(result.selected.number, 23);
+  assert.deepEqual(result.readyQueue.map((i) => i.number), [23]);
+  assert.deepEqual(result.promotionCandidates, [], "an unlabelled Backlog ticket is not a promotion candidate either");
+  for (const n of [22, 24, 28]) assert.ok(result.skipped.some((x) => x.number === n && x.code === "LABEL_REQUIRED"), `#${n} skipped for the label`);
+  assert.equal(world.mutations, 0);
+  assert.ok(!world.readyCalls.some((c) => [22, 24, 28].includes(c.number)), "unlabelled tickets are never dry-run promoted");
+  const unrestricted = await createBatchPlanner({ config, ...world }).plan();
+  assert.equal(unrestricted.selected.number, 22, "without the option the planner behaves as before");
 });
 
 test("an empty Ready selection reports eligible Backlog promotions without changing status", async () => {

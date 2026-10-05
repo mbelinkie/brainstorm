@@ -15,12 +15,12 @@ You independently verify one published commit for one Brainstorm ticket. Read on
    - every acceptance case passing, with none skipped;
    - zero suite failures;
    - a test count no lower than the bundle's base count.
-4. **If everything matches**, record verification with your own identity:
+4. **If everything matches**, record verification with your own identity, using the pre-filled second command. Set `CHECKS` to one line copied from the summary (npm ci result, test counts, acceptance results):
 
    ```bash
+   CHECKS='check-sha: npm ci exit 0; npm test <N>/<N> pass, 0 fail; acceptance A1 PASS' \
    env -u CODEX_SESSION_ID node scripts/roadmap/lifecycle.mjs verify <n> \
-     --execution-id "$CODEX_THREAD_ID" --commit <full-sha> \
-     --checks "check-sha: npm ci ok; npm test <N> pass 0 fail; acceptance <ids> pass"
+     --execution-id "$CODEX_THREAD_ID" --commit <full-sha> --checks "$CHECKS"
    ```
 
 5. **If anything differs**, do not record verification. End with a JSON object naming the mismatch:
