@@ -101,6 +101,12 @@ export const roomApi = {
   castBattleVote({ roomCode, playerToken, matchupId, entryId }) {
     return call("cast_battle_vote", { p_room_code: roomCode, p_player_token: playerToken, p_matchup_id: matchupId, p_entry_id: entryId });
   },
+  
+  // Host-only (0042). Resolves the current matchup once; a repeat call returns
+  // the stored result with created:false and writes nothing.
+  resolveBattleMatchup({ roomCode, hostSecret, matchupId }) {
+    return call("resolve_battle_matchup", { p_room_code: roomCode, p_host_secret: hostSecret, p_matchup_id: matchupId });
+  },
 
   adjustScore({ roomCode, hostSecret, playerId, points, reason }) {
     return call("adjust_live_score", { p_room_code: roomCode, p_host_secret: hostSecret, p_player_id: playerId, p_points: points, p_reason: reason });
@@ -290,5 +296,23 @@ export async function lockAndScoreWithRecovery({ roomCode, hostSecret, client = 
     return { status, revision, players };
   } catch (error) {
     return { status, revision, players: null, error };
+  }
+}
+
+// Resolves a battle matchup and re-reads the standings, the same way
+// lockAndScoreWithRecovery() follows automatic scoring: battle points land in
+// score_events, so the leaderboard only shows them after a fresh read.
+//
+// Returns { result, players, error? }. A failed resolution throws (nothing was
+// awarded); a failed standings read after a good resolution returns
+// players: null with the error, which is worth reporting, never worth
+// blocking the reveal.
+export async function resolveBattleMatchupWithStandings({ roomCode, hostSecret, matchupId, client = roomApi }) {
+  const result = await client.resolveBattleMatchup({ roomCode, hostSecret, matchupId });
+  try {
+    const players = await client.getLeaderboard({ roomCode, accessToken: hostSecret });
+    return { result, players };
+  } catch (error) {
+    return { result, players: null, error };
   }
 }

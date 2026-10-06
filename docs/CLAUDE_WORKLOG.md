@@ -2175,3 +2175,12 @@ Branch `claude/battle-voting-31`, stacked on `claude/battle-player-screen-23` (#
 **Commands run:** `npm test`: tests 821, pass 821, fail 0. The whitelist test caught that a sloppy host object could carry a vetoed entry's asset ID; the whitelist now drops entries marked non-viable, vetoed or forfeited. Browser at 375×812: every vote and result state in the preview page; the real `app.js` player tab driven over BroadcastChannel through ballot → tap-to-expand → ArrowRight → Esc (focus back on the tile) → vote from inside the viewer (closes; retryable message, no Supabase here) → result.
 
 **Unproven:** Real voting against Supabase and real images through `/media` (this Mac has no `.env.local`). The host side that broadcasts `battleVote` / `battleResult` is #32.
+### 2026-10-06 — Prompt Battle score audit: CSV and leaderboard (issue #34)
+
+Branch `claude/battle-score-audit-34` (from origin/main `6b2921a`, after #30 merged and 0038–0042 were applied to production). Claude Code (Opus 5.5). Files: `app.js` (`scoreEventsCsv` extracted from `exportDetailedResults`, no output change), `room-api.js` (`resolveBattleMatchup` wrapper, `resolveBattleMatchupWithStandings`), `test/battle-score-audit.test.js` (new), `test/helpers/battle-fixtures.js` (new, moved out of `test/battle-resolve-runtime.test.js`), `test/battle-resolve-runtime.test.js` (now imports the shared fixtures), this entry.
+
+**Audit result:** Battle events already flowed through both reads unchanged. `get_live_leaderboard` sums every score event, and the detailed CSV prints question ID, points and reason. Battle rows read as `battle-r<round>-m<matchup>`, blank base points and multiplier, and a reason such as `Prompt battle tie (2 ways) · 1 of 2 votes`. No export label change was needed. The one real gap was freshness: standings show battle points only after a fresh leaderboard read. `resolveBattleMatchupWithStandings` mirrors `lockAndScoreWithRecovery` (resolve, then re-read; a failed re-read is reported, never blocking), ready for #32's Reveal.
+
+**Commands run:** `node --test test/battle-score-audit.test.js`: 6/6. The first run crashed because the test's `window` stub, needed by room-api, made PGlite assume a browser; the stub now exists only around that import. `npm test`: tests 785, pass 785, fail 0.
+
+**Unproven:** No host UI calls the new helper yet (#32). The CSV was checked through the lifted builder against real RPC output in PGlite, not through a browser download.
