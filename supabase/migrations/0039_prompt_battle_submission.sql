@@ -1,0 +1,327 @@
+-- 0039_prompt_battle_submission.sql
+-- Prompt Battle slice 4: player image submission and the host lock into
+-- battle_review.
+--
+-- Spec: docs/superpowers/specs/2026-08-17-prompt-battle-design.md sections
+-- 4.2, 4.3 and 8, the 2026-08-24 free-engine addendum, and
+-- docs/superpowers/specs/2026-08-26-prompt-battle-architecture.md.
+--
+-- Deliberately NOT here: voting, scoring, veto handling, client code, new
+-- tables, policies or enums, and any direct browser table grant. No spend,
+-- roster, prompt or asset value is added to sessions.state, and no
+-- player-facing payload gains a host-only field.
+--
+-- Here: a nullable forfeited_at column plus three function definitions -
+-- submit_battle_entry(), lock_battle_prompt(), and the replaced
+-- host_battle_state_payload(). Authorization follows 0038: a browser holds a
+-- room code plus either a player token or the host secret, and every read and
+-- write goes through a security definer function with search_path pinned.
+
+alter table public.session_battle_entries
+  add column if not exists forfeited_at timestamptz;
+
+-- Host projection shared by get_host_battle_state() and the battle RPCs so
+-- the host sees one shape whichever call produced it. Invoker rights on
+-- purpose: it has no authorization check of its own, and execute is revoked
+-- from every browser role below, so only the definer functions can call it.
+--
+-- The entrant key for a player's name stays `playerName`. Four keys are added
+-- per entrant: submittedAssetId, submittedAt, forfeited (boolean) and
+-- forfeitedAt; `submitted` keeps its 0036 meaning, submitted_at exists.
+--
+-- sessionSpendUsd sums every recorded generation cost in the session - all
+-- rounds, all statuses, partial failures included - which is what
+-- authorize_battle_generation() compares against the cap.
+-- maxSessionSpendUsd is read from the stored quiz round engine at this round
+-- index: a missing key and a JSON null both stay null, and 0 stays 0, since
+-- 0 means generation is disabled rather than unlimited.
+create or replace function public.host_battle_state_payload(
+  p_session_id uuid,
+  p_round_index integer
+)
+returns jsonb
+language sql
+stable
+set search_path = public
+as $$
+  with session_spend as (
+    select coalesce(sum(g.cost_usd), 0) as total_usd
+    from public.session_battle_generations g
+    join public.session_battle_entries e on e.id = g.entry_id
+    join public.session_battle_matchups m on m.id = e.matchup_id
+    where m.session_id = p_session_id
+  )
+  select jsonb_build_object(
+    'roundIndex', p_round_index,
+    'opened', exists (
+      select 1 from public.session_battle_matchups
+      where session_id = p_session_id and round_index = p_round_index
+    ),
+    'matchups', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'matchupId', m.id,
+        'matchupIndex', m.matchup_index,
+        'promptId', m.prompt_id,
+        'promptText', m.prompt_text,
+        'resolvedAt', m.resolved_at,
+        'entrants', coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'entryId', e.id,
+            'playerId', p.id,
+            'playerName', p.display_name,
+            'logoKey', p.logo_key,
+            'attemptsUsed', e.attempts_used,
+            'submitted', e.submitted_at is not null,
+            'submittedAssetId', e.submitted_asset_id,
+            'submittedAt', e.submitted_at,
+            'forfeited', e.forfeited_at is not null,
+            'forfeitedAt', e.forfeited_at,
+            'vetoed', e.vetoed_at is not null
+          ) order by p.display_name)
+          from public.session_battle_entries e
+          join public.session_players p on p.id = e.player_id
+          where e.matchup_id = m.id
+        ), '[]'::jsonb)
+      ) order by m.matchup_index)
+      from public.session_battle_matchups m
+      where m.session_id = p_session_id and m.round_index = p_round_index
+    ), '[]'::jsonb),
+    'sessionSpendUsd', (select total_usd from session_spend),
+    'maxSessionSpendUsd', (
+      select (q.definition -> 'rounds' -> p_round_index -> 'engine' ->> 'maxSessionSpendUsd')::numeric
+      from public.sessions s
+      join public.quiz_versions q on q.id = s.quiz_version_id
+      where s.id = p_session_id
+    )
+  );
+$$;
+
+revoke all on function public.host_battle_state_payload(uuid, integer) from public, anon, authenticated, service_role;
+
+-- Player submission. The session row is locked first and the caller's own
+-- entry second, exactly like authorize_battle_generation() in 0038, so a
+-- submission racing a host lock serialises on the session row and the loser
+-- sees the phase the winner produced.
+--
+-- Re-submitting before the lock replaces the previous pick: the judgment call
+-- confirmed in the issue #24 scope. Nothing public is invalidated because a
+-- submission stays private until the host locks.
+--
+-- The asset must be recorded in a COMPLETE generation of this exact entry in
+-- this session and the current round, AND the media row must itself be a
+-- battle image generated by this player. A UUID recorded in another player's
+-- generation, in a previous round, in another session, in a pending or failed
+-- attempt, or nowhere at all, is refused without writing anything.
+create or replace function public.submit_battle_entry(
+  p_room_code text,
+  p_player_token text,
+  p_asset_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  active_session public.sessions;
+  active_player public.session_players;
+  active_entry public.session_battle_entries;
+begin
+  select s.* into active_session
+  from public.sessions s
+  join public.session_players p on p.session_id = s.id
+  where s.room_code = upper(trim(p_room_code))
+    and p.player_token_hash = public.token_hash(p_player_token)
+  for update of s;
+  if not found then raise exception 'Player credentials are not valid for this room'; end if;
+
+  select * into active_player
+  from public.session_players
+  where session_id = active_session.id
+    and player_token_hash = public.token_hash(p_player_token);
+  if not found then raise exception 'Player credentials are not valid for this room'; end if;
+
+  if p_asset_id is null then
+    raise exception 'No asset was submitted: the asset id is null';
+  end if;
+
+  if active_session.phase::text <> 'battle_prompt' then
+    raise exception 'Submissions are closed for this round';
+  end if;
+
+  select e.* into active_entry
+  from public.session_battle_entries e
+  join public.session_battle_matchups m on m.id = e.matchup_id
+  where m.session_id = active_session.id
+    and m.round_index = active_session.current_round_index
+    and e.player_id = active_player.id
+  for update of e;
+  if not found then raise exception 'You are not in a matchup this round'; end if;
+
+  if not exists (
+    select 1
+    from public.session_battle_generations g
+    join public.session_battle_entries e on e.id = g.entry_id
+    join public.session_battle_matchups m on m.id = e.matchup_id
+    join public.media_assets a on a.id = p_asset_id
+    where g.status = 'complete'
+      and g.entry_id = active_entry.id
+      and p_asset_id = any(g.asset_ids)
+      and m.session_id = active_session.id
+      and m.round_index = active_session.current_round_index
+      and e.player_id = active_player.id
+      and a.source = 'battle'
+      and a.kind = 'image'
+      and a.generated_by_player_id = active_player.id
+  ) then
+    raise exception 'That asset is not one of your own complete generated images for this round';
+  end if;
+
+  update public.session_battle_entries set
+    submitted_asset_id = p_asset_id,
+    submitted_at = now(),
+    forfeited_at = null
+  where id = active_entry.id
+  returning * into active_entry;
+
+  return jsonb_build_object(
+    'entryId', active_entry.id,
+    'submittedAssetId', active_entry.submitted_asset_id,
+    'submittedAt', active_entry.submitted_at
+  );
+end;
+$$;
+
+-- Host lock. Moves battle_prompt to battle_review exactly once.
+--
+-- Same session-first lock order as submit_battle_entry(), which is what makes
+-- the two racing calls deterministic: whoever takes the session row first
+-- commits first, and the other then sees the phase it produced.
+--
+-- IDEMPOTENT. A replay while already in battle_review returns a fresh
+-- projection with locked:false and writes nothing at all - not entries, not
+-- the session, not revision, not updated_at. A generation completing after
+-- the lock cannot reopen a forfeit or replace a choice, because every row
+-- this function writes is written once, here.
+--
+-- An entry with an explicit choice keeps it AND its timestamp. The rest take
+-- the FINAL asset id of their highest attempt_index generation that is
+-- complete and non-empty; failed, blocked, pending and empty complete rows
+-- are ignored. An entry with no such generation forfeits: forfeited_at is
+-- stamped and submitted_asset_id and submitted_at stay null.
+create or replace function public.lock_battle_prompt(
+  p_room_code text,
+  p_host_secret text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  active_session public.sessions;
+  quiz_definition jsonb;
+  current_round jsonb;
+  matchup_count integer;
+  locked_entry record;
+  chosen_asset_id uuid;
+begin
+  select * into active_session
+  from public.sessions
+  where room_code = upper(trim(p_room_code))
+    and host_secret_hash = public.token_hash(p_host_secret)
+  for update;
+  if not found then raise exception 'Host authorization failed'; end if;
+
+  if active_session.phase::text = 'battle_review' then
+    return public.host_battle_state_payload(active_session.id, active_session.current_round_index)
+      || jsonb_build_object(
+        'roomCode', active_session.room_code,
+        'revision', active_session.revision,
+        'phase', active_session.phase,
+        'locked', false
+      );
+  end if;
+
+  if active_session.phase::text <> 'battle_prompt' then
+    raise exception 'This round is not open for submission locking';
+  end if;
+
+  select definition into quiz_definition
+  from public.quiz_versions where id = active_session.quiz_version_id;
+  current_round := quiz_definition -> 'rounds' -> active_session.current_round_index;
+  if current_round is null or current_round ->> 'type' is distinct from 'prompt_battle' then
+    raise exception 'Round % is not a prompt battle round', active_session.current_round_index + 1;
+  end if;
+
+  select count(*) into matchup_count
+  from public.session_battle_matchups
+  where session_id = active_session.id
+    and round_index = active_session.current_round_index;
+  if matchup_count = 0 then
+    raise exception 'This battle round has no matchups yet';
+  end if;
+
+  for locked_entry in
+    select e.id, e.submitted_asset_id
+    from public.session_battle_entries e
+    join public.session_battle_matchups m on m.id = e.matchup_id
+    where m.session_id = active_session.id
+      and m.round_index = active_session.current_round_index
+    for update of e
+  loop
+    if locked_entry.submitted_asset_id is not null then
+      continue;
+    end if;
+
+    chosen_asset_id := null;
+    select g.asset_ids[cardinality(g.asset_ids)] into chosen_asset_id
+    from public.session_battle_generations g
+    where g.entry_id = locked_entry.id
+      and g.status = 'complete'
+      and cardinality(g.asset_ids) > 0
+    order by g.attempt_index desc
+    limit 1;
+
+    if chosen_asset_id is null then
+      update public.session_battle_entries set
+        forfeited_at = now(),
+        submitted_asset_id = null,
+        submitted_at = null
+      where id = locked_entry.id;
+    else
+      update public.session_battle_entries set
+        submitted_asset_id = chosen_asset_id,
+        submitted_at = now(),
+        forfeited_at = null
+      where id = locked_entry.id;
+    end if;
+  end loop;
+
+  update public.sessions set
+    phase = 'battle_review',
+    state = state || jsonb_build_object('phase', 'battle_review'),
+    revision = revision + 1,
+    updated_at = now()
+  where id = active_session.id
+  returning * into active_session;
+
+  return public.host_battle_state_payload(active_session.id, active_session.current_round_index)
+    || jsonb_build_object(
+      'roomCode', active_session.room_code,
+      'revision', active_session.revision,
+      'phase', active_session.phase,
+      'locked', true
+    );
+end;
+$$;
+
+-- Grants. A new function gets EXECUTE for PUBLIC by default and Supabase's
+-- default privileges may also have granted it to anon and authenticated. Both
+-- browser RPCs are revoked from PUBLIC first and then granted only to anon
+-- and authenticated; the helper is revoked from every role, including
+-- service_role, because nothing outside the definer functions may call it.
+revoke all on function public.submit_battle_entry(text, text, uuid) from public;
+grant execute on function public.submit_battle_entry(text, text, uuid) to anon, authenticated;
+revoke all on function public.lock_battle_prompt(text, text) from public;
+grant execute on function public.lock_battle_prompt(text, text) to anon, authenticated;
