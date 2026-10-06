@@ -140,14 +140,20 @@ await run('focus', 'five-second polling preserves manual score inputs, selection
 });
 await run('contrast', 'battle Presentation supporting text remains readable', async ({page,context}) => {
  const presentation=await open('presenter',fixture(),context);
- const ratio=await presentation.page.locator('.presentation-card > p').last().evaluate(el=>{
+ const ratio=async()=>presentation.page.locator('.presentation-card > p').last().evaluate(el=>{
    const rgb=value=>value.match(/[0-9.]+/g).slice(0,3).map(Number);
    const luminance=values=>values.map(v=>{const n=v/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;}).reduce((sum,n,i)=>sum+n*[0.2126,0.7152,0.0722][i],0);
    const text=luminance(rgb(getComputedStyle(el).color));
    const background=luminance(rgb(getComputedStyle(el.parentElement).backgroundColor));
    return (Math.max(text,background)+0.05)/(Math.min(text,background)+0.05);
  });
- assert.ok(ratio>=4.5,`supporting text contrast ${ratio.toFixed(2)} must be at least 4.5:1`);
+ const promptRatio=await ratio();
+ assert.ok(promptRatio>=4.5,`prompt supporting text contrast ${promptRatio.toFixed(2)} must be at least 4.5:1`);
+ await page.evaluate(()=>{window.__fixture.battle.phase='battle_review';window.__fixture.battle.revision=42;});
+ await clickRefresh(page);await settle(presentation.page);
+ const reviewRatio=await ratio();
+ assert.ok(reviewRatio>=4.5,`review supporting text contrast ${reviewRatio.toFixed(2)} must be at least 4.5:1`);
+ assert.equal(await presentation.page.locator('.presentation-card img').count(),0,'locked judging card has no battle images');
 });
 await browser.close();await new Promise(resolve=>server.close(resolve));
 await fs.writeFile(path.join(evidence,'results.json'),JSON.stringify({results},null,2));
