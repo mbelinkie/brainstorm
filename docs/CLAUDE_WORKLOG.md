@@ -2198,6 +2198,18 @@ Branch `claude/battle-score-audit-34` (from origin/main `6b2921a`, after #30 mer
 
 **Unproven:** No host UI calls the new helper yet (#32). The CSV was checked through the lifted builder against real RPC output in PGlite, not through a browser download.
 
+### 2026-10-06 — Prompt Battle host roster (issue #27)
+
+Branch `codex/capacity27-deepseek`, starting commit `d07055a9d0630adf1b419334e0140c90090c20cf`. Matthew authorized finishing #27 from DeepSeek’s green commit and requested race, broadcast and focus coverage. The genuine coordinating Sol claim remains held by the parent task; independent verifier native ID: `01a111fb-df03-7ac0-bde6-6e7762b53b7e`.
+
+**Authorship:** DeepSeek Pro/high authored the product changes and initial regression tests in artifacts `0cd427f9-a0e9-45ed-8588-d3ff7d3be925` and `654db3f2-f7fa-4782-9e5f-872a13a41a77`; corrective artifact `0c935a8f-62ea-4568-a79a-1ba963df75c6` fixed serialization, uncertain-lock guards and stale revisions. Merge artifact `cd05663d-f9d2-447d-be1c-3260de7d03bd` combined #27 with current main's player, vote and Presentation flows; copy artifact `d05fd667-897d-4a17-a0ba-97357200cae1` made the no-image judging card explicitly say submissions are locked. Codex applied those artifacts, updated regression expectations, and completed verification. The inherited PGlite test helper now uses Node's `fileURLToPath` for paths with spaces.
+
+**Built:** host roster refresh requests remain serialized across round changes and clean up only their owning panel; lock requests queue behind old saves and keep phase writes guarded until the server confirms the result; confirmed refreshes publish only aggregate progress. Polling patches the roster in place, preserving focused controls and typed drafts. Current-main vote and result Presentation scenes remain; the locked judging card stays neutral and image-free.
+
+**Checks:** `node --test test/battle-host-sync.test.js test/battle-phase-3a.test.js`: 40/40. At published implementation SHA `d47e21cc1842bfc9526d24fd387959827da38898`, `npm test`: 846/846, no skips. Browser regression: 3/3 with host-to-Presentation `BroadcastChannel`, focus/draft preservation, and at least 4.5:1 text contrast on both prompt and judging cards; the locked card rendered no battle images. All 18 frozen acceptance checks passed. `npm run build:video`, syntax checks and `git diff --check` passed. Draft PR #79 is open. The final published SHA and independent lifecycle review are recorded in the evidence file and issue thread.
+
+**Unproven:** Matthew’s Producer screen acceptance and any real-room rehearsal remain pending. Current main was merged locally; no production migration was applied, deployed or called, and the issue PR was not merged or closed.
+
 ### 2026-10-06 — Prompt Battle media purge functions (issue #38, migration 0043)
 
 Branch `claude/battle-purge-38` (from origin/main `0d0b8ea`, after #73–#77 merged). Claude Code (Opus 5.5). Matthew assigned migration number 0043 in chat (recorded on #38). Files: `supabase/migrations/0043_prompt_battle_media_purge.sql` (new), `test/battle-media-purge.test.js` (new), this entry.

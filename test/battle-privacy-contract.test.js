@@ -266,11 +266,12 @@ test("publicRoomState() forwards only the battle position, never host-only battl
   const start = app.indexOf("function publicRoomState() {");
   const body = app.slice(start, app.indexOf("\n}\n", start));
   const keys = [...body.matchAll(/^\s{4}([a-zA-Z]+):/gm)].map((match) => match[1]);
-  assert.deepEqual(keys.filter((key) => /battle/i.test(key)).sort(), ["battleMatchupCount", "battleMatchupIndex", "battleResult", "battleRoundIndex", "battleVote"]);
+  assert.deepEqual(keys.filter((key) => /battle/i.test(key)).sort(), ["battleMatchupCount", "battleMatchupIndex", "battleProgress", "battleResult", "battleRoundIndex", "battleVote"]);
+  assert.match(body, /battleProgress: publicBattleProgress\(battleRoundPanel\.state\)/);
   // #31: the ballot and the result are re-whitelisted and phase-gated.
   assert.match(body, /battleVote: state\.phase === "battle_vote" \? sanitizePublicBattleVote\(state\.battleVote\) : null/);
   assert.match(body, /battleResult: state\.phase === "battle_result" \? sanitizePublicBattleResult\(state\.battleResult\) : null/);
-  assert.doesNotMatch(body, /battleRoundPanel|battleTestPanel|battlePlayer\b|pairing|matchups|entrants|shuffleSeed|sessionSpendUsd/);
+  assert.doesNotMatch(body, /battleTestPanel|battlePlayer\b|pairing|matchups|entrants|shuffleSeed|sessionSpendUsd/);
   // Nothing host-only is ever assigned onto `state`, the object it reads.
   assert.doesNotMatch(app, /state\.(battleRoundPanel|battleTestPanel|battlePairing|matchups|entrants|shuffleSeed)\s*=/);
 });

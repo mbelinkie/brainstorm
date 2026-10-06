@@ -4,6 +4,8 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-10-06
 
+- Completed the Prompt Battle host roster (#27): hosts can see paired entrants’ submission status and server-reported spend, while Presentation receives aggregate progress. Lock and refresh races now retain confirmed phase state, and polling preserves host focus and drafts.
+
 - Prepared Prompt Battle blind voting: eligible players can cast one private vote for the current matchup, and vote-time image access is limited to its submitted, available entries. Hosts see aggregate progress. Entrants and duplicate votes are rejected. The migration passed actual PostgreSQL acceptance and regression checks; production application and UI remain separate work.
 
 - Prepared Prompt Battle host review and veto: hosts can inspect every generation attempt, veto an entry with a reason, and undo the veto during review. Matchup viability reflects vetoes and forfeits without exposing private review data to players. The migration passed actual PostgreSQL acceptance and regression checks; production application and UI remain separate work.

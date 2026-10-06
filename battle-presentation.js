@@ -52,7 +52,7 @@ export function presentationBattleScene({ phase, battleVote, battleResult, match
 export function presentationBattleMarkup(scene, escapeHtml, { roundTitle = "Prompt Battle", logo = () => "" } = {}) {
   const eyebrow = `Prompt Battle${scene.position ? ` · Matchup ${scene.position.number} of ${scene.position.count}` : ""}`;
   const card = (modifier, body) => `<section class="presentation-card presentation-card--battle presentation-card--battle-${modifier}" aria-live="polite"><p class="eyebrow">${escapeHtml(eyebrow)}</p>${body}</section>`;
-  if (scene.kind === "review") return card("review", `<h2>${escapeHtml(roundTitle)}</h2><p class="presentation-battle-note">The judges are checking the entries. Voting starts in a moment.</p>`);
+  if (scene.kind === "review") return card("review", `<h2>${escapeHtml(roundTitle)}</h2><p class="presentation-battle-note">Submissions are locked. The judges are checking the entries. Voting starts in a moment.</p>`);
   if (scene.kind === "vote-wait") return card("wait", `<h2>Next matchup</h2><p class="presentation-battle-note">Get your phones ready to vote.</p>`);
   if (scene.kind === "result-wait") return card("wait", `<h2>Counting the votes…</h2>`);
   if (scene.kind === "skipped") return card("wait", `<h2>Matchup skipped</h2><p class="presentation-battle-note">No entry could be shown, so no points this time.</p>`);

@@ -75,9 +75,10 @@ export const roomApi = {
     return call("reveal_live_door_rewards", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
-  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql).
-  // All three are host-secret authorized, and the pairing these return is
-  // host-only data. The player's own read is getPlayerBattleState() below.
+  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql
+  // and 0039_prompt_battle_submission.sql). All are host-secret authorized:
+  // the data they return is host-only. The player's own read is
+  // getPlayerBattleState() below, and player vote/resolve are also available.
   openBattleRound({ roomCode, hostSecret }) {
     return call("open_battle_round", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
@@ -88,6 +89,12 @@ export const roomApi = {
 
   getHostBattleState({ roomCode, hostSecret }) {
     return call("get_host_battle_state", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
+  // Idempotent server-side: a repeated call on an already-locked round returns
+  // the confirmed battle_review payload rather than reopening submissions.
+  lockBattlePrompt({ roomCode, hostSecret }) {
+    return call("lock_battle_prompt", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
   // Player read of their own battle entry (0038 get_player_battle_state):
@@ -101,7 +108,7 @@ export const roomApi = {
   castBattleVote({ roomCode, playerToken, matchupId, entryId }) {
     return call("cast_battle_vote", { p_room_code: roomCode, p_player_token: playerToken, p_matchup_id: matchupId, p_entry_id: entryId });
   },
-  
+
   // Host-only (0042). Resolves the current matchup once; a repeat call returns
   // the stored result with created:false and writes nothing.
   resolveBattleMatchup({ roomCode, hostSecret, matchupId }) {

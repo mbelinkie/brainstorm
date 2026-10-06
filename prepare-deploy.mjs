@@ -9,6 +9,7 @@ const publicFiles = [
   "kaplan-brand-layer.css",
   "assets",
   "app.js",
+  "battle-roster.js",
   "room-api.js",
   "quiz-core.js",
   "battle-player.js",

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { firstPlayableRound, hostSavedPosition, isBattleRound, nextPlayablePosition } from "../quiz-core.js";
+import { battleRosterRows, battleSpendView, publicBattleProgress } from "../battle-roster.js";
 
 // Prompt Battle slice 3a. Spec:
 // docs/superpowers/specs/2026-09-23-prompt-battle-slice-3a-design.md
@@ -81,10 +82,56 @@ test("hostStatePayload saves battle_prompt and the hostSavedPosition result", ()
 
 const BATTLE_FIELDS = ["battleRoundIndex", "battleMatchupIndex", "battleMatchupCount"];
 
-test("publicRoomState forwards exactly the three battle integers and nothing else battle-related", () => {
+test("publicRoomState forwards the three battle integers and only the aggregate progress", () => {
   const body = fn("publicRoomState");
   for (const field of BATTLE_FIELDS) assert.match(body, new RegExp(`${field}: Number\\.isInteger\\(state\\.${field}\\) \\? state\\.${field} : null`));
-  assert.doesNotMatch(body, /battleRoundPanel|matchups|promptText|entrants|shuffleSeed/);
+  // The private roster reaches public state through one aggregate projection
+  // and through nothing else.
+  assert.equal((body.match(/battleRoundPanel/g) || []).length, 1, "publicRoomState reads the private battle panel in exactly one place");
+  assert.ok(body.includes("battleProgress: publicBattleProgress(battleRoundPanel.state)"), "publicRoomState projects the aggregate through the extracted helper");
+  assert.doesNotMatch(body, /matchups|promptText|entrants|shuffleSeed/);
+  // Runtime, not source: with a private roster full of battle-only fields the
+  // projection still carries two integer counts and nothing else.
+  const privateRoster = { matchups: [{ promptText: "PRIVATE_PROMPT", entrants: [
+    { playerName: "PRIVATE_CREATOR", playerId: "PRIVATE_ID", submitted: true, attemptsUsed: 1, generations: [{ status: "complete", assetIds: ["PRIVATE_ASSET"], playerPrompt: "PRIVATE_PROMPT" }] },
+    { playerName: "Second entrant", submitted: false, attemptsUsed: 0, generations: [{ status: "pending" }] }
+  ] }] };
+  const progress = publicBattleProgress(privateRoster);
+  assert.deepEqual(progress, { submitted: 1, total: 2 });
+  assert.doesNotMatch(JSON.stringify(progress), /PRIVATE|Second entrant/);
+});
+
+// Issue #27 moved the host roster behind battle-roster.js and publishes only
+// the aggregate. These run the extracted helpers instead of reading app.js.
+test("issue #27: roster labels, attempts, spend and the public projection use server-reported values", () => {
+  const roster = {
+    sessionSpendUsd: 1.25,
+    maxSessionSpendUsd: 9.5,
+    matchups: [{ entrants: [
+      { playerName: "Ada", attemptsUsed: 2, submitted: true, generations: [{ status: "complete", assetIds: ["asset"] }] },
+      { playerName: "Grace", attemptsUsed: 1, submitted: false, generations: [{ status: "pending" }] },
+      { playerName: "Alan", attemptsUsed: 0, submitted: false, generations: [] },
+      { playerName: "Bo", attemptsUsed: 0, submitted: false, generations: [{ status: "failed" }] },
+      { playerName: "Cy", attemptsUsed: 1, submitted: false, generations: [{ status: "blocked" }] },
+      { playerName: "Dee", attemptsUsed: 1, submitted: false, generations: [{ status: "complete", assetIds: ["asset"] }] }
+    ] }]
+  };
+  const rows = battleRosterRows(roster);
+  assert.deepEqual(rows.map((row) => row.status), ["Submitted", "Generating", "Not started", "Ready to retry", "Ready to retry", "Ready to submit"]);
+  assert.deepEqual(rows.map((row) => row.attemptsUsed), [2, 1, 0, 0, 1, 1]);
+  assert.equal(rows[3].refunded, true, "a refunded attempt is not mistaken for a player who never started");
+  assert.deepEqual(publicBattleProgress(roster), { submitted: 1, total: 6 });
+  const spend = battleSpendView(roster);
+  assert.equal(spend.spend, 1.25);
+  assert.equal(spend.cap, 9.5);
+  assert.equal(spend.capLabel, "$9.50 cap");
+  const uncapped = battleSpendView({ sessionSpendUsd: 1.25, maxSessionSpendUsd: null });
+  assert.equal(uncapped.cap, null);
+  assert.match(uncapped.capLabel, /no configured cap/i);
+  // Submitted wins over a pending generation, and a complete generation with
+  // no asset is not Ready to submit.
+  assert.equal(battleRosterRows({ matchups: [{ entrants: [{ playerName: "Locked", attemptsUsed: 2, submitted: true, generations: [{ status: "pending" }] }] }] })[0].status, "Submitted");
+  assert.equal(battleRosterRows({ matchups: [{ entrants: [{ playerName: "Empty", attemptsUsed: 1, submitted: false, generations: [{ status: "complete", assetIds: [] }] }] }] })[0].status, "Ready to retry");
 });
 
 test("the player render key includes the battle fields", () => {
@@ -92,9 +139,12 @@ test("the player render key includes the battle fields", () => {
   for (const field of BATTLE_FIELDS) assert.match(body, new RegExp(`${field}: roomState\\?\\.${field}`));
 });
 
-test("a host or Presentation reload maps battle_prompt back instead of falling to lobby", () => {
+test("a host or Presentation reload maps the battle phases back instead of falling to lobby", () => {
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
-  assert.match(reload, /complete: "complete", battle_prompt: "battle_prompt" \}\)\[savedRoom\.phase\]/);
+  assert.ok(reload.includes('battle_prompt: "battle_prompt", battle_review: "battle_review"'), "the saved-phase map carries both battle phases");
+  assert.ok(reload.includes('savedPhaseMap[savedRoom.phase] || "lobby"'), "an unknown saved phase still falls back to lobby");
+  assert.ok(reload.includes("phase: savedPhase"), "the server's phase wins over the saved public screen");
+  assert.ok(reload.includes('["battle_prompt", "battle_review"].includes(savedPhase)'), "a room locked on the server restores into review");
 });
 
 test("startRound enters a battle round without a question and without auto-advancing", () => {
@@ -129,10 +179,12 @@ test("End battle round walks on to the round-end card or the finale", () => {
   assert.match(body, /startFinale\(\)/);
 });
 
-test("N on a battle round opens it rather than a stale question, and does nothing in battle_prompt", () => {
+test("N on a battle round opens it rather than a stale question, and does nothing in battle_prompt or battle_review", () => {
   const body = fn("showNextScreen");
-  assert.match(body, /if \(state\.phase === "battle_prompt"\) return;/);
-  assert.match(body, /if \(Number\.isInteger\(state\.battleRoundIndex\)\) return openBattleRoundFromHost\(\);\s*return setPhase\("open"\);/);
+  assert.ok(body.includes('if (state.phase === "battle_prompt" || state.phase === "battle_review") return;'), "N does nothing once submissions are open or locked");
+  const openIdx = body.indexOf("return openBattleRoundFromHost();");
+  const phaseIdx = body.indexOf('return setPhase("open");');
+  assert.ok(openIdx >= 0 && phaseIdx > openIdx, "a battle round is opened, never a stale question");
 });
 
 test("P does not rewind out of a battle round in 3a", () => {
@@ -145,12 +197,12 @@ test("the host has a battle_prompt screen and re-fetches the pairing after a rel
   assert.match(fn("renderHost"), /if \(Number\.isInteger\(state\.battleRoundIndex\)\) \{ renderHostBattle\(\); return; \}/);
   assert.doesNotMatch(fn("renderHost"), /battlePairingPanel\(\)/, "renderHost no longer renders the pairing panel");
   const battle = fn("renderHostBattle");
-  assert.match(battle, /const opened = state\.phase === "battle_prompt";/);
+  assert.ok(battle.includes('const opened = state.phase === "battle_prompt" || review;'), "the battle screen is open in prompt and review");
   assert.match(battle, /opened \? [^:]*data-battle-end-round/, "End battle round is shown only once the round is open");
   assert.equal((battle.match(/data-battle-end-round/g) || []).length, 1);
   assert.match(battle, /Open the round when everyone has joined\. Pairing locks the roster\./);
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
-  assert.match(reload, /if \(view === "host" && state\.phase === "battle_prompt"\) refreshBattlePairing\(\);/);
+  assert.ok(reload.includes('if (view === "host" && ["battle_prompt", "battle_review"].includes(state.phase)) refreshBattlePairing();'), "a reload into either battle phase re-reads the private roster");
 });
 
 test("P never rewinds into a battle_prompt screen", () => {
@@ -209,33 +261,41 @@ test("a save that recovers re-renders the battle screen so Open is enabled again
   assert.match(fn("saveHostState"), /renderBattleAfterSaveRecovered\(\);/);
 });
 
-test("Refresh pairing goes through refreshBattlePairing, which refuses another round's pairing", () => {
-  assert.match(fn("attachEvents"), /\[data-battle-refresh-pairing\]"\)\?\.addEventListener\("click", \(\) => refreshBattlePairing\(\)\);/);
+test("Refresh roster goes through refreshBattlePairing, which refuses another round's roster", () => {
+  const events = fn("attachEvents");
+  assert.ok(events.includes('querySelector("[data-battle-refresh-pairing]")'), "the roster control is wired");
+  assert.ok(events.includes("refreshBattlePairing()"), "the roster control reloads the private roster");
   assert.doesNotMatch(app, /runBattleRoundCall/);
   const body = fn("refreshBattlePairing");
-  assert.match(body, /battleRoundPanel\.busy\) return;/);
-  const guard = body.search(/if \(Number\(result\?\.roundIndex\) === state\.battleRoundIndex\)/);
-  assert.ok(guard >= 0, "refreshBattlePairing checks the pairing's roundIndex");
-  assert.ok(guard < body.indexOf("battleRoundPanel.state = result;"), "the check comes before the pairing is adopted");
-  assert.match(body, /The room was still saving the new round\. Press Refresh pairing again\./);
+  assert.ok(body.includes("if (battleRefreshInFlight) return;"), "a second refresh never overlaps the first");
+  const requestRound = body.indexOf("const requestRound = state.battleRoundIndex;");
+  const guard = body.indexOf("state.battleRoundIndex !== requestRound");
+  assert.ok(requestRound >= 0, "refreshBattlePairing records the round it asked about");
+  assert.ok(guard > requestRound, "refreshBattlePairing refuses a response for another round");
+  assert.ok(guard < body.indexOf("requestPanel.state = result;"), "the check comes before the roster is adopted");
 });
 
 test("a reload into battle_prompt also restores the battle_prompt screen", () => {
   // open_battle_round writes phase but not presentationScreen to sessions.state.
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
   const merge = reload.indexOf("state = { ...state, ...savedRoom.state");
-  const fix = reload.indexOf('if (state.phase === "battle_prompt") state.presentationScreen = "battle_prompt";');
+  const fix = reload.indexOf('if (state.phase === "battle_prompt" || state.phase === "battle_review") state.presentationScreen = state.phase;');
   assert.ok(fix > merge && merge >= 0, "the screen is set after the saved state is merged");
   assert.ok(fix < reload.indexOf('if (["door_choice", "door_reveal"].includes(state.phase))'), "directly after the merge");
 });
 
-test("Refresh pairing shows progress before the call and reports a missing host secret", () => {
+test("Refresh roster patches pending feedback and reports a missing host secret", () => {
   const body = fn("refreshBattlePairing");
-  assert.match(body, /if \(view !== "host" \|\| battleRoundPanel\.busy\) return;/);
-  assert.match(body, /if \(!hostSecret\) \{ battleRoundPanel\.error = "Host authorization is required\."; render\(\); return; \}/);
+  assert.ok(body.includes("!Number.isInteger(state.battleRoundIndex)"));
+  assert.ok(body.includes("if (battleRefreshInFlight) return;"), "refreshBattlePairing refuses overlapping calls");
+  assert.ok(body.includes('if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; patchBattlePairingPanel(); return; }'));
   const call = body.indexOf("await roomApi.getHostBattleState");
   const before = body.slice(0, call);
+  const tail = body.slice(call);
   assert.ok(call >= 0);
-  assert.match(before, /battleRoundPanel\.busy = true;\s*battleRoundPanel\.error = "";\s*render\(\);/, "busy is set, the error cleared and the panel re-rendered before the await");
-  assert.match(body.slice(call), /finally \{ battleRoundPanel\.busy = false; render\(\); \}/);
+  assert.ok(before.includes("requestPanel.busy = true;"), "busy is set before the await");
+  assert.ok(before.includes('requestPanel.error = "";'), "the previous error is cleared before the await");
+  assert.ok(before.includes("if (!silent) patchBattlePairingPanel();"), "pending feedback is patched before the await");
+  assert.ok(tail.includes("requestPanel.busy = false;"), "the busy flag is always cleared");
+  assert.ok(tail.includes("patchBattlePairingPanel();"), "feedback is patched once the call settles");
 });

@@ -10,10 +10,11 @@
 // behavior, only enough shape for the DDL to apply.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 
-const MIGRATIONS_DIR = new URL("../../supabase/migrations/", import.meta.url).pathname;
+const MIGRATIONS_DIR = fileURLToPath(new URL("../../supabase/migrations/", import.meta.url));
 
 const SUPABASE_STUBS = `
   create role anon nologin;
