@@ -100,6 +100,12 @@ let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_
 // See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
 let battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, confirmedAt: 0, roundIndex: null };
 let battleRosterPollTimer = null;
+let battleRefreshRequestId = 0;
+let battleRefreshInFlight = null;
+let battleLockBusy = false;
+let battleLockGuard = false;
+let battleLockOperationId = 0;
+let battleLockInFlightToken = 0;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -386,6 +392,11 @@ function cueFinaleAudio(audioKey) {
 }
 
 async function startFinale() {
+  if ((battleLockGuard || battleLockBusy) && view === "host") {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    if (view === "host") patchBattlePairingPanel();
+    return;
+  }
   rememberCurrentScreen();
   state = {
     ...state,
@@ -479,6 +490,8 @@ function enterBattleRound(roundIndex) {
   };
   battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, confirmedAt: 0, roundIndex: null };
   stopBattleRosterPolling();
+  battleRefreshRequestId++;
+  battleLockOperationId++;
 }
 
 // The host is the only writer of phases (spec decision). open_battle_round()
@@ -529,13 +542,65 @@ async function openBattleRoundFromHost() {
 // Review and voting.
 async function endBattleRound() {
   if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
+  if (battleLockGuard || battleLockBusy) {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    patchBattlePairingPanel();
+    return;
+  }
   const battleIndex = state.battleRoundIndex;
   const next = nextPlayablePosition(hostQuizDefinition?.rounds, { roundIndex: battleIndex, questionIndex: 0 });
   state = { ...state, battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null };
   battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, confirmedAt: 0, roundIndex: null };
   stopBattleRosterPolling();
+  battleRefreshRequestId++;
+  battleLockOperationId++;
   if (next) await startRoundEnd(next.roundIndex);
   else await startFinale();
+}
+
+function battlePairingDynamicView() {
+  const pairing = battleRoundPanel.state;
+  const review = state.phase === "battle_review";
+  const staleLine = battleRoundPanel.stale ? `<p class="battle-round-note battle-round-note--stale" role="alert">Showing the last confirmed roster. These totals may be stale. <button class="battle-inline-retry" type="button" data-battle-refresh-pairing>Retry</button></p>` : "";
+  const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
+  const spend = pairing ? battleSpendView(pairing) : null;
+  const spendLine = pairing ? `<p class="battle-roster-spend">Session spend $${spend.spend.toFixed(2)} · ${escapeHtml(spend.capLabel)}</p>` : "";
+  const rows = battleRosterRows(pairing);
+  const rosterView = rows.length
+    ? `<ul class="battle-roster">${rows.map((row) => `<li class="battle-roster-row"><span class="battle-roster-name">${escapeHtml(row.playerName)}</span><span class="battle-roster-status">${escapeHtml(row.status)}</span><span class="battle-roster-meta">${row.attemptsUsed} attempt${row.attemptsUsed === 1 ? "" : "s"}${row.refunded ? " · refunded" : ""}</span></li>`).join("")}</ul>`
+    : `<p class="battle-round-note" role="status">${review ? "Submissions are locked." : battleRoundPanel.busy ? "Loading the roster…" : "The roster has not loaded. Press Refresh roster."}</p>`;
+  const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
+  return `${errorLine}${staleLine}${spendLine}${rosterView}${seedLine}`;
+}
+
+function patchBattlePairingPanel() {
+  const dynamic = document.querySelector('[data-battle-pairing-dynamic]');
+  if (dynamic) {
+    dynamic.innerHTML = battlePairingDynamicView();
+    dynamic.querySelectorAll('[data-battle-refresh-pairing]').forEach(btn => {
+      btn.addEventListener('click', () => refreshBattlePairing());
+    });
+  }
+  const mainRefresh = document.querySelector('.host-actions [data-battle-refresh-pairing]');
+  if (mainRefresh) {
+    const busy = battleRoundPanel.busy;
+    mainRefresh.setAttribute('aria-disabled', busy ? 'true' : 'false');
+    mainRefresh.textContent = busy ? 'Refreshing…' : 'Refresh roster';
+    if (busy) {
+      mainRefresh.setAttribute('data-busy', 'true');
+    } else {
+      mainRefresh.removeAttribute('data-busy');
+    }
+  }
+}
+
+function patchLockUi() {
+  const lockButton = document.querySelector('[data-battle-lock]');
+  if (lockButton) {
+    lockButton.disabled = battleLockBusy;
+    lockButton.textContent = battleLockBusy ? "Locking submissions…" : "Lock submissions";
+  }
+  patchBattlePairingPanel();
 }
 
 function stopBattleRosterPolling() {
@@ -557,44 +622,76 @@ function syncBattleRosterPolling() {
 // battle round. The payload stays in battleRoundPanel -- never on `state` --
 // so only the aggregate { submitted, total } projection can reach players.
 async function refreshBattlePairing({ silent = false } = {}) {
-  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || battleRoundPanel.busy) return;
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
   if (!["battle_prompt", "battle_review"].includes(state.phase)) return;
+  if (battleRefreshInFlight) return;
   const hostSecret = getHostSecret();
-  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; patchBattlePairingPanel(); return; }
+  const requestPanel = battleRoundPanel;
   const requestRound = state.battleRoundIndex;
   const requestPhase = state.phase;
-  battleRoundPanel.busy = true;
-  battleRoundPanel.error = "";
-  if (!silent) render();
+  const requestId = ++battleRefreshRequestId;
+  const inFlight = { requestId, panel: requestPanel };
+  battleRefreshInFlight = inFlight;
+  requestPanel.busy = true;
+  requestPanel.error = "";
+  if (!silent) patchBattlePairingPanel();
   try {
     const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
-    // The host may have locked, ended the round or left the phase while this
-    // was in flight. A response for a phase the host has already left is
-    // discarded, so a held "battle_prompt" answer cannot reopen a lock.
-    if (view !== "host" || state.battleRoundIndex !== requestRound) return;
-    if (state.phase !== requestPhase) return;
-    const nextPhase = result?.phase === "battle_review" ? "battle_review" : result?.phase === "battle_prompt" ? "battle_prompt" : null;
-    if (!nextPhase) return;
-    battleRoundPanel.state = result;
-    battleRoundPanel.stale = false;
-    battleRoundPanel.confirmedAt = Date.now();
-    battleRoundPanel.roundIndex = requestRound;
+    if (requestId !== battleRefreshRequestId) return;
+    if (battleRefreshInFlight !== inFlight) return;
+    if (battleRoundPanel !== requestPanel) return;
+    if (view !== "host" || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+    if (!result || Number(result?.roundIndex) !== requestRound || !["battle_prompt", "battle_review"].includes(result?.phase)) {
+      requestPanel.stale = true;
+      requestPanel.error = "The server returned an unexpected round or phase. Retry refresh.";
+      return;
+    }
+    const nextPhase = result.phase;
+    if (state.phase === "battle_review" && nextPhase === "battle_prompt") {
+      requestPanel.stale = true;
+      requestPanel.error = "A newer roster is already confirmed. Retry refresh.";
+      return;
+    }
+    if (state.phase === "battle_review" && Number.isFinite(Number(result?.revision)) && Number.isFinite(state.revision) && Number(result.revision) < Number(state.revision)) {
+      requestPanel.stale = true;
+      requestPanel.error = "A newer roster is already confirmed. Retry refresh.";
+      return;
+    }
+    requestPanel.state = result;
+    requestPanel.stale = false;
+    requestPanel.confirmedAt = Date.now();
+    requestPanel.roundIndex = requestRound;
     state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
-    // Adopt only what the server confirmed. Nothing is written back: a lock
-    // already persisted this phase and revision server-side.
-    if (Number.isFinite(Number(result?.revision))) state.revision = Number(result.revision);
+    if (Number.isFinite(Number(result?.revision))) state.revision = Math.max(state.revision, Number(result.revision));
     if (nextPhase === "battle_review") {
       state.phase = "battle_review";
       state.presentationScreen = "battle_review";
+      stopBattleRosterPolling();
+    } else {
+      state.phase = "battle_prompt";
+      state.presentationScreen = "battle_prompt";
+    }
+    if (!battleLockBusy) battleLockGuard = false;
+    emit();
+    if (nextPhase !== requestPhase) {
+      render();
     }
   } catch (error) {
-    // Keep the last confirmed roster and counts; label them stale rather than
-    // inventing zeros. Retrying the same control recovers the real server state.
-    battleRoundPanel.stale = true;
-    battleRoundPanel.error = error?.message || "Could not load the roster.";
+    if (requestId !== battleRefreshRequestId) return;
+    if (battleRefreshInFlight !== inFlight) return;
+    if (battleRoundPanel !== requestPanel) return;
+    if (view !== "host" || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+    requestPanel.stale = true;
+    requestPanel.error = error?.message || "Could not load the roster.";
   } finally {
-    battleRoundPanel.busy = false;
-    render();
+    if (battleRefreshInFlight === inFlight) {
+      battleRefreshInFlight = null;
+    }
+    requestPanel.busy = false;
+    if (battleRoundPanel === requestPanel) {
+      patchBattlePairingPanel();
+    }
   }
 }
 
@@ -603,38 +700,74 @@ async function refreshBattlePairing({ silent = false } = {}) {
 // rejected or lost response; the prompt stays open until the server confirms.
 async function lockBattlePrompt() {
   if (view !== "host" || !isHostedRoom || !Number.isInteger(state.battleRoundIndex)) return;
-  if (state.phase !== "battle_prompt" || battleRoundPanel.lockBusy) return;
+  if (state.phase !== "battle_prompt" || battleLockBusy) return;
   const hostSecret = getHostSecret();
-  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
-  battleRoundPanel.lockBusy = true;
-  battleRoundPanel.error = "";
-  render();
-  try {
-    const result = await roomApi.lockBattlePrompt({ roomCode, hostSecret });
-    if (Number(result?.roundIndex) !== state.battleRoundIndex) {
-      battleRoundPanel.error = "The room was still saving the new round. Press Refresh roster, then lock again.";
-      return;
-    }
-    battleRoundPanel.state = result;
-    battleRoundPanel.stale = false;
-    battleRoundPanel.confirmedAt = Date.now();
-    battleRoundPanel.roundIndex = state.battleRoundIndex;
-    state.phase = result?.phase === "battle_review" ? "battle_review" : "battle_prompt";
-    state.presentationScreen = state.phase;
-    if (Number.isFinite(Number(result?.revision))) state.revision = Number(result.revision);
-    state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
-    stopBattleRosterPolling();
-    // lock_battle_prompt already wrote this room's phase, state and revision,
-    // so the browser writes nothing back. A reload reads the confirmed review.
-    emit();
-  } catch (error) {
-    // No optimistic lock. The confirmed prompt stays on screen and the control
-    // can be retried; a later refresh recovers a lock the server did commit.
-    battleRoundPanel.error = error?.message || "The lock request failed.";
-  } finally {
-    battleRoundPanel.lockBusy = false;
-    render();
-  }
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; patchBattlePairingPanel(); return; }
+
+  const lockOperation = ++battleLockOperationId;
+  const lockToken = ++battleLockInFlightToken;
+  const lockPanel = battleRoundPanel;
+  battleLockBusy = true;
+  battleLockGuard = true;
+  lockPanel.lockBusy = true;
+  lockPanel.error = "";
+  battleRefreshRequestId++;
+  patchLockUi();
+
+  const requestRound = state.battleRoundIndex;
+  const requestPhase = state.phase;
+
+  hostStateSaveRequest += 1;
+
+  const lockOperationChained = hostStateSaveSequence
+    .catch(() => {})
+    .then(async () => {
+      try {
+        if (battleLockOperationId !== lockOperation) return;
+        if (battleRoundPanel !== lockPanel || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) {
+          return;
+        }
+
+        const result = await roomApi.lockBattlePrompt({ roomCode, hostSecret });
+
+        if (battleLockOperationId !== lockOperation) return;
+        if (battleRoundPanel !== lockPanel || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+
+        if (!result || Number(result?.roundIndex) !== requestRound || result?.phase !== "battle_review") {
+          lockPanel.error = "The lock was not confirmed. Refresh roster, then lock again.";
+          return;
+        }
+
+        lockPanel.state = result;
+        lockPanel.stale = false;
+        lockPanel.confirmedAt = Date.now();
+        lockPanel.roundIndex = requestRound;
+        state.phase = "battle_review";
+        state.presentationScreen = "battle_review";
+        if (Number.isFinite(Number(result?.revision))) state.revision = Number(result.revision);
+        state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
+        stopBattleRosterPolling();
+        battleLockGuard = false;
+        emit();
+        render();
+      } catch (error) {
+        if (battleLockOperationId !== lockOperation) return;
+        if (battleRoundPanel !== lockPanel || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+        lockPanel.error = error?.message || "The lock request failed. Refresh roster before saving.";
+      } finally {
+        lockPanel.lockBusy = false;
+        if (battleLockInFlightToken === lockToken) {
+          battleLockBusy = false;
+          battleLockInFlightToken = null;
+        }
+        if (battleRoundPanel === lockPanel) {
+          patchLockUi();
+        }
+      }
+    });
+
+  hostStateSaveSequence = lockOperationChained.catch(() => {});
+  await hostStateSaveSequence;
 }
 
 document.addEventListener("visibilitychange", () => {
@@ -644,6 +777,11 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function startRound(targetRoundIndex = state.targetRoundIndex) {
+  if ((battleLockGuard || battleLockBusy) && view === "host") {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    if (view === "host") patchBattlePairingPanel();
+    return;
+  }
   if (!Number.isInteger(targetRoundIndex)) return;
   clearRoundStartAdvance();
   rememberCurrentScreen();
@@ -1098,6 +1236,11 @@ function hostStatePayload() {
 async function persistHostState() {
   const hostSecret = getHostSecret();
   if (!hostSecret || !params.has("room")) return;
+  if (battleLockGuard || battleLockBusy) {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    if (view === "host") patchBattlePairingPanel();
+    return;
+  }
   const request = ++hostStateSaveRequest;
   const payload = hostStatePayload();
   // Saves are serialized and last-request-wins. A retry that outlived a newer
@@ -1116,6 +1259,12 @@ async function saveHostState(request, hostSecret, payload) {
     // A newer save is already queued with fresher state. Let it own the server
     // and let its own outcome decide whether the room is in sync.
     if (request !== hostStateSaveRequest) return;
+    if (battleLockGuard || battleLockBusy) {
+      // A lock is pending or its outcome is uncertain. Do not write this
+      // captured prompt state to the server; a confirmed refresh will clear
+      // the guard and queue a fresh save.
+      return;
+    }
     try {
       const result = await roomApi.setRoomState({ roomCode, hostSecret, ...payload });
       // Only advance the revision the server actually confirmed. The submit
@@ -2462,19 +2611,9 @@ function battlePairingPanel() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   if (!isHostedRoom || !isBattleRound(round)) return "";
   const busy = battleRoundPanel.busy;
-  const pairing = battleRoundPanel.state;
-  const review = state.phase === "battle_review";
-  const staleLine = battleRoundPanel.stale ? `<p class="battle-round-note battle-round-note--stale" role="alert">Showing the last confirmed roster. These totals may be stale. <button class="battle-inline-retry" type="button" data-battle-refresh-pairing>Retry</button></p>` : "";
-  const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
-  const spend = pairing ? battleSpendView(pairing) : null;
-  const spendLine = pairing ? `<p class="battle-roster-spend">Session spend $${spend.spend.toFixed(2)} · ${escapeHtml(spend.capLabel)}</p>` : "";
-  const rows = battleRosterRows(pairing);
-  const rosterView = rows.length
-    ? `<ul class="battle-roster">${rows.map((row) => `<li class="battle-roster-row"><span class="battle-roster-name">${escapeHtml(row.playerName)}</span><span class="battle-roster-status">${escapeHtml(row.status)}</span><span class="battle-roster-meta">${row.attemptsUsed} attempt${row.attemptsUsed === 1 ? "" : "s"}${row.refunded ? " · refunded" : ""}</span></li>`).join("")}</ul>`
-    : `<p class="battle-round-note" role="status">${review ? "Submissions are locked." : busy ? "Loading the roster…" : "The roster has not loaded. Press Refresh roster."}</p>`;
-  const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
-  const openButton = state.phase === "battle_prompt" || review ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
-  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}<button class="btn btn-secondary" data-battle-refresh-pairing ${busy ? "disabled" : ""}>Refresh roster</button></div>${errorLine}${staleLine}${spendLine}${rosterView}${seedLine}</div>`;
+  const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
+  const refreshText = busy ? "Refreshing…" : "Refresh roster";
+  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}<button class="btn btn-secondary" data-battle-refresh-pairing aria-disabled="${busy}" ${busy ? 'data-busy="true"' : ''}>${refreshText}</button></div><div data-battle-pairing-dynamic>${battlePairingDynamicView()}</div></div>`;
 }
 
 function renderHost() {

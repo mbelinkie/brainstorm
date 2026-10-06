@@ -263,12 +263,12 @@ test("Refresh roster goes through refreshBattlePairing, which refuses another ro
   assert.ok(events.includes("refreshBattlePairing()"), "the roster control reloads the private roster");
   assert.doesNotMatch(app, /runBattleRoundCall/);
   const body = fn("refreshBattlePairing");
-  assert.ok(body.includes("battleRoundPanel.busy) return;"), "a second refresh never overlaps the first");
+  assert.ok(body.includes("if (battleRefreshInFlight) return;"), "a second refresh never overlaps the first");
   const requestRound = body.indexOf("const requestRound = state.battleRoundIndex;");
   const guard = body.indexOf("state.battleRoundIndex !== requestRound");
   assert.ok(requestRound >= 0, "refreshBattlePairing records the round it asked about");
   assert.ok(guard > requestRound, "refreshBattlePairing refuses a response for another round");
-  assert.ok(guard < body.indexOf("battleRoundPanel.state = result;"), "the check comes before the roster is adopted");
+  assert.ok(guard < body.indexOf("requestPanel.state = result;"), "the check comes before the roster is adopted");
 });
 
 test("a reload into battle_prompt also restores the battle_prompt screen", () => {
@@ -280,17 +280,18 @@ test("a reload into battle_prompt also restores the battle_prompt screen", () =>
   assert.ok(fix < reload.indexOf('if (["door_choice", "door_reveal"].includes(state.phase))'), "directly after the merge");
 });
 
-test("Refresh roster shows progress before the call and reports a missing host secret", () => {
+test("Refresh roster patches pending feedback and reports a missing host secret", () => {
   const body = fn("refreshBattlePairing");
-  assert.ok(body.includes("!Number.isInteger(state.battleRoundIndex) || battleRoundPanel.busy) return;"), "refreshBattlePairing refuses to run outside a battle round or on top of another call");
-  assert.ok(body.includes('if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }'));
+  assert.ok(body.includes("!Number.isInteger(state.battleRoundIndex)"));
+  assert.ok(body.includes("if (battleRefreshInFlight) return;"), "refreshBattlePairing refuses overlapping calls");
+  assert.ok(body.includes('if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; patchBattlePairingPanel(); return; }'));
   const call = body.indexOf("await roomApi.getHostBattleState");
   const before = body.slice(0, call);
   const tail = body.slice(call);
   assert.ok(call >= 0);
-  assert.ok(before.includes("battleRoundPanel.busy = true;"), "busy is set before the await");
-  assert.ok(before.includes('battleRoundPanel.error = "";'), "the previous error is cleared before the await");
-  assert.ok(before.includes("if (!silent) render();"), "the panel is re-rendered before the await");
-  assert.ok(tail.includes("battleRoundPanel.busy = false;"), "the busy flag is always cleared");
-  assert.ok(tail.includes("render();"), "the panel is re-rendered once the call settles");
+  assert.ok(before.includes("requestPanel.busy = true;"), "busy is set before the await");
+  assert.ok(before.includes('requestPanel.error = "";'), "the previous error is cleared before the await");
+  assert.ok(before.includes("if (!silent) patchBattlePairingPanel();"), "pending feedback is patched before the await");
+  assert.ok(tail.includes("requestPanel.busy = false;"), "the busy flag is always cleared");
+  assert.ok(tail.includes("patchBattlePairingPanel();"), "feedback is patched once the call settles");
 });

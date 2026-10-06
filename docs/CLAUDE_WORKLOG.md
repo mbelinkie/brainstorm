@@ -2126,3 +2126,16 @@ Files: `cloudflare-worker.js`, `test/battle-generate-route.test.js`, `test/battl
 Checks run by Sol: `node --test --test-reporter=junit test/battle-generate-route.test.js test/battle-generate-failure.test.js`: 13 pass, 0 fail, 0 skip. `npm test`: 736 pass, 0 fail, 0 skip (base 723). All 13 new cases failed by assertion on the untouched base; frozen test hashes remained unchanged through implementation. Three effective DeepSeek mutants killed by A1/A8/A13; one unreachable variant was discarded and replaced without changing tests. Fresh Pro pre-review returned no findings. `git diff --check` and implementation allowlist passed.
 
 Unproven: no production/provider calls, deployment or visual UI verification; production Storage and media_assets insert privileges require deployment preflight. Independent clean-checkout verification and the final tested SHA are recorded in lifecycle comments after publication.
+
+
+### 2026-10-06 — Prompt Battle host roster (issue #27)
+
+Branch `codex/capacity27-deepseek`, starting commit `d07055a9d0630adf1b419334e0140c90090c20cf`. Matthew authorized finishing #27 from DeepSeek’s green commit and requested race, broadcast and focus coverage. The genuine coordinating Sol claim remains held by the parent task; independent verifier native ID: `01a111fb-df03-7ac0-bde6-6e7762b53b7e`.
+
+**Authorship:** DeepSeek Pro/high authored the product changes and initial regression tests in artifacts `0cd427f9-a0e9-45ed-8588-d3ff7d3be925` and `654db3f2-f7fa-4782-9e5f-872a13a41a77`; DeepSeek Pro/high corrective artifact `0c935a8f-62ea-4568-a79a-1ba963df75c6` repaired serialization, lock uncertainty and stale revision handling. Codex applied those allowlisted changes, updated obsolete source assertions, added the actual-browser regression and completed independent verification. No product code was hand-edited outside the artifact runner.
+
+**Built:** host roster refresh requests remain serialized across round changes and clean up only their owning panel; lock requests queue behind old saves and keep phase writes guarded until the server confirms the result; confirmed refreshes publish only aggregate progress. Polling patches the roster in place, preserving focused controls and typed drafts. Existing status, spend and privacy projections remain server-derived.
+
+**Checks:** `node --test test/battle-host-sync.test.js test/battle-phase-3a.test.js`: 40/40. `npm test`: 776/776, no skips. The fixture browser walkthrough (`test/battle-host-browser.mjs`) passed broadcast, focus and contrast checks with real host-to-Presentation `BroadcastChannel`; all 18 frozen acceptance checks passed. `npm run build:video`, syntax checks and `git diff --check` passed. Exact published SHA and PR are recorded in the evidence file and lifecycle review.
+
+**Unproven:** Matthew’s Producer screen acceptance and any real-room rehearsal remain pending. No production call, migration, deployment, merge or issue closure occurred.
