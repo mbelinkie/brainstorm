@@ -2197,3 +2197,13 @@ Branch `claude/battle-score-audit-34` (from origin/main `6b2921a`, after #30 mer
 **Commands run:** `node --test test/battle-score-audit.test.js`: 6/6. The first run crashed because the test's `window` stub, needed by room-api, made PGlite assume a browser; the stub now exists only around that import. `npm test`: tests 785, pass 785, fail 0.
 
 **Unproven:** No host UI calls the new helper yet (#32). The CSV was checked through the lifted builder against real RPC output in PGlite, not through a browser download.
+
+### 2026-10-06 — Prompt Battle media purge functions (issue #38, migration 0043)
+
+Branch `claude/battle-purge-38` (from origin/main `0d0b8ea`, after #73–#77 merged). Claude Code (Opus 5.5). Matthew assigned migration number 0043 in chat (recorded on #38). Files: `supabase/migrations/0043_prompt_battle_media_purge.sql` (new), `test/battle-media-purge.test.js` (new), this entry.
+
+**Built:** `purge_expired_battle_media(limit)` lists expired battle images (`source = 'battle'`, non-null `expires_at` in the past) as `{ assetId, storagePath }`, oldest first, bounded to 1–1000, and writes nothing. `finalize_battle_media_purge(assetIds)` deletes rows only for listed assets that are battle-sourced, expired, and whose `storage.objects` row is already gone. An object the Worker failed to delete keeps its row and is reported as `keptObjectStillPresent`. Before deleting, it clears `session_battle_entries.submitted_asset_id` (a foreign key) and removes the ID from `session_battle_generations.asset_ids`, so entries, votes and score events survive. Both functions are service-role only. The design is two-phase because Supabase refuses direct SQL deletes from `storage.objects`, so the Worker (#39) removes objects through the Storage API between the two calls.
+
+**Commands run:** `node --test test/battle-media-purge.test.js`: 6/6. Hand mutations: deleting rows while the object still exists failed 3; finalize touching author media failed 1; listing author media failed 1; not clearing the submitted reference failed 1. A first "undated images" mutation was redundant (another guard still filtered) and survived; the corrected version, with both guards removed, failed 1. File restored. `npm test`: tests 840, pass 840, fail 0.
+
+**Unproven:** Not applied. Matthew applies 0043 (`npx supabase migration list --linked` should show only 0043 local-only). No Worker calls it yet (#39). PGlite's `storage.objects` is a stub, so whether the live table matches by `bucket_id` / `name` is confirmed only by 0013 and 0014 using the same columns.
