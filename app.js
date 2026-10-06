@@ -2,6 +2,7 @@ import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery
 import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
+import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") || "landing";
@@ -98,6 +99,14 @@ let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_
 // assigned onto `state` where publicRoomState() could forward it.
 // See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
 let battleRoundPanel = { busy: false, error: "", state: null };
+// Prompt Battle player screen (issue #23). The player's own entry, draft and
+// favourite, read from get_player_battle_state(); never part of `state`, which
+// is the shared room broadcast. Variant images are cached by asset ID for the
+// whole round so a redraw never refetches them through the media proxy
+// (mistakes.md #15); render() does not revoke these.
+let battlePlayer = initialBattlePlayer();
+let battlePlayerRenderedKey = "";
+const battleImageUrls = new Map();
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -2675,6 +2684,141 @@ function updateDoorChoicePlayingState() {
   if (status) status.textContent = selectedDoor ? `You picked ${selectedDoor.name}.` : "Choose a door to lock in your chance.";
 }
 
+// --- Prompt Battle player screen (issue #23) ---------------------------
+
+function battleFavouriteStorageKey() {
+  return `quiz-battle-favourite:${roomCode}:${battlePlayer.key}`;
+}
+
+function resetBattlePlayer(key) {
+  battleImageUrls.forEach((entry) => entry.then((url) => url && URL.revokeObjectURL(url)));
+  battleImageUrls.clear();
+  battlePlayer = initialBattlePlayer(key);
+  battlePlayerRenderedKey = "";
+  try { battlePlayer.favouriteAssetId = sessionStorage.getItem(battleFavouriteStorageKey()) || ""; } catch { /* storage unavailable: favourite is per-tab only */ }
+}
+
+// Redraws only when a structural field of the battle screen moved, so a
+// returning fetch with identical data leaves focus and typing alone.
+function redrawBattlePlayer() {
+  if (view !== "player" || state.phase !== "battle_prompt") return;
+  if (battlePlayerRenderKey(battlePlayerView(battlePlayer)) !== battlePlayerRenderedKey) render();
+}
+
+async function loadBattlePlayerState({ redraw = true } = {}) {
+  const key = battlePlayer.key;
+  battlePlayer.loading = true;
+  try {
+    const result = await roomApi.getPlayerBattleState({ roomCode, playerToken: playerId });
+    if (battlePlayer.key !== key) return;
+    battlePlayer.entry = result?.entry ?? null;
+    battlePlayer.loadError = "";
+  } catch (error) {
+    if (battlePlayer.key !== key) return;
+    recordDiagnostic("battle-player-state", error, { roomCode });
+    battlePlayer.loadError = "Could not load your prompt. Check your connection and try again.";
+  } finally {
+    if (battlePlayer.key === key) {
+      battlePlayer.loading = false;
+      if (redraw) redrawBattlePlayer();
+    }
+  }
+}
+
+async function generateBattleImages() {
+  if (battlePlayer.request.status === "pending" || !battlePlayerView(battlePlayer).canGenerate) return;
+  const key = battlePlayer.key;
+  battlePlayer.request = { status: "pending", message: "" };
+  render();
+  let reply;
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/battle/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-player-token": playerId },
+      body: JSON.stringify({ prompt: battlePlayer.draft.trim() })
+    });
+    reply = classifyGenerateReply(response.status, await response.json().catch(() => null));
+  } catch (error) {
+    recordDiagnostic("battle-generate", error, { roomCode });
+    reply = classifyGenerateReply(0, null);
+  }
+  if (battlePlayer.key !== key) return;
+  // Whatever the reply said, re-read the entry: attempts and images on screen
+  // are only ever the server's own record.
+  await loadBattlePlayerState({ redraw: false });
+  if (battlePlayer.key !== key) return;
+  battlePlayer.request = settleGenerateRequest(reply, battlePlayer.entry);
+  render();
+}
+
+function battleVariantImageUrl(assetId) {
+  if (!battleImageUrls.has(assetId)) {
+    const request = fetch(`/media/${encodeURIComponent(assetId)}`, { headers: { "x-quiz-room": roomCode, "x-quiz-player-token": playerId } })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Battle image ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => URL.createObjectURL(blob))
+      .catch((error) => {
+        battleImageUrls.delete(assetId);
+        recordDiagnostic("battle-variant-image", error, { roomCode, assetId });
+        return null;
+      });
+    battleImageUrls.set(assetId, request);
+  }
+  return battleImageUrls.get(assetId);
+}
+
+function loadBattleVariantImages() {
+  document.querySelectorAll("[data-battle-variant-image]").forEach((image) => {
+    battleVariantImageUrl(image.dataset.battleVariantImage).then((url) => {
+      if (!image.isConnected) return;
+      if (url) image.src = url;
+      else image.closest(".battle-variant")?.classList.add("is-broken");
+    });
+  });
+}
+
+function renderPlayerBattle() {
+  const key = battlePlayerKey(state);
+  if (battlePlayer.key !== key) resetBattlePlayer(key);
+  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  const battleView = battlePlayerView(battlePlayer);
+  // A redraw for any other reason (a score or roster broadcast) must not drop
+  // the player's caret mid-sentence.
+  const input = document.querySelector("[data-battle-prompt-input]");
+  const focus = input && document.activeElement === input ? { start: input.selectionStart, end: input.selectionEnd } : null;
+  const heading = battleView.kind === "compose" ? "Your matchup" : "Get ready";
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${battleView.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battlePlayerMarkup(battleView, escapeHtml)}</section></main>`, true);
+  battlePlayerRenderedKey = battlePlayerRenderKey(battleView);
+  const nextInput = document.querySelector("[data-battle-prompt-input]");
+  if (focus && nextInput && !nextInput.disabled) {
+    nextInput.focus();
+    nextInput.setSelectionRange(focus.start, focus.end);
+  }
+  loadBattleVariantImages();
+}
+
+function attachBattlePlayerEvents() {
+  const input = document.querySelector("[data-battle-prompt-input]");
+  input?.addEventListener("input", (event) => {
+    battlePlayer.draft = event.currentTarget.value;
+    // Typing updates the button in place; a redraw here would cost the caret.
+    const generate = document.querySelector("[data-battle-generate]");
+    if (generate) generate.disabled = !battlePlayerView(battlePlayer).canGenerate;
+  });
+  document.querySelector("[data-battle-generate]")?.addEventListener("click", () => generateBattleImages());
+  document.querySelector("[data-battle-reload]")?.addEventListener("click", () => {
+    battlePlayer.loadError = "";
+    render();
+  });
+  document.querySelectorAll("[data-battle-favourite]").forEach((button) => button.addEventListener("click", () => {
+    battlePlayer.favouriteAssetId = button.dataset.battleFavourite;
+    try { sessionStorage.setItem(battleFavouriteStorageKey(), battlePlayer.favouriteAssetId); } catch { /* per-tab only */ }
+    render();
+  }));
+}
+
 function renderPlayer() {
   if (params.has("room") && !playerName) {
     const logoChoices = PLAYER_LOGOS.map((logo) => `<label class="player-logo-choice"><input type="radio" name="player-logo" value="${logo.key}" aria-label="${logo.label}" ${playerLogoKey === logo.key ? "checked" : ""} /><span class="player-logo player-logo--${logo.key}" aria-hidden="true">${playerLogoArtwork(logo)}</span></label>`).join("");
@@ -2701,10 +2845,11 @@ function renderPlayer() {
     app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Feeling lucky?"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Choose your door. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
     return;
   }
-  // Prompt Battle slice 3a: a phone cannot read its own matchup's prompt until
-  // slice 3b adds a player RPC, so every phone gets the same holding screen.
+  // Prompt Battle: a paired phone gets its own prompt, Generate and its own
+  // variants; a late joiner keeps the holding screen. This branch sits above
+  // every state.question read, so no question or future state can render here.
   if (state.phase === "battle_prompt") {
-    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>Get ready</h1>${playerIdentityBadge()}</header><section class="player-question"><p>Your prompt is on its way.</p></section></section></main>`, true);
+    renderPlayerBattle();
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
@@ -2967,6 +3112,7 @@ function attachEvents() {
   document.querySelector("[data-battle-open-round]")?.addEventListener("click", () => openBattleRoundFromHost());
   document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => refreshBattlePairing());
   document.querySelector("[data-battle-end-round]")?.addEventListener("click", () => endBattleRound());
+  if (view === "player" && state.phase === "battle_prompt") attachBattlePlayerEvents();
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
     let completed = {};
