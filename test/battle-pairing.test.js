@@ -182,10 +182,10 @@ test("source presence: room-api exposes the three host RPCs and no player battle
     assert.match(roomApi, new RegExp(`${wrapper}\\(\\{ roomCode, hostSecret`), `${wrapper} must take a host secret`);
     assert.match(roomApi, new RegExp(`call\\("${rpc}"`));
   }
-  // The only player-token battle wrapper is issue #23's read of the player's
-  // own entry; submission and voting wrappers belong to their own slices.
+  // Player-token battle wrappers: #23's read of the player's own entry and
+  // #31's vote. Submission belongs to its own slice (#26).
   const playerBattleWrappers = [...roomApi.matchAll(/([A-Za-z]*battle[A-Za-z]*)\(\{ roomCode, playerToken/gi)].map((match) => match[1]);
-  assert.deepEqual(playerBattleWrappers, ["getPlayerBattleState"]);
+  assert.deepEqual(playerBattleWrappers.sort(), ["castBattleVote", "getPlayerBattleState"]);
   assert.doesNotMatch(roomApi, /playerToken[^)]*battle/i);
 });
 

@@ -96,6 +96,12 @@ export const roomApi = {
     return call("get_player_battle_state", { p_room_code: roomCode, p_player_token: playerToken });
   },
 
+  // Player vote (0041). One vote per player per matchup; a repeat is refused
+  // with "You have already voted in this matchup".
+  castBattleVote({ roomCode, playerToken, matchupId, entryId }) {
+    return call("cast_battle_vote", { p_room_code: roomCode, p_player_token: playerToken, p_matchup_id: matchupId, p_entry_id: entryId });
+  },
+
   adjustScore({ roomCode, hostSecret, playerId, points, reason }) {
     return call("adjust_live_score", { p_room_code: roomCode, p_host_secret: hostSecret, p_player_id: playerId, p_points: points, p_reason: reason });
   },

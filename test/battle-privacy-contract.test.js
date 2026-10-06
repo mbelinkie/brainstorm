@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createMigratedDb } from "./helpers/migrated-db.js";
+import { publicBattleResult, publicBattleVote, sanitizePublicBattleResult, sanitizePublicBattleVote } from "../battle-vote.js";
 
 // Issue #35: what a player can and cannot see, across every battle phase.
 //
@@ -186,6 +187,27 @@ test("battle_vote: only the current matchup's viable submissions are viewable; f
   await assertPlayerReadsClean("battle_vote, matchup 1");
 });
 
+test("battle_vote: the public ballot (#31) built from the real host payload names no one", async () => {
+  const hostPayload = await hostCall("get_host_battle_state");
+  for (const matchupIndex of [0, 1]) {
+    const ballot = sanitizePublicBattleVote(publicBattleVote(hostPayload, matchupIndex));
+    const entrants = room.players.filter((player) => player.matchupIndex === matchupIndex);
+    const forbidden = {};
+    for (const player of room.players) {
+      forbidden[`${player.name}'s name`] = player.name;
+      forbidden[`${player.name}'s player id`] = player.id;
+      forbidden[`${player.name}'s token`] = player.token;
+      for (const assetId of player.assets) if (assetId !== player.submitted || player === room.vetoed) forbidden[`${player.name}'s unused or vetoed image ${assetId}`] = assetId;
+    }
+    for (const prompt of room.prompts) forbidden[`prompt "${prompt.id}"`] = prompt.text;
+    assert.deepEqual(findLeaks(ballot, forbidden), [], `matchup ${matchupIndex + 1} ballot`);
+    assert.doesNotMatch(JSON.stringify(ballot), /votes|count|name|player|prompt/i);
+    const viable = entrants.filter((player) => player !== room.vetoed && player !== room.forfeiter);
+    assert.deepEqual(ballot.entries.map((entry) => entry.assetId).sort(), viable.map((player) => player.submitted).sort());
+    assert.deepEqual(ballot.entries.map((entry) => entry.entryId), [...ballot.entries.map((entry) => entry.entryId)].sort(), "ballot order follows entry IDs, not names");
+  }
+});
+
 test("battle_vote: casting a vote returns nothing about creators or counts", async () => {
   const [left] = room.players.filter((player) => player.matchupIndex === 0);
   const voters = room.players.filter((player) => player.matchupIndex === 1);
@@ -201,6 +223,9 @@ test("battle_result: creators are revealed only to the host's resolution, never 
   const [left] = room.players.filter((player) => player.matchupIndex === 0);
   const result = await hostCall("resolve_battle_matchup", left.matchupId);
   assert.ok(result.entries.some((entry) => entry.playerName === left.name), "the host's result names the creators");
+  const broadcast = sanitizePublicBattleResult(publicBattleResult(result));
+  assert.ok(broadcast.entries.some((entry) => entry.playerName === left.name), "the result broadcast reveals creators, as the spec allows");
+  assert.deepEqual(findLeaks(broadcast, Object.fromEntries(room.players.flatMap((player) => [[`${player.name} id`, player.id], [`${player.name} token`, player.token]]))), [], "but never player IDs or tokens");
   await assertPlayerReadsClean("battle_result");
 });
 
@@ -237,7 +262,10 @@ test("publicRoomState() forwards only the battle position, never host-only battl
   const start = app.indexOf("function publicRoomState() {");
   const body = app.slice(start, app.indexOf("\n}\n", start));
   const keys = [...body.matchAll(/^\s{4}([a-zA-Z]+):/gm)].map((match) => match[1]);
-  assert.deepEqual(keys.filter((key) => /battle/i.test(key)).sort(), ["battleMatchupCount", "battleMatchupIndex", "battleRoundIndex"]);
+  assert.deepEqual(keys.filter((key) => /battle/i.test(key)).sort(), ["battleMatchupCount", "battleMatchupIndex", "battleResult", "battleRoundIndex", "battleVote"]);
+  // #31: the ballot and the result are re-whitelisted and phase-gated.
+  assert.match(body, /battleVote: state\.phase === "battle_vote" \? sanitizePublicBattleVote\(state\.battleVote\) : null/);
+  assert.match(body, /battleResult: state\.phase === "battle_result" \? sanitizePublicBattleResult\(state\.battleResult\) : null/);
   assert.doesNotMatch(body, /battleRoundPanel|battleTestPanel|battlePlayer\b|pairing|matchups|entrants|shuffleSeed|sessionSpendUsd/);
   // Nothing host-only is ever assigned onto `state`, the object it reads.
   assert.doesNotMatch(app, /state\.(battleRoundPanel|battleTestPanel|battlePairing|matchups|entrants|shuffleSeed)\s*=/);
