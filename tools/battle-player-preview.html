@@ -22,6 +22,7 @@
 // /tools/battle-player-preview.html at phone width). No network calls: the
 // variant images are drawn locally in place of the /media proxy.
 import { battlePlayerMarkup, battlePlayerView, initialBattlePlayer } from "../battle-player.js";
+import { battleVoteMarkup, battleVoteView, publicBattleResult } from "../battle-vote.js";
 
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 const ids = ["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002", "aaaaaaaa-0000-4000-8000-000000000003", "aaaaaaaa-0000-4000-8000-000000000004"];
@@ -45,6 +46,30 @@ const states = [
   ["Blocked (safety)", battle({ entry: entry(), draft, request: { status: "blocked", message: "That prompt was declined and did not use an attempt. The prompt was flagged by the safety filter." } })],
   ["Refused (spend cap)", battle({ entry: entry({ attemptsRemaining: 1, generations: two }), draft, request: { status: "refused", message: "You cannot generate an image right now." } })],
   ["Over budget", battle({ entry: entry({ attemptsRemaining: 0, generations: four }), draft, favouriteAssetId: ids[2] })],
+  ["Variants: full screen", battle({ entry: entry({ attemptsRemaining: 0, generations: four }), draft, favouriteAssetId: ids[2] }), { expandedIndex: 1 }],
+];
+
+// Voting screens (issue #31), from battle-vote.js.
+const M = "bbbbbbbb-0000-4000-8000-000000000000";
+const ballot = { matchupId: M, matchupIndex: 0, entries: [{ entryId: "e1", assetId: ids[0] }, { entryId: "e2", assetId: ids[1] }] };
+const threeWay = { ...ballot, entries: [...ballot.entries, { entryId: "e3", assetId: ids[2] }] };
+const result = publicBattleResult({ matchupId: M, matchupIndex: 0, outcome: "winner", votesCast: 5, entries: [
+  { entryId: "e1", assetId: ids[0], votes: 3, viable: true, winner: true, playerName: "Priya Nair" },
+  { entryId: "e2", assetId: ids[1], votes: 2, viable: true, winner: false, playerName: "Sam Okafor" } ] });
+const voteStates = [
+  ["Vote: judging (review)", { phase: "battle_review" }],
+  ["Vote: waiting for matchup", { phase: "battle_vote", battleVote: null, matchupIndex: 0 }],
+  ["Vote: ballot", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0 }],
+  ["Vote: three-way ballot", { phase: "battle_vote", battleVote: threeWay, matchupIndex: 0 }],
+  ["Vote: pending", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "pending" } }],
+  ["Vote: counted", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "confirmed" } }],
+  ["Vote: closed (rejected)", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "rejected", message: "Voting on this matchup has closed." } }],
+  ["Vote: retry", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "retryable", message: "Your vote did not go through. Try again." } }],
+  ["Vote: on stage", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, ownAssetIds: new Set([ids[0]]) }],
+  ["Vote: full screen", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, expandedIndex: 0 }],
+  ["Result: voter", { phase: "battle_result", battleResult: result, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "confirmed" } }],
+  ["Result: you won", { phase: "battle_result", battleResult: result, matchupIndex: 0, ownAssetIds: new Set([ids[0]]) }],
+  ["Result: skipped", { phase: "battle_result", battleResult: { ...result, outcome: "skipped", entries: [] }, matchupIndex: 0 }],
 ];
 
 const palette = [["#ff8a3d", "#7a2bd6"], ["#13b5a6", "#203a8f"], ["#f2c94c", "#d6083b"], ["#56ccf2", "#287d21"]];
@@ -63,11 +88,23 @@ function swatch(index) {
 }
 const images = Object.fromEntries(ids.map((id, index) => [id, swatch(index)]));
 
-document.querySelector("#states").innerHTML = states.map(([label, state]) => {
-  const view = battlePlayerView(state);
+// ?only=<label> renders one state by itself, which the full-screen viewer
+// (a fixed overlay) needs.
+const only = new URLSearchParams(location.search).get("only");
+const pick = (list) => only ? list.filter(([label]) => label === only) : list.filter(([label]) => !/full screen/.test(label));
+document.querySelector("#states").innerHTML = pick(states).map(([label, state, options]) => {
+  const view = battlePlayerView(state, options);
   const heading = view.kind === "compose" ? "Your matchup" : "Get ready";
   return `<p class="preview-label">${escapeHtml(label)}</p><div class="preview-state" data-state="${escapeHtml(label)}"><main class="player-main player-main--battle"><section class="player-card player-card--battle${view.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round 2 · Prompt Battle</p><h1>${heading}</h1></header>${battlePlayerMarkup(view, escapeHtml)}</section></main></div>`;
+}).join("") + pick(voteStates).map(([label, input]) => {
+  const view = battleVoteView(input);
+  const calm = ["review-wait", "vote-wait", "result-wait"].includes(view.kind) ? " player-card--holding player-holding-card" : "";
+  return `<p class="preview-label">${escapeHtml(label)}</p><div class="preview-state" data-state="${escapeHtml(label)}"><main class="player-main player-main--battle"><section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round 2 · Prompt Battle · Matchup 1 of 3</p><h1>${escapeHtml(label.split(": ")[1])}</h1></header>${battleVoteMarkup(view, escapeHtml)}</section></main></div>`;
 }).join("");
+document.querySelectorAll("[data-battle-vote-image]").forEach((image) => { image.src = images[image.dataset.battleVoteImage]; });
+// Same lift app.js does: out of the backdrop-filtered card so it covers the screen.
+document.querySelectorAll("[data-battle-lightbox]").forEach((lightbox) => document.body.appendChild(lightbox));
+document.querySelectorAll("[data-battle-lightbox-image]").forEach((image) => { image.src = images[image.dataset.battleLightboxImage]; });
 document.querySelectorAll("[data-battle-variant-image]").forEach((image) => { image.src = images[image.dataset.battleVariantImage]; });
 </script>
 </body>

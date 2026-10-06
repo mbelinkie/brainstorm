@@ -14,6 +14,8 @@
 //     attempts and their own generations. No opponent, no pairing, no other
 //     matchup and nothing about voting is read or rendered.
 
+import { battleLightboxMarkup } from "./battle-vote.js";
+
 export const BATTLE_PROMPT_MAX_CHARS = 2048;
 const UNCONFIRMED_MESSAGE = "Image generation failed. Refresh to check your attempt.";
 
@@ -68,7 +70,8 @@ export function confirmedVariants(entry) {
       .map((assetId) => ({ assetId, attemptIndex: Number(generation.attemptIndex) })));
 }
 
-export function battlePlayerView(battle) {
+// expandedIndex: the variant open in the full-screen viewer, if any.
+export function battlePlayerView(battle, { expandedIndex = null } = {}) {
   if (battle.loadError && battle.entry === undefined) return { kind: "load-error", message: battle.loadError };
   if (battle.entry === undefined) return { kind: "loading" };
   if (battle.entry === null) return { kind: "holding" };
@@ -103,6 +106,7 @@ export function battlePlayerView(battle) {
     status,
     variants,
     favouriteAssetId: variants.some((variant) => variant.favourite) ? battle.favouriteAssetId : "",
+    expandedIndex: Number.isInteger(expandedIndex) && expandedIndex >= 0 && expandedIndex < variants.length ? expandedIndex : null,
   };
 }
 
@@ -120,6 +124,7 @@ export function battlePlayerRenderKey(view) {
     status: view.status,
     variants: view.variants.map((variant) => variant.assetId),
     favouriteAssetId: view.favouriteAssetId,
+    expandedIndex: view.expandedIndex,
   });
 }
 
@@ -138,8 +143,17 @@ export function battlePlayerMarkup(view, escapeHtml) {
     : `<p class="battle-player-status battle-player-status--${escapeHtml(view.status.kind)}" ${view.status.kind === "failed" || view.status.kind === "blocked" ? 'role="alert"' : 'role="status"'}>${escapeHtml(view.status.message)}</p>`;
   const checkNote = view.awaitingCheck && !view.pending ? `<p class="battle-player-note" role="status">One attempt is still being checked. Its images will appear here if it went through.</p>` : "";
   const generateLabel = view.pending ? "Generating…" : "Generate";
+  // The image expands to full screen; the button under it marks the favourite.
   const grid = view.variants.length
-    ? `<div class="battle-variant-grid" role="list">${view.variants.map((variant, index) => `<button type="button" class="battle-variant${variant.favourite ? " is-favourite" : ""}" role="listitem" data-battle-favourite="${escapeHtml(variant.assetId)}" aria-pressed="${variant.favourite ? "true" : "false"}" aria-label="Image ${index + 1}${variant.favourite ? ", your favourite" : ""}"><img data-battle-variant-image="${escapeHtml(variant.assetId)}" alt="" /><span class="battle-variant-mark" aria-hidden="true">★</span></button>`).join("")}</div><p class="battle-player-note">Tap an image to mark your favourite.</p>`
+    ? `<div class="battle-variant-grid" role="list">${view.variants.map((variant, index) => `<div class="battle-variant${variant.favourite ? " is-favourite" : ""}" role="listitem"><button type="button" class="battle-expand" data-battle-expand="${index}" aria-label="See image ${index + 1} full screen"><img data-battle-variant-image="${escapeHtml(variant.assetId)}" alt="" /><span class="battle-variant-mark" aria-hidden="true">★</span><span class="battle-expand-hint" aria-hidden="true">⤢</span></button><button type="button" class="battle-favourite-button" data-battle-favourite="${escapeHtml(variant.assetId)}" aria-pressed="${variant.favourite ? "true" : "false"}" aria-label="Image ${index + 1}${variant.favourite ? ", your favourite" : ", mark as favourite"}">${variant.favourite ? "★ Favourite" : "☆ Favourite"}</button></div>`).join("")}</div><p class="battle-player-note">Tap an image to see it full screen.</p>`
+    : "";
+  const expanded = view.expandedIndex === null ? null : view.variants[view.expandedIndex];
+  const lightbox = expanded
+    ? battleLightboxMarkup({
+      images: view.variants.map((variant, index) => ({ assetId: variant.assetId, label: `Image ${index + 1}` })),
+      index: view.expandedIndex,
+      action: { attr: "data-battle-favourite", value: expanded.assetId, label: expanded.favourite ? "★ Your favourite" : "☆ Make this my favourite", disabled: false },
+    }, escapeHtml)
     : "";
   return `<section class="player-question battle-player">
 <div class="battle-player-prompt-card"><p class="eyebrow">Your prompt</p><p class="battle-player-prompt">${escapeHtml(view.promptText)}</p></div>
@@ -147,5 +161,5 @@ export function battlePlayerMarkup(view, escapeHtml) {
 <textarea id="battle-prompt-input" class="battle-player-input" data-battle-prompt-input rows="4" maxlength="${BATTLE_PROMPT_MAX_CHARS}" ${view.pending || view.attemptsRemaining === 0 ? "disabled" : ""} placeholder="A cat in a business suit giving a toast…">${escapeHtml(view.draft)}</textarea>
 <div class="battle-player-actions"><button type="button" class="btn btn-primary" data-battle-generate ${view.canGenerate ? "" : "disabled"}>${generateLabel}</button><span class="battle-player-attempts" data-battle-attempts>${attemptsLabel(view.attemptsRemaining)}</span></div>
 ${statusLine}${checkNote}${grid}
-</section>`;
+</section>${lightbox}`;
 }

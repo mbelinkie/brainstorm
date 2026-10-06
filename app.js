@@ -2,6 +2,7 @@ import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery
 import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
+import { battleVoteMarkup, battleVoteRenderKey, battleVoteView, classifyVoteError, sanitizePublicBattleResult, sanitizePublicBattleVote } from "./battle-vote.js";
 import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
 
 const params = new URLSearchParams(location.search);
@@ -107,6 +108,15 @@ let battleRoundPanel = { busy: false, error: "", state: null };
 let battlePlayer = initialBattlePlayer();
 let battlePlayerRenderedKey = "";
 const battleImageUrls = new Map();
+// This phone's vote on the current matchup (issue #31). A confirmed vote is
+// remembered per matchup for the tab, so a refresh shows "Vote counted"
+// instead of an open ballot; the server's one-vote rule is the real guard.
+let battleVote = null;
+let battleVoteRenderedKey = "";
+// Full-screen image viewer on the phone: { surface: "variants" | "vote", key, index }.
+// key is the round (variants) or the matchup (vote), so a viewer left open
+// never carries over to a different set of images.
+let battleLightbox = null;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -271,6 +281,11 @@ function publicRoomState() {
     battleRoundIndex: Number.isInteger(state.battleRoundIndex) ? state.battleRoundIndex : null,
     battleMatchupIndex: Number.isInteger(state.battleMatchupIndex) ? state.battleMatchupIndex : null,
     battleMatchupCount: Number.isInteger(state.battleMatchupCount) ? state.battleMatchupCount : null,
+    // The current matchup's anonymous images while voting, and the result
+    // (which by spec reveals creators) after it. Re-whitelisted field by field
+    // in battle-vote.js; the host sets them in #32.
+    battleVote: state.phase === "battle_vote" ? sanitizePublicBattleVote(state.battleVote) : null,
+    battleResult: state.phase === "battle_result" ? sanitizePublicBattleResult(state.battleResult) : null,
     intermissionStage: state.intermissionStage || null,
     // Navigation history contains only screen identifiers and score-display
     // data; it never includes answer keys or authored media.
@@ -913,6 +928,8 @@ function playerRenderKey(roomState) {
     battleRoundIndex: roomState?.battleRoundIndex,
     battleMatchupIndex: roomState?.battleMatchupIndex,
     battleMatchupCount: roomState?.battleMatchupCount,
+    battleVote: roomState?.battleVote,
+    battleResult: roomState?.battleResult,
     timerEndsAt: roomState?.timerEndsAt,
     timerDurationSeconds: roomState?.timerDurationSeconds,
     // Scores can change without a phase or question change (for example, a
@@ -2710,7 +2727,7 @@ function resetBattlePlayer(key) {
 // returning fetch with identical data leaves focus and typing alone.
 function redrawBattlePlayer() {
   if (view !== "player" || state.phase !== "battle_prompt") return;
-  if (battlePlayerRenderKey(battlePlayerView(battlePlayer)) !== battlePlayerRenderedKey) render();
+  if (battlePlayerRenderKey(battlePlayerViewForState()) !== battlePlayerRenderedKey) render();
 }
 
 async function loadBattlePlayerState({ redraw = true } = {}) {
@@ -2728,7 +2745,7 @@ async function loadBattlePlayerState({ redraw = true } = {}) {
   } finally {
     if (battlePlayer.key === key) {
       battlePlayer.loading = false;
-      if (redraw) redrawBattlePlayer();
+      if (redraw) { redrawBattlePlayer(); redrawBattleVote(); }
     }
   }
 }
@@ -2777,21 +2794,73 @@ function battleVariantImageUrl(assetId) {
   return battleImageUrls.get(assetId);
 }
 
-function loadBattleVariantImages() {
-  document.querySelectorAll("[data-battle-variant-image]").forEach((image) => {
-    battleVariantImageUrl(image.dataset.battleVariantImage).then((url) => {
+function battlePlayerViewForState() {
+  const open = battleLightbox?.surface === "variants" && battleLightbox.key === battlePlayer.key;
+  return battlePlayerView(battlePlayer, { expandedIndex: open ? battleLightbox.index : null });
+}
+
+// Loads every image on the current battle screen, the full-screen one
+// included, from the per-round cache.
+function loadBattleScreenImages() {
+  // The branded .player-card has a backdrop-filter, which turns it into the
+  // containing block for position:fixed children: left inside the card, the
+  // viewer would be clipped to it instead of covering the screen. Lift it to
+  // #app, which the next render() still replaces.
+  const lightbox = document.querySelector("[data-battle-lightbox]");
+  if (lightbox && lightbox.parentElement !== app) app.appendChild(lightbox);
+  document.querySelectorAll("[data-battle-variant-image], [data-battle-vote-image], [data-battle-lightbox-image]").forEach((image) => {
+    const assetId = image.dataset.battleVariantImage || image.dataset.battleVoteImage || image.dataset.battleLightboxImage;
+    battleVariantImageUrl(assetId).then((url) => {
       if (!image.isConnected) return;
       if (url) image.src = url;
-      else image.closest(".battle-variant")?.classList.add("is-broken");
+      else image.closest(".battle-variant, .battle-vote-option, .battle-result-row, .battle-lightbox")?.classList.add("is-broken");
     });
   });
+  // Opening the viewer moves focus into it; closing returns it to the tile.
+  const close = document.querySelector("[data-battle-lightbox-close]");
+  if (close && !close.contains(document.activeElement)) close.focus();
 }
+
+function openBattleLightbox(surface, key, index) {
+  battleLightbox = { surface, key, index };
+  render();
+}
+
+function closeBattleLightbox() {
+  if (!battleLightbox) return;
+  const index = battleLightbox.index;
+  battleLightbox = null;
+  render();
+  document.querySelector(`[data-battle-expand="${index}"]`)?.focus();
+}
+
+function stepBattleLightbox(delta) {
+  if (!battleLightbox) return;
+  const count = document.querySelectorAll("[data-battle-expand]").length;
+  const index = battleLightbox.index + delta;
+  if (index < 0 || index >= count) return;
+  battleLightbox = { ...battleLightbox, index };
+  render();
+}
+
+function attachBattleLightboxEvents(surface, key) {
+  document.querySelectorAll("[data-battle-expand]").forEach((button) => button.addEventListener("click", () => openBattleLightbox(surface, key, Number(button.dataset.battleExpand))));
+  document.querySelector("[data-battle-lightbox-close]")?.addEventListener("click", closeBattleLightbox);
+  document.querySelectorAll("[data-battle-lightbox-step]").forEach((button) => button.addEventListener("click", () => stepBattleLightbox(Number(button.dataset.battleLightboxStep))));
+}
+
+document.addEventListener("keydown", (event) => {
+  if (view !== "player" || !battleLightbox || !document.querySelector("[data-battle-lightbox]")) return;
+  if (event.key === "Escape") { event.preventDefault(); closeBattleLightbox(); }
+  else if (event.key === "ArrowLeft") stepBattleLightbox(-1);
+  else if (event.key === "ArrowRight") stepBattleLightbox(1);
+});
 
 function renderPlayerBattle() {
   const key = battlePlayerKey(state);
   if (battlePlayer.key !== key) resetBattlePlayer(key);
   if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
-  const battleView = battlePlayerView(battlePlayer);
+  const battleView = battlePlayerViewForState();
   // A redraw for any other reason (a score or roster broadcast) must not drop
   // the player's caret mid-sentence.
   const input = document.querySelector("[data-battle-prompt-input]");
@@ -2804,7 +2873,7 @@ function renderPlayerBattle() {
     nextInput.focus();
     nextInput.setSelectionRange(focus.start, focus.end);
   }
-  loadBattleVariantImages();
+  loadBattleScreenImages();
 }
 
 function attachBattlePlayerEvents() {
@@ -2820,11 +2889,91 @@ function attachBattlePlayerEvents() {
     battlePlayer.loadError = "";
     render();
   });
+  attachBattleLightboxEvents("variants", battlePlayer.key);
   document.querySelectorAll("[data-battle-favourite]").forEach((button) => button.addEventListener("click", () => {
     battlePlayer.favouriteAssetId = button.dataset.battleFavourite;
     try { sessionStorage.setItem(battleFavouriteStorageKey(), battlePlayer.favouriteAssetId); } catch { /* per-tab only */ }
     render();
   }));
+}
+
+// --- Prompt Battle voting and result, phone side (issue #31) -------------
+
+function battleVoteStorageKey(matchupId) {
+  return `quiz-battle-vote:${roomCode}:${matchupId}`;
+}
+
+function currentBattleVote(matchupId) {
+  if (!matchupId) return null;
+  if (battleVote?.matchupId === matchupId) return battleVote;
+  try {
+    const entryId = sessionStorage.getItem(battleVoteStorageKey(matchupId));
+    if (entryId) battleVote = { matchupId, entryId, status: "confirmed", message: "" };
+  } catch { /* storage unavailable: the server still refuses a second vote */ }
+  return battleVote?.matchupId === matchupId ? battleVote : null;
+}
+
+function battleVoteViewForState() {
+  const key = battlePlayerKey(state);
+  if (battlePlayer.key !== key) resetBattlePlayer(key);
+  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  // Until this phone knows its own images it cannot tell a ballot from its
+  // own matchup, so it waits rather than offering a vote it would lose.
+  if (state.phase === "battle_vote" && battlePlayer.entry === undefined && !battlePlayer.loadError) return { kind: "vote-wait" };
+  const ownAssetIds = new Set((battlePlayer.entry?.generations || []).flatMap((generation) => generation.assetIds || []));
+  return battleVoteView({
+    phase: state.phase,
+    battleVote: state.battleVote,
+    battleResult: state.battleResult,
+    matchupIndex: state.battleMatchupIndex,
+    ownAssetIds,
+    vote: currentBattleVote(state.battleVote?.matchupId || state.battleResult?.matchupId),
+    expandedIndex: battleLightbox?.surface === "vote" && battleLightbox.key === state.battleVote?.matchupId ? battleLightbox.index : null,
+  });
+}
+
+function renderPlayerBattleVote() {
+  const voteView = battleVoteViewForState();
+  const heading = { "review-wait": "Judging time", "vote-wait": "Get ready", "on-stage": "On stage", vote: "Vote now", "result-wait": "Counting", result: "Results" }[voteView.kind] || "Prompt Battle";
+  const matchupLabel = Number.isInteger(state.battleMatchupIndex) && Number(state.battleMatchupCount) > 0 && state.phase !== "battle_review"
+    ? ` · Matchup ${state.battleMatchupIndex + 1} of ${state.battleMatchupCount}` : "";
+  const calm = ["review-wait", "vote-wait", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}</section></main>`, true);
+  battleVoteRenderedKey = battleVoteRenderKey(voteView);
+  loadBattleScreenImages();
+}
+
+function redrawBattleVote() {
+  if (view !== "player" || !["battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
+  if (battleVoteRenderKey(battleVoteViewForState()) !== battleVoteRenderedKey) render();
+}
+
+async function castBattleVoteFromPhone(entryId) {
+  const matchupId = state.battleVote?.matchupId;
+  const existing = currentBattleVote(matchupId);
+  if (!matchupId || (existing && !["idle", "retryable"].includes(existing.status))) return;
+  battleVote = { matchupId, entryId, status: "pending", message: "" };
+  battleLightbox = null;
+  render();
+  let next;
+  try {
+    await roomApi.castBattleVote({ roomCode, playerToken: playerId, matchupId, entryId });
+    next = { status: "confirmed", message: "" };
+  } catch (error) {
+    next = classifyVoteError(error);
+    if (next.status === "retryable") recordDiagnostic("battle-vote", error, { roomCode });
+  }
+  if (battleVote?.matchupId !== matchupId) return;
+  battleVote = { matchupId, entryId, ...next };
+  if (next.status === "confirmed") {
+    try { sessionStorage.setItem(battleVoteStorageKey(matchupId), entryId); } catch { /* per-tab only */ }
+  }
+  render();
+}
+
+function attachBattleVoteEvents() {
+  document.querySelectorAll("[data-battle-vote]").forEach((button) => button.addEventListener("click", () => castBattleVoteFromPhone(button.dataset.battleVote)));
+  attachBattleLightboxEvents("vote", state.battleVote?.matchupId);
 }
 
 function renderPlayer() {
@@ -2858,6 +3007,10 @@ function renderPlayer() {
   // every state.question read, so no question or future state can render here.
   if (state.phase === "battle_prompt") {
     renderPlayerBattle();
+    return;
+  }
+  if (["battle_review", "battle_vote", "battle_result"].includes(state.phase)) {
+    renderPlayerBattleVote();
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
@@ -3121,6 +3274,7 @@ function attachEvents() {
   document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => refreshBattlePairing());
   document.querySelector("[data-battle-end-round]")?.addEventListener("click", () => endBattleRound());
   if (view === "player" && state.phase === "battle_prompt") attachBattlePlayerEvents();
+  if (view === "player" && state.phase === "battle_vote") attachBattleVoteEvents();
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
     let completed = {};

@@ -95,6 +95,12 @@ export const roomApi = {
   getPlayerBattleState({ roomCode, playerToken }) {
     return call("get_player_battle_state", { p_room_code: roomCode, p_player_token: playerToken });
   },
+
+  // Player vote (0041). One vote per player per matchup; a repeat is refused
+  // with "You have already voted in this matchup".
+  castBattleVote({ roomCode, playerToken, matchupId, entryId }) {
+    return call("cast_battle_vote", { p_room_code: roomCode, p_player_token: playerToken, p_matchup_id: matchupId, p_entry_id: entryId });
+  },
   
   // Host-only (0042). Resolves the current matchup once; a repeat call returns
   // the stored result with created:false and writes nothing.
