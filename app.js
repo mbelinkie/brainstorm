@@ -1,5 +1,6 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
 import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { battleRosterRows, battleSpendView, publicBattleProgress } from "./battle-roster.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 
@@ -97,7 +98,8 @@ let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_
 // exactly what a player must not hold during battle_prompt, so it must never be
 // assigned onto `state` where publicRoomState() could forward it.
 // See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
-let battleRoundPanel = { busy: false, error: "", state: null };
+let battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, confirmedAt: 0, roundIndex: null };
+let battleRosterPollTimer = null;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -262,6 +264,9 @@ function publicRoomState() {
     battleRoundIndex: Number.isInteger(state.battleRoundIndex) ? state.battleRoundIndex : null,
     battleMatchupIndex: Number.isInteger(state.battleMatchupIndex) ? state.battleMatchupIndex : null,
     battleMatchupCount: Number.isInteger(state.battleMatchupCount) ? state.battleMatchupCount : null,
+    // Public battle progress: the two aggregate counts only. The private
+    // roster (names, prompts, asset IDs) stays off shared state.
+    battleProgress: publicBattleProgress(battleRoundPanel.state),
     intermissionStage: state.intermissionStage || null,
     // Navigation history contains only screen identifiers and score-display
     // data; it never includes answer keys or authored media.
@@ -472,7 +477,8 @@ function enterBattleRound(roundIndex) {
     submitted: {},
     battleRoundIndex: roundIndex, battleMatchupIndex: null, battleMatchupCount: null
   };
-  battleRoundPanel = { busy: false, error: "", state: null };
+  battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, confirmedAt: 0, roundIndex: null };
+  stopBattleRosterPolling();
 }
 
 // The host is the only writer of phases (spec decision). open_battle_round()
@@ -515,6 +521,7 @@ async function openBattleRoundFromHost() {
   if (opened) await persistHostState();
   emit();
   render();
+  if (opened) refreshBattlePairing();
 }
 
 // Temporary in slice 3a: nothing is generated or voted on yet, so the host
@@ -525,29 +532,116 @@ async function endBattleRound() {
   const battleIndex = state.battleRoundIndex;
   const next = nextPlayablePosition(hostQuizDefinition?.rounds, { roundIndex: battleIndex, questionIndex: 0 });
   state = { ...state, battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null };
-  battleRoundPanel = { busy: false, error: "", state: null };
+  battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, confirmedAt: 0, roundIndex: null };
+  stopBattleRosterPolling();
   if (next) await startRoundEnd(next.roundIndex);
   else await startFinale();
 }
 
-// Host-only. Fills the pairing panel after a reload into battle_prompt.
-async function refreshBattlePairing() {
-  if (view !== "host" || battleRoundPanel.busy) return;
+function stopBattleRosterPolling() {
+  if (battleRosterPollTimer !== null) { clearInterval(battleRosterPollTimer); battleRosterPollTimer = null; }
+}
+
+function syncBattleRosterPolling() {
+  if (view !== "host" || document.hidden || state.phase !== "battle_prompt") { stopBattleRosterPolling(); return; }
+  if (battleRosterPollTimer !== null) return;
+  battleRosterPollTimer = setInterval(() => {
+    // Self-check: leaving the phase, hiding the tab or ending the round stops
+    // polling even when the battle screen is no longer the one being rendered.
+    if (view !== "host" || document.hidden || state.phase !== "battle_prompt" || !Number.isInteger(state.battleRoundIndex)) { stopBattleRosterPolling(); return; }
+    refreshBattlePairing({ silent: true });
+  }, 5000);
+}
+
+// Host-only. Loads the private get_host_battle_state roster for the current
+// battle round. The payload stays in battleRoundPanel -- never on `state` --
+// so only the aggregate { submitted, total } projection can reach players.
+async function refreshBattlePairing({ silent = false } = {}) {
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || battleRoundPanel.busy) return;
+  if (!["battle_prompt", "battle_review"].includes(state.phase)) return;
   const hostSecret = getHostSecret();
   if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
+  const requestRound = state.battleRoundIndex;
+  const requestPhase = state.phase;
   battleRoundPanel.busy = true;
+  battleRoundPanel.error = "";
+  if (!silent) render();
+  try {
+    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
+    // The host may have locked, ended the round or left the phase while this
+    // was in flight. A response for a phase the host has already left is
+    // discarded, so a held "battle_prompt" answer cannot reopen a lock.
+    if (view !== "host" || state.battleRoundIndex !== requestRound) return;
+    if (state.phase !== requestPhase) return;
+    const nextPhase = result?.phase === "battle_review" ? "battle_review" : result?.phase === "battle_prompt" ? "battle_prompt" : null;
+    if (!nextPhase) return;
+    battleRoundPanel.state = result;
+    battleRoundPanel.stale = false;
+    battleRoundPanel.confirmedAt = Date.now();
+    battleRoundPanel.roundIndex = requestRound;
+    state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
+    // Adopt only what the server confirmed. Nothing is written back: a lock
+    // already persisted this phase and revision server-side.
+    if (Number.isFinite(Number(result?.revision))) state.revision = Number(result.revision);
+    if (nextPhase === "battle_review") {
+      state.phase = "battle_review";
+      state.presentationScreen = "battle_review";
+    }
+  } catch (error) {
+    // Keep the last confirmed roster and counts; label them stale rather than
+    // inventing zeros. Retrying the same control recovers the real server state.
+    battleRoundPanel.stale = true;
+    battleRoundPanel.error = error?.message || "Could not load the roster.";
+  } finally {
+    battleRoundPanel.busy = false;
+    render();
+  }
+}
+
+// Host-only. Locking is idempotent on the server: a repeated call returns the
+// already-confirmed battle_review state. The browser never claims success on a
+// rejected or lost response; the prompt stays open until the server confirms.
+async function lockBattlePrompt() {
+  if (view !== "host" || !isHostedRoom || !Number.isInteger(state.battleRoundIndex)) return;
+  if (state.phase !== "battle_prompt" || battleRoundPanel.lockBusy) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
+  battleRoundPanel.lockBusy = true;
   battleRoundPanel.error = "";
   render();
   try {
-    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
-    // Same guard as Open: until the save that moved the room onto this round
-    // lands, the server still answers for the previous round.
-    if (Number(result?.roundIndex) === state.battleRoundIndex) { battleRoundPanel.state = result; battleRoundPanel.error = ""; }
-    else battleRoundPanel.error = "The room was still saving the new round. Press Refresh pairing again.";
+    const result = await roomApi.lockBattlePrompt({ roomCode, hostSecret });
+    if (Number(result?.roundIndex) !== state.battleRoundIndex) {
+      battleRoundPanel.error = "The room was still saving the new round. Press Refresh roster, then lock again.";
+      return;
+    }
+    battleRoundPanel.state = result;
+    battleRoundPanel.stale = false;
+    battleRoundPanel.confirmedAt = Date.now();
+    battleRoundPanel.roundIndex = state.battleRoundIndex;
+    state.phase = result?.phase === "battle_review" ? "battle_review" : "battle_prompt";
+    state.presentationScreen = state.phase;
+    if (Number.isFinite(Number(result?.revision))) state.revision = Number(result.revision);
+    state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
+    stopBattleRosterPolling();
+    // lock_battle_prompt already wrote this room's phase, state and revision,
+    // so the browser writes nothing back. A reload reads the confirmed review.
+    emit();
+  } catch (error) {
+    // No optimistic lock. The confirmed prompt stays on screen and the control
+    // can be retried; a later refresh recovers a lock the server did commit.
+    battleRoundPanel.error = error?.message || "The lock request failed.";
+  } finally {
+    battleRoundPanel.lockBusy = false;
+    render();
   }
-  catch (error) { battleRoundPanel.error = error?.message || "Could not load the pairing."; }
-  finally { battleRoundPanel.busy = false; render(); }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
+  if (document.hidden) { stopBattleRosterPolling(); return; }
+  if (state.phase === "battle_prompt") { refreshBattlePairing(); syncBattleRosterPolling(); }
+});
 
 async function startRound(targetRoundIndex = state.targetRoundIndex) {
   if (!Number.isInteger(targetRoundIndex)) return;
@@ -679,7 +773,7 @@ async function showNextScreen() {
   if (state.phase === "door_choice") return revealDoorRewards();
   if (state.phase === "door_reveal") return advanceQuestion();
   // End battle round is a deliberate click in slice 3a, never a stray N.
-  if (state.phase === "battle_prompt") return;
+  if (state.phase === "battle_prompt" || state.phase === "battle_review") return;
   if (state.phase === "lobby") {
     if (state.presentationScreen === "title") return startRound(0);
     // The end-of-round card reveals its own scoreboard after the hero. Do not
@@ -985,7 +1079,7 @@ function emit() {
 // a queued retry re-sends the screen the host was on when the save was asked
 // for, never a half-updated mix of that and a later one.
 function hostStatePayload() {
-  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" };
+  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt", battle_review: "battle_review" };
   const position = hostSavedPosition(state);
   return {
     phase: phaseMap[state.phase] || "lobby",
@@ -1184,13 +1278,20 @@ async function connectHostedRoom() {
         const definition = await roomApi.getHostQuizDefinition({ roomCode, hostSecret });
         hostQuizDefinition = definition;
         const savedRoom = await roomApi.getHostRoomState({ roomCode, hostSecret });
+        const savedPhaseMap = { lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt", battle_review: "battle_review" };
+        const savedPhase = savedPhaseMap[savedRoom.phase] || "lobby";
         const hasSavedQuestion = savedRoom.state?.questionId;
         const savedQuestionPosition = hasSavedQuestion ? questionPosition(savedRoom.state.questionId) : null;
-        if (hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex)) {
-          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" })[savedRoom.phase] || "lobby" };
-          // open_battle_round writes only phase and the battle fields, so a
-          // lost Open response leaves the saved screen on round_start.
-          if (state.phase === "battle_prompt") state.presentationScreen = "battle_prompt";
+        const restoredQuestion = hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex);
+        if (restoredQuestion || ["battle_prompt", "battle_review"].includes(savedPhase)) {
+          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: savedPhase };
+          // open_battle_round and lock_battle_prompt write the battle phase and
+          // fields server-side, so a lost response or an obsolete saved screen
+          // must restore the confirmed battle phase rather than the lobby.
+          if (state.phase === "battle_prompt" || state.phase === "battle_review") state.presentationScreen = state.phase;
+          // The saved public screen can be obsolete (a lock that landed after
+          // the last save), so the round the server is on wins.
+          if (!Number.isInteger(state.battleRoundIndex) && Number.isInteger(savedRoom.roundIndex)) state.battleRoundIndex = savedRoom.roundIndex;
           if (["door_choice", "door_reveal"].includes(state.phase)) {
             state.targetRoundIndex = savedRoom.roundIndex;
             state.doorBonus = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
@@ -1201,7 +1302,7 @@ async function connectHostedRoom() {
           state.presentationScreen = "title";
           await persistHostState();
         }
-        if (view === "host" && state.phase === "battle_prompt") refreshBattlePairing();
+        if (view === "host" && ["battle_prompt", "battle_review"].includes(state.phase)) refreshBattlePairing();
         emit();
         render();
         // Un-awaited on purpose: the host screen must paint immediately, and
@@ -2286,17 +2387,22 @@ function doorChoiceCards({ interactive = false, compact = false } = {}) {
   }).join("")}</div>`;
 }
 
-// Host view for the whole battle round (slice 3a): its start card, with Open,
-// and the battle_prompt screen, with End. Generation arrives in slice 3b.
+// Host view for the whole battle round: its start card, the live submission
+// roster during battle_prompt, and the neutral locked holding state during
+// battle_review. The review grid arrives in #28; this ticket adds no images.
 function renderHostBattle() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   const count = Number(state.battleMatchupCount) || 0;
-  const opened = state.phase === "battle_prompt";
-  const summary = opened ? `${count} matchup${count === 1 ? "" : "s"} paired. Players are waiting for their prompts.` : "Open the round when everyone has joined. Pairing locks the roster.";
-  const endControl = opened ? '<button class="btn btn-primary" data-battle-end-round>End battle round</button>' : "";
-  const endNote = opened ? '<p class="battle-round-note">Ending the round awards no points yet.</p>' : "";
+  const review = state.phase === "battle_review";
+  const opened = state.phase === "battle_prompt" || review;
+  const lockBusy = battleRoundPanel.lockBusy;
+  const summary = review ? "Submissions are locked. The review grid arrives in a later ticket." : opened ? `${count} matchup${count === 1 ? "" : "s"} paired. Players are submitting on their phones.` : "Open the round when everyone has joined. Pairing locks the roster.";
+  const lockControl = state.phase === "battle_prompt" ? `<button class="btn btn-primary" data-battle-lock ${lockBusy ? "disabled" : ""}>${lockBusy ? "Locking submissions…" : "Lock submissions"}</button>` : "";
+  const endControl = opened ? '<button class="btn btn-secondary" data-battle-end-round>End battle round</button>' : "";
+  const endNote = review ? '<p class="battle-round-note">Review and veto arrive in ticket #28.</p>' : opened ? '<p class="battle-round-note">Locking closes submissions and moves the room to review.</p>' : "";
+  if (state.phase === "battle_prompt") syncBattleRosterPolling(); else stopBattleRosterPolling();
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${lockControl}${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostDoors() {
@@ -2348,25 +2454,27 @@ function battleTestImagePanel() {
   return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
 }
 
-// Host-only Prompt Battle pairing panel (slice 2, placed by slice 3a): shown
-// on the battle round's start card with Open, and in battle_prompt with
-// Refresh only. The pairing lives in battleRoundPanel, never on `state`.
+// Host-only Prompt Battle submission roster. Reads the private
+// get_host_battle_state payload held in battleRoundPanel (never `state`), and
+// renders only labels, attempts and server-reported spend. Asset IDs, prompts
+// and creator data stay in the private panel.
 function battlePairingPanel() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   if (!isHostedRoom || !isBattleRound(round)) return "";
   const busy = battleRoundPanel.busy;
   const pairing = battleRoundPanel.state;
-  const opened = state.phase === "battle_prompt";
+  const review = state.phase === "battle_review";
+  const staleLine = battleRoundPanel.stale ? `<p class="battle-round-note battle-round-note--stale" role="alert">Showing the last confirmed roster. These totals may be stale. <button class="battle-inline-retry" type="button" data-battle-refresh-pairing>Retry</button></p>` : "";
   const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
-  const matchups = Array.isArray(pairing?.matchups) ? pairing.matchups : [];
-  const pairingView = matchups.length
-    ? `<ol class="battle-pairing">${matchups.map((matchup) => `<li><p class="battle-pairing-prompt">${escapeHtml(matchup.promptText || "")}</p><ul class="battle-pairing-entrants">${(matchup.entrants || []).map((entrant) => `<li>${escapeHtml(entrant.playerName || "")}${entrant.submitted ? " <span>submitted</span>" : ""}${entrant.vetoed ? " <span>vetoed</span>" : ""}</li>`).join("")}</ul>${(matchup.entrants || []).length === 3 ? '<p class="battle-pairing-threeway">Three-way</p>' : ""}</li>`).join("")}</ol>`
-    : opened
-    ? `<p class="battle-round-note" role="status">${busy ? "Loading the pairing…" : "The pairing has not loaded. Press Refresh pairing."}</p>`
-    : `<p class="battle-round-note" role="status">Pairing happens when you open the round. Players who join after that watch and vote but are not paired.</p>`;
+  const spend = pairing ? battleSpendView(pairing) : null;
+  const spendLine = pairing ? `<p class="battle-roster-spend">Session spend $${spend.spend.toFixed(2)} · ${escapeHtml(spend.capLabel)}</p>` : "";
+  const rows = battleRosterRows(pairing);
+  const rosterView = rows.length
+    ? `<ul class="battle-roster">${rows.map((row) => `<li class="battle-roster-row"><span class="battle-roster-name">${escapeHtml(row.playerName)}</span><span class="battle-roster-status">${escapeHtml(row.status)}</span><span class="battle-roster-meta">${row.attemptsUsed} attempt${row.attemptsUsed === 1 ? "" : "s"}${row.refunded ? " · refunded" : ""}</span></li>`).join("")}</ul>`
+    : `<p class="battle-round-note" role="status">${review ? "Submissions are locked." : busy ? "Loading the roster…" : "The roster has not loaded. Press Refresh roster."}</p>`;
   const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
-  const openButton = opened ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
-  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}<button class="btn btn-secondary" data-battle-refresh-pairing ${busy ? "disabled" : ""}>Refresh pairing</button></div>${errorLine}${seedLine}${pairingView}</div>`;
+  const openButton = state.phase === "battle_prompt" || review ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
+  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}<button class="btn btn-secondary" data-battle-refresh-pairing ${busy ? "disabled" : ""}>Refresh roster</button></div>${errorLine}${staleLine}${spendLine}${rosterView}${seedLine}</div>`;
 }
 
 function renderHost() {
@@ -2573,16 +2681,28 @@ function presentationTimerBadge() {
   return readout ? `<div class="presentation-timer-badge" data-presentation-timer-badge>${readout}</div>` : "";
 }
 
-// Presentation during battle_prompt (slice 3a): a strict projection of public
-// state. Never images in this phase (architecture spec section 7).
+// Presentation during battle_prompt: a strict projection of public state.
+// Only the host-confirmed aggregate counts are shown; never images, creators,
+// prompts or private battle payloads.
 function presenterBattlePrompt() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   const count = Number(state.battleMatchupCount) || 0;
-  return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${count} matchup${count === 1 ? "" : "s"} · check your phone for your prompt</p></section>`;
+  const progress = state.battleProgress;
+  const submitted = Number.isInteger(progress?.submitted) ? progress.submitted : 0;
+  const total = Number.isInteger(progress?.total) ? progress.total : 0;
+  const progressCopy = total > 0 ? `${submitted} of ${total} submissions in (${submitted}/${total})` : `${count} matchup${count === 1 ? "" : "s"}`;
+  return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${escapeHtml(progressCopy)} · check your phone for your prompt</p></section>`;
+}
+
+// Neutral locked holding state. Ticket #28 supplies the review grid; until then
+// Presentation shows no battle images, creators or prompt text here.
+function presenterBattleReview() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  return `<section class="presentation-card presentation-card--battle-review" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>Submissions locked</h2><p>${escapeHtml(round?.title || "Prompt Battle")} · review starts shortly</p></section>`;
 }
 
 function renderPresenter() {
-  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : "Final standings";
+  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : state.phase === "battle_review" ? "Submissions locked" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const quizHasVideo = Boolean(hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.video?.mediaAssetId || question.video?.url)));
@@ -2602,6 +2722,8 @@ function renderPresenter() {
     ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Feeling lucky?"}</h2>${state.phase === "door_reveal" ? "" : "<p>Choose your door.</p>"}</div>${doorChoiceCards()}</section>`
     : state.phase === "battle_prompt"
     ? presenterBattlePrompt()
+    : state.phase === "battle_review"
+    ? presenterBattleReview()
     : state.phase === "complete"
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
@@ -2961,12 +3083,13 @@ function attachEvents() {
       render();
     }
   });
-  // Prompt Battle pairing. Both calls go straight to the host RPCs; the
-  // pairing they return stays in battleRoundPanel and is never merged into
-  // `state`, so it cannot reach publicRoomState().
-  document.querySelector("[data-battle-open-round]")?.addEventListener("click", () => openBattleRoundFromHost());
-  document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => refreshBattlePairing());
-  document.querySelector("[data-battle-end-round]")?.addEventListener("click", () => endBattleRound());
+  // Prompt Battle host controls. The private payload they return stays in
+  // battleRoundPanel and is never merged into `state`, so only the aggregate
+  // public projection can reach publicRoomState().
+  document.querySelectorAll("[data-battle-open-round]").forEach((button) => button.addEventListener("click", () => openBattleRoundFromHost()));
+  document.querySelectorAll("[data-battle-refresh-pairing]").forEach((button) => button.addEventListener("click", () => refreshBattlePairing()));
+  document.querySelectorAll("[data-battle-lock]").forEach((button) => button.addEventListener("click", () => lockBattlePrompt()));
+  document.querySelectorAll("[data-battle-end-round]").forEach((button) => button.addEventListener("click", () => endBattleRound()));
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
     let completed = {};

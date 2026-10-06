@@ -75,9 +75,10 @@ export const roomApi = {
     return call("reveal_live_door_rewards", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
-  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql).
-  // All three are host-secret authorized: there is no player-facing battle call
-  // yet, and the pairing these return is host-only data.
+  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql
+  // and 0039_prompt_battle_submission.sql). All are host-secret authorized:
+  // there is no player-facing battle call yet, and the data they return is
+  // host-only.
   openBattleRound({ roomCode, hostSecret }) {
     return call("open_battle_round", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
@@ -88,6 +89,12 @@ export const roomApi = {
 
   getHostBattleState({ roomCode, hostSecret }) {
     return call("get_host_battle_state", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
+  // Idempotent server-side: a repeated call on an already-locked round returns
+  // the confirmed battle_review payload rather than reopening submissions.
+  lockBattlePrompt({ roomCode, hostSecret }) {
+    return call("lock_battle_prompt", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
   adjustScore({ roomCode, hostSecret, playerId, points, reason }) {
