@@ -13,6 +13,7 @@ const publicFiles = [
   "quiz-core.js",
   "battle-player.js",
   "battle-vote.js",
+  "battle-presentation.js",
   "quiz-validation.js",
   "diagnostics.js",
   "author.html",

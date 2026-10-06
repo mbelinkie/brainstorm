@@ -199,9 +199,13 @@ test("battle_vote: the public ballot (#31) built from the real host payload name
       forbidden[`${player.name}'s token`] = player.token;
       for (const assetId of player.assets) if (assetId !== player.submitted || player === room.vetoed) forbidden[`${player.name}'s unused or vetoed image ${assetId}`] = assetId;
     }
-    for (const prompt of room.prompts) forbidden[`prompt "${prompt.id}"`] = prompt.text;
+    // The current matchup's prompt is shown with its images; every other
+    // matchup's prompt is still future state.
+    const currentPrompt = entrants[0].promptText;
+    for (const prompt of room.prompts) if (prompt.text !== currentPrompt) forbidden[`prompt "${prompt.id}"`] = prompt.text;
     assert.deepEqual(findLeaks(ballot, forbidden), [], `matchup ${matchupIndex + 1} ballot`);
-    assert.doesNotMatch(JSON.stringify(ballot), /votes|count|name|player|prompt/i);
+    assert.equal(ballot.promptText, currentPrompt);
+    assert.doesNotMatch(JSON.stringify({ ...ballot, promptText: "" }), /votes|count|name|player/i);
     const viable = entrants.filter((player) => player !== room.vetoed && player !== room.forfeiter);
     assert.deepEqual(ballot.entries.map((entry) => entry.assetId).sort(), viable.map((player) => player.submitted).sort());
     assert.deepEqual(ballot.entries.map((entry) => entry.entryId), [...ballot.entries.map((entry) => entry.entryId)].sort(), "ballot order follows entry IDs, not names");

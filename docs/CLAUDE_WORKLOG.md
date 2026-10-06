@@ -2176,6 +2176,18 @@ Branch `claude/battle-voting-31`, stacked on `claude/battle-player-screen-23` (#
 
 **Unproven:** Real voting against Supabase and real images through `/media` (this Mac has no `.env.local`). The host side that broadcasts `battleVote` / `battleResult` is #32.
 
+### 2026-10-06 — Prompt Battle on Presentation: vote, result and reveal (issue #33)
+
+Branch `claude/battle-presentation-33`, stacked on `claude/battle-voting-31` (#76). Claude Code (Opus 5.5). Files: `battle-presentation.js` (new), `app.js`, `battle-vote.js`, `styles.css`, `prepare-deploy.mjs`, `test/battle-presentation.test.js` (new), `test/battle-vote-screen.test.js` and `test/battle-privacy-contract.test.js` (current prompt now allowed in the ballot), this entry.
+
+**Built:** `renderPresenter()` sends `battle_review`, `battle_vote` and `battle_result` to `presenterBattleStage()`. Before this, those phases fell through to the question card and would have shown the previous round's question during voting. The scenes come from `presentationBattleScene()` / `presentationBattleMarkup()` and use only `state.battleVote` / `state.battleResult`. Judging and waiting cards have no images. In `battle_vote` the big screen shows the prompt, images side by side lettered A/B(/C), and "Vote on your phone". In `battle_result` it shows the heading (winner, tie, default win), creators with logos, vote bars and counts, and crowns. Images load through the shared asset-ID cache with the host secret (`battleMediaCredential()`) and stay hidden until all have decoded, then fade in together; the bars animate after. The round header now labels the battle phases ("Prompt Battle · Judging / Vote / Results") instead of "Final standings".
+
+**Change to #31's broadcast:** `battleVote` and `battleResult` now carry the current matchup's `promptText`, so the big screen can show it. Only future prompts are secret, and #35's ballot check now allows exactly the current prompt.
+
+**Commands run:** `npm test`: tests 828, pass 828, fail 0. #23's guard (no `hostSecret` in the phone block) caught the first version of the shared image fetch; the credential choice now lives in `battleMediaCredential()` outside that block. Browser at 1920×1080: the real `app.js` Presentation view driven over BroadcastChannel through review, vote, result (win and three-way tie) and skipped. The first pass showed the frames overflowing the card, white-on-white prompt and CTA text on the white Presentation card, a broken-image icon before load, and the "Final standings" label; all were fixed and re-checked. For screenshots only, stand-in pixels were placed into the `<img>` tags by console, because `/media` 404s on the dev server.
+
+**Unproven:** Real images through `/media` with the host secret, and the real host broadcast (#32). Needs Matthew's check on a second screen at presentation size.
+
 ### 2026-10-06 — Prompt Battle score audit: CSV and leaderboard (issue #34)
 
 Branch `claude/battle-score-audit-34` (from origin/main `6b2921a`, after #30 merged and 0038–0042 were applied to production). Claude Code (Opus 5.5). Files: `app.js` (`scoreEventsCsv` extracted from `exportDetailedResults`, no output change), `room-api.js` (`resolveBattleMatchup` wrapper, `resolveBattleMatchupWithStandings`), `test/battle-score-audit.test.js` (new), `test/helpers/battle-fixtures.js` (new, moved out of `test/battle-resolve-runtime.test.js`), `test/battle-resolve-runtime.test.js` (now imports the shared fixtures), this entry.
