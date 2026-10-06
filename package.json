@@ -15,6 +15,7 @@
     "mediabunny": "1.45.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "wrangler": "^4.125.0"
   }
 }
