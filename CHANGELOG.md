@@ -4,6 +4,8 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-10-06
 
+- Prepared Prompt Battle blind voting: eligible players can cast one private vote for the current matchup, and vote-time image access is limited to its submitted, available entries. Hosts see aggregate progress. Entrants and duplicate votes are rejected. The migration passed actual PostgreSQL acceptance and regression checks; production application and UI remain separate work.
+
 - Prepared Prompt Battle host review and veto: hosts can inspect every generation attempt, veto an entry with a reason, and undo the veto during review. Matchup viability reflects vetoes and forfeits without exposing private review data to players. The migration passed actual PostgreSQL acceptance and regression checks; production application and UI remain separate work.
 
 - Prepared Prompt Battle submission and host locking: players can replace their chosen image before lock; locking preserves explicit choices, selects the final image of the latest completed attempt, or records a forfeit. Host state includes private submission and spend details. The migration passed real PostgreSQL acceptance checks; production application and UI remain separate work.
