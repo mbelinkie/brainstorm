@@ -103,7 +103,8 @@ await run('broadcast', 'Presentation receives confirmed counts and recovered loc
  await clickRefresh(page);
  await settle(presentation.page);
  assert.equal(await presentation.page.evaluate(() => window.__acceptance.state.phase), 'battle_review');
- assert.match(await body(presentation.page), /Submissions locked/);
+ assert.match(await body(presentation.page), /The judges are checking the entries/);
+ assert.equal(await presentation.page.locator('.presentation-card img').count(), 0, 'locked judging card has no battle images');
  const remote = await page.evaluate(() => window.__fixture.broadcasts.filter(m=>m.event==='state').at(-1));
  assert.equal(remote.payload.state.phase,'battle_review');
  for (const secret of privateValues) assert.ok(!JSON.stringify(remote).includes(secret),'private roster must stay host-only');

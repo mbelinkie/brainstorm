@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Battle player states</title>
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&family=Merriweather:wght@300;400;700&family=Newsreader:opsz,wght@6..72,300..700&family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="stylesheet" href="../kaplan-brand-layer.css" />
+<style>
+  /* Preview-only chrome. Each state below is the real battle-player.js markup
+     inside the same player card classes app.js renderPlayerBattle() uses. */
+  .preview-state { margin: 0 auto 28px; }
+  .preview-label { position: relative; z-index: 2; width: min(600px, 100%); margin: 18px auto 0; padding: 0 18px; font: 700 13px/1.4 system-ui, sans-serif; color: #ffc82e; text-transform: uppercase; letter-spacing: .06em; }
+  .preview-state .player-main { padding-top: 10px; padding-bottom: 10px; }
+</style>
+</head>
+<body>
+<section class="player-shell"><div id="states"></div></section>
+<script type="module">
+// Dev-only visual check for issue #23 (npm run dev, then open
+// /tools/battle-player-preview.html at phone width). No network calls: the
+// variant images are drawn locally in place of the /media proxy.
+import { battlePlayerMarkup, battlePlayerView, initialBattlePlayer } from "../battle-player.js";
+import { battleVoteMarkup, battleVoteView, publicBattleResult } from "../battle-vote.js";
+
+const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
+const ids = ["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002", "aaaaaaaa-0000-4000-8000-000000000003", "aaaaaaaa-0000-4000-8000-000000000004"];
+const prompt = "Depict the worst office party ever.";
+const draft = "A conga line of exhausted accountants under one flickering fluorescent light";
+const entry = (overrides = {}) => ({ promptText: prompt, attemptsRemaining: 3, generations: [], ...overrides });
+const two = [{ attemptIndex: 1, status: "complete", assetIds: [ids[0], ids[1]] }];
+const four = [...two, { attemptIndex: 2, status: "complete", assetIds: [ids[2], ids[3]] }];
+const battle = (overrides) => ({ ...initialBattlePlayer("round-0"), ...overrides });
+
+const states = [
+  ["Loading", battle({})],
+  ["Load failed", battle({ loadError: "Could not load your prompt. Check your connection and try again." })],
+  ["Late joiner (holding)", battle({ entry: null })],
+  ["Ready, empty draft", battle({ entry: entry() })],
+  ["Ready, draft typed", battle({ entry: entry(), draft })],
+  ["Pending", battle({ entry: entry(), draft, request: { status: "pending", message: "" } })],
+  ["Confirmed, favourite marked", battle({ entry: entry({ attemptsRemaining: 2, generations: two }), draft, request: { status: "confirmed", message: "" }, favouriteAssetId: ids[1] })],
+  ["Confirmed, partial", battle({ entry: entry({ attemptsRemaining: 2, generations: [{ attemptIndex: 1, status: "complete", assetIds: [ids[0]] }] }), draft, request: { status: "confirmed", message: "Only some of your images came back. That attempt still counted." } })],
+  ["Failed (unconfirmed)", battle({ entry: entry({ attemptsRemaining: 2, generations: [{ attemptIndex: 1, status: "pending", assetIds: [] }] }), draft, request: { status: "unconfirmed", message: "Image generation failed. Refresh to check your attempt." } })],
+  ["Blocked (safety)", battle({ entry: entry(), draft, request: { status: "blocked", message: "That prompt was declined and did not use an attempt. The prompt was flagged by the safety filter." } })],
+  ["Refused (spend cap)", battle({ entry: entry({ attemptsRemaining: 1, generations: two }), draft, request: { status: "refused", message: "You cannot generate an image right now." } })],
+  ["Over budget", battle({ entry: entry({ attemptsRemaining: 0, generations: four }), draft, favouriteAssetId: ids[2] })],
+  ["Variants: full screen", battle({ entry: entry({ attemptsRemaining: 0, generations: four }), draft, favouriteAssetId: ids[2] }), { expandedIndex: 1 }],
+];
+
+// Voting screens (issue #31), from battle-vote.js.
+const M = "bbbbbbbb-0000-4000-8000-000000000000";
+const ballot = { matchupId: M, matchupIndex: 0, entries: [{ entryId: "e1", assetId: ids[0] }, { entryId: "e2", assetId: ids[1] }] };
+const threeWay = { ...ballot, entries: [...ballot.entries, { entryId: "e3", assetId: ids[2] }] };
+const result = publicBattleResult({ matchupId: M, matchupIndex: 0, outcome: "winner", votesCast: 5, entries: [
+  { entryId: "e1", assetId: ids[0], votes: 3, viable: true, winner: true, playerName: "Priya Nair" },
+  { entryId: "e2", assetId: ids[1], votes: 2, viable: true, winner: false, playerName: "Sam Okafor" } ] });
+const voteStates = [
+  ["Vote: judging (review)", { phase: "battle_review" }],
+  ["Vote: waiting for matchup", { phase: "battle_vote", battleVote: null, matchupIndex: 0 }],
+  ["Vote: ballot", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0 }],
+  ["Vote: three-way ballot", { phase: "battle_vote", battleVote: threeWay, matchupIndex: 0 }],
+  ["Vote: pending", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "pending" } }],
+  ["Vote: counted", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "confirmed" } }],
+  ["Vote: closed (rejected)", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "rejected", message: "Voting on this matchup has closed." } }],
+  ["Vote: retry", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "retryable", message: "Your vote did not go through. Try again." } }],
+  ["Vote: on stage", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, ownAssetIds: new Set([ids[0]]) }],
+  ["Vote: full screen", { phase: "battle_vote", battleVote: ballot, matchupIndex: 0, expandedIndex: 0 }],
+  ["Result: voter", { phase: "battle_result", battleResult: result, matchupIndex: 0, vote: { matchupId: M, entryId: "e2", status: "confirmed" } }],
+  ["Result: you won", { phase: "battle_result", battleResult: result, matchupIndex: 0, ownAssetIds: new Set([ids[0]]) }],
+  ["Result: skipped", { phase: "battle_result", battleResult: { ...result, outcome: "skipped", entries: [] }, matchupIndex: 0 }],
+];
+
+const palette = [["#ff8a3d", "#7a2bd6"], ["#13b5a6", "#203a8f"], ["#f2c94c", "#d6083b"], ["#56ccf2", "#287d21"]];
+function swatch(index) {
+  const canvas = Object.assign(document.createElement("canvas"), { width: 400, height: 400 });
+  const context = canvas.getContext("2d");
+  const gradient = context.createLinearGradient(0, 0, 400, 400);
+  gradient.addColorStop(0, palette[index][0]);
+  gradient.addColorStop(1, palette[index][1]);
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 400, 400);
+  context.fillStyle = "rgba(255,255,255,.9)";
+  context.font = "bold 48px system-ui";
+  context.fillText(`Variant ${index + 1}`, 40, 220);
+  return canvas.toDataURL("image/png");
+}
+const images = Object.fromEntries(ids.map((id, index) => [id, swatch(index)]));
+
+// ?only=<label> renders one state by itself, which the full-screen viewer
+// (a fixed overlay) needs.
+const only = new URLSearchParams(location.search).get("only");
+const pick = (list) => only ? list.filter(([label]) => label === only) : list.filter(([label]) => !/full screen/.test(label));
+document.querySelector("#states").innerHTML = pick(states).map(([label, state, options]) => {
+  const view = battlePlayerView(state, options);
+  const heading = view.kind === "compose" ? "Your matchup" : "Get ready";
+  return `<p class="preview-label">${escapeHtml(label)}</p><div class="preview-state" data-state="${escapeHtml(label)}"><main class="player-main player-main--battle"><section class="player-card player-card--battle${view.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round 2 · Prompt Battle</p><h1>${heading}</h1></header>${battlePlayerMarkup(view, escapeHtml)}</section></main></div>`;
+}).join("") + pick(voteStates).map(([label, input]) => {
+  const view = battleVoteView(input);
+  const calm = ["review-wait", "vote-wait", "result-wait"].includes(view.kind) ? " player-card--holding player-holding-card" : "";
+  return `<p class="preview-label">${escapeHtml(label)}</p><div class="preview-state" data-state="${escapeHtml(label)}"><main class="player-main player-main--battle"><section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round 2 · Prompt Battle · Matchup 1 of 3</p><h1>${escapeHtml(label.split(": ")[1])}</h1></header>${battleVoteMarkup(view, escapeHtml)}</section></main></div>`;
+}).join("");
+document.querySelectorAll("[data-battle-vote-image]").forEach((image) => { image.src = images[image.dataset.battleVoteImage]; });
+// Same lift app.js does: out of the backdrop-filtered card so it covers the screen.
+document.querySelectorAll("[data-battle-lightbox]").forEach((lightbox) => document.body.appendChild(lightbox));
+document.querySelectorAll("[data-battle-lightbox-image]").forEach((image) => { image.src = images[image.dataset.battleLightboxImage]; });
+document.querySelectorAll("[data-battle-variant-image]").forEach((image) => { image.src = images[image.dataset.battleVariantImage]; });
+</script>
+</body>
+</html>

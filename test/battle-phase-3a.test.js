@@ -225,15 +225,19 @@ test("the battle screen keeps the host's session controls", () => {
   assert.match(body, /\$\{hostUtilityControls\(\)\}\$\{manualScoreControls\(\)\}\$\{leaderboard\(\)\}/);
 });
 
-test("players see a holding screen in battle_prompt with no prompt, pairing or image", () => {
+// Issue #23 replaced the everyone-holds screen with the player's own prompt
+// screen (renderPlayerBattle, tested in test/battle-player-screen.test.js);
+// late joiners still get a holding screen from battle-player.js.
+test("the phone's battle_prompt branch hands off before any question rendering and holds no pairing", () => {
   const body = fn("renderPlayer");
   const start = body.indexOf('if (state.phase === "battle_prompt")');
   assert.ok(start >= 0, "renderPlayer has a battle_prompt branch");
   assert.ok(start < body.indexOf("state.question.prompt") || body.indexOf("state.question.prompt") === -1, "the battle branch returns before any question rendering");
   const branch = body.slice(start, body.indexOf("return;", start));
-  assert.match(branch, /Your prompt is on its way/);
-  assert.doesNotMatch(branch, /<img|promptText|battleRoundPanel|matchups/);
-  assert.match(branch, /shell\(`[^`]*`, true\);/, "the holding screen is wrapped in the player shell");
+  assert.match(branch, /renderPlayerBattle\(\);/);
+  const screen = fn("renderPlayerBattle");
+  assert.doesNotMatch(screen, /battleRoundPanel|matchups|hostSecret/);
+  assert.match(screen, /shell\(`[^`]*`, true\);/, "the battle screen is wrapped in the player shell");
 });
 
 test("Presentation shows the round and matchup count in battle_prompt, never images", () => {
@@ -259,7 +263,7 @@ test("a save that recovers re-renders the battle screen so Open is enabled again
 
 test("Refresh roster goes through refreshBattlePairing, which refuses another round's roster", () => {
   const events = fn("attachEvents");
-  assert.ok(events.includes('querySelectorAll("[data-battle-refresh-pairing]")'), "the roster control is wired");
+  assert.ok(events.includes('querySelector("[data-battle-refresh-pairing]")'), "the roster control is wired");
   assert.ok(events.includes("refreshBattlePairing()"), "the roster control reloads the private roster");
   assert.doesNotMatch(app, /runBattleRoundCall/);
   const body = fn("refreshBattlePairing");
