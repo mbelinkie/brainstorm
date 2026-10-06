@@ -11,6 +11,7 @@ const publicFiles = [
   "app.js",
   "room-api.js",
   "quiz-core.js",
+  "battle-player.js",
   "quiz-validation.js",
   "diagnostics.js",
   "author.html",

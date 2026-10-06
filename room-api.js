@@ -76,8 +76,8 @@ export const roomApi = {
   },
 
   // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql).
-  // All three are host-secret authorized: there is no player-facing battle call
-  // yet, and the pairing these return is host-only data.
+  // All three are host-secret authorized, and the pairing these return is
+  // host-only data. The player's own read is getPlayerBattleState() below.
   openBattleRound({ roomCode, hostSecret }) {
     return call("open_battle_round", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
@@ -90,6 +90,12 @@ export const roomApi = {
     return call("get_host_battle_state", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
+  // Player read of their own battle entry (0038 get_player_battle_state):
+  // their prompt, attempts remaining and their own generations, nothing else.
+  getPlayerBattleState({ roomCode, playerToken }) {
+    return call("get_player_battle_state", { p_room_code: roomCode, p_player_token: playerToken });
+  },
+  
   // Host-only (0042). Resolves the current matchup once; a repeat call returns
   // the stored result with created:false and writes nothing.
   resolveBattleMatchup({ roomCode, hostSecret, matchupId }) {
