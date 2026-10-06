@@ -2,6 +2,7 @@ import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery
 import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
+import { presentationBattleMarkup, presentationBattleScene } from "./battle-presentation.js";
 import { battleVoteMarkup, battleVoteRenderKey, battleVoteView, classifyVoteError, sanitizePublicBattleResult, sanitizePublicBattleVote } from "./battle-vote.js";
 import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
 
@@ -2194,6 +2195,13 @@ async function clearActiveClip() {
   render();
 }
 
+// Which credential a battle image fetch carries: Presentation (and the host)
+// use the host secret, as loadPrivateImage() does; a phone its player token.
+function battleMediaCredential() {
+  const hostSecret = ["host", "presenter"].includes(view) ? getHostSecret() : "";
+  return hostSecret ? { "x-quiz-host-secret": hostSecret } : { "x-quiz-player-token": playerId };
+}
+
 async function loadPrivateImage(image) {
   const assetId = image.dataset.privateImage;
   if (!assetId || !params.has("room")) return;
@@ -2607,8 +2615,39 @@ function presenterBattlePrompt() {
   return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${count} matchup${count === 1 ? "" : "s"} · check your phone for your prompt</p></section>`;
 }
 
+// Presentation during battle_review / battle_vote / battle_result (issue #33):
+// a strict projection of the broadcast ballot and result. Images only in
+// vote and result, and they appear together once all have loaded.
+function presenterBattleStage() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  const scene = presentationBattleScene({
+    phase: state.phase,
+    battleVote: state.battleVote,
+    battleResult: state.battleResult,
+    matchupIndex: state.battleMatchupIndex,
+    matchupCount: state.battleMatchupCount,
+  });
+  return presentationBattleMarkup(scene, escapeHtml, { roundTitle: round?.title || "Prompt Battle", logo: (entry) => playerLogoMarkup(entry, "player-logo--presentation-battle") });
+}
+
+async function revealPresentationBattleStage() {
+  const stage = document.querySelector("[data-battle-stage]");
+  if (!stage) return;
+  const images = [...stage.querySelectorAll("[data-battle-stage-image]")];
+  await Promise.all(images.map(async (image) => {
+    const url = await battleVariantImageUrl(image.dataset.battleStageImage);
+    if (!image.isConnected) return;
+    if (!url) { image.closest(".presentation-battle-tile")?.classList.add("is-broken"); return; }
+    image.src = url;
+    try { await image.decode(); } catch { image.closest(".presentation-battle-tile")?.classList.add("is-broken"); }
+  }));
+  if (!stage.isConnected) return;
+  stage.classList.add("is-ready");
+  stage.setAttribute("aria-busy", "false");
+}
+
 function renderPresenter() {
-  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : "Final standings";
+  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : state.phase === "battle_review" ? "Prompt Battle · Judging" : state.phase === "battle_vote" ? "Prompt Battle · Vote" : state.phase === "battle_result" ? "Prompt Battle · Results" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const quizHasVideo = Boolean(hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.video?.mediaAssetId || question.video?.url)));
@@ -2628,6 +2667,8 @@ function renderPresenter() {
     ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Feeling lucky?"}</h2>${state.phase === "door_reveal" ? "" : "<p>Choose your door.</p>"}</div>${doorChoiceCards()}</section>`
     : state.phase === "battle_prompt"
     ? presenterBattlePrompt()
+    : ["battle_review", "battle_vote", "battle_result"].includes(state.phase)
+    ? presenterBattleStage()
     : state.phase === "complete"
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
@@ -2652,6 +2693,7 @@ function renderPresenter() {
   if (presentationAudioPlayer && !presentationAudioPlayer.paused && state.presentationScreen === "title") startTitleCaptionClock();
   else if (state.presentationScreen !== "title") stopTitleCaptionClock();
   syncFinalScorePager();
+  revealPresentationBattleStage();
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
@@ -2770,7 +2812,7 @@ async function generateBattleImages() {
 
 function battleVariantImageUrl(assetId) {
   if (!battleImageUrls.has(assetId)) {
-    const request = fetch(`/media/${encodeURIComponent(assetId)}`, { headers: { "x-quiz-room": roomCode, "x-quiz-player-token": playerId } })
+    const request = fetch(`/media/${encodeURIComponent(assetId)}`, { headers: { "x-quiz-room": roomCode, ...battleMediaCredential() } })
       .then((response) => {
         if (!response.ok) throw new Error(`Battle image ${response.status}`);
         return response.blob();

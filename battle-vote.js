@@ -6,8 +6,9 @@
 // What a phone may know comes from public room state, which reaches every
 // phone verbatim. The host broadcasts two objects, built here so their shape
 // is the privacy contract (test/battle-privacy-contract.test.js):
-//   battleVote   - during battle_vote: the current matchup's viable entries as
-//                  { entryId, assetId } only, in a creator-neutral order.
+//   battleVote   - during battle_vote: the current matchup's prompt and its
+//                  viable entries as { entryId, assetId } only, in a
+//                  creator-neutral order.
 //   battleResult - during battle_result: the resolution, which by spec reveals
 //                  creators and vote counts.
 // Who made which image is never in battleVote. A phone recognises its own
@@ -25,7 +26,9 @@ export function publicBattleVote(hostPayload, matchupIndex) {
     .filter((entrant) => entrant?.viable === true && typeof entrant.entryId === "string" && typeof entrant.submittedAssetId === "string")
     .map((entrant) => ({ entryId: entrant.entryId, assetId: entrant.submittedAssetId }))
     .sort((a, b) => a.entryId.localeCompare(b.entryId));
-  return { matchupId: matchup.matchupId, matchupIndex, entries };
+  // The current matchup's prompt is shown with its images (#33); only future
+  // matchups' prompts are secret.
+  return { matchupId: matchup.matchupId, matchupIndex, promptText: String(matchup.promptText || ""), entries };
 }
 
 // Host side (wired by #32). resolution is resolve_battle_matchup()'s result.
@@ -36,6 +39,7 @@ export function publicBattleResult(resolution) {
     matchupId: resolution.matchupId,
     matchupIndex: resolution.matchupIndex,
     outcome: resolution.outcome,
+    promptText: String(resolution.promptText || ""),
     votesCast: Number(resolution.votesCast) || 0,
     entries: (resolution.entries || [])
       .filter((entry) => entry?.viable === true && typeof entry.assetId === "string")
@@ -46,13 +50,14 @@ export function publicBattleResult(resolution) {
 
 // publicRoomState() runs whatever the host holds through these before it is
 // broadcast, so a host-shaped object assigned by mistake still cannot carry
-// a name, player ID, prompt or count into battle_vote. Only the listed
+// a name, player ID or count into battle_vote. Only the listed
 // fields survive.
 export function sanitizePublicBattleVote(value) {
   if (!value || typeof value.matchupId !== "string" || !Number.isInteger(value.matchupIndex) || !Array.isArray(value.entries)) return null;
   return {
     matchupId: value.matchupId,
     matchupIndex: value.matchupIndex,
+    promptText: typeof value.promptText === "string" ? value.promptText : "",
     entries: value.entries
       .filter((entry) => typeof entry?.entryId === "string" && typeof entry.assetId === "string")
       // Viability is decided by publicBattleVote(); anything that says it is

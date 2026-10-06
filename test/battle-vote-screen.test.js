@@ -37,18 +37,18 @@ const hostPayload = {
 const ballot = publicBattleVote(hostPayload, 0);
 
 test("the public ballot carries only viable images, in entry-ID order, with no names or counts", () => {
-  assert.deepEqual(ballot, { matchupId: M, matchupIndex: 0, entries: [{ entryId: E1, assetId: A1 }, { entryId: E3, assetId: A3 }] });
+  assert.deepEqual(ballot, { matchupId: M, matchupIndex: 0, promptText: "Draw a cat", entries: [{ entryId: E1, assetId: A1 }, { entryId: E3, assetId: A3 }] });
   assert.equal(publicBattleVote(hostPayload, 1), null, "no such matchup");
   const text = JSON.stringify(ballot);
-  for (const forbidden of ["Ada", "Bo", "Cy", "p-ada", "Draw a cat", "votesCast", A2]) assert.ok(!text.includes(forbidden), forbidden);
+  for (const forbidden of ["Ada", "Bo", "Cy", "p-ada", "votesCast", A2]) assert.ok(!text.includes(forbidden), forbidden);
 });
 
 test("publicRoomState's whitelist strips anything a host might assign by mistake", () => {
   const sloppy = { ...hostPayload.matchups[0], entries: hostPayload.matchups[0].entrants.map((entrant) => ({ ...entrant, assetId: entrant.submittedAssetId })) };
   const cleaned = sanitizePublicBattleVote(sloppy);
-  assert.deepEqual(cleaned, ballot, "names, player IDs, the prompt, counts and the vetoed entry are all stripped");
+  assert.deepEqual(cleaned, ballot, "names, player IDs, counts and the vetoed entry are all stripped");
   assert.equal(sanitizePublicBattleVote({ matchupId: M, entries: [] }), null, "no matchup index: dropped, not forwarded");
-  const withExtras = { ...ballot, promptText: "Draw a cat", entries: ballot.entries.map((entry) => ({ ...entry, playerName: "Ada", votes: 3 })) };
+  const withExtras = { ...ballot, votesCast: 3, entries: ballot.entries.map((entry) => ({ ...entry, playerName: "Ada", votes: 3 })) };
   assert.deepEqual(sanitizePublicBattleVote(withExtras), ballot);
   assert.equal(sanitizePublicBattleVote(null), null);
 });
@@ -109,7 +109,7 @@ test("the ballot moves through idle, pending, confirmed, rejected and retryable"
 
 test("the voting branch shows no creator, count or other-matchup data", () => {
   const markup = battleVoteMarkup(battleVoteView({ phase: "battle_vote", battleVote: ballot, matchupIndex: 0 }), escapeHtml);
-  for (const forbidden of ["Ada", "Bo", "Cy", "vote count", "votes", A2, E2, "Draw a cat"]) assert.ok(!markup.includes(forbidden), forbidden);
+  for (const forbidden of ["Ada", "Bo", "Cy", "vote count", "votes", A2, E2]) assert.ok(!markup.includes(forbidden), forbidden);
   assert.match(markup, new RegExp(`data-battle-vote="${E1}"`));
   assert.match(markup, new RegExp(`data-battle-vote-image="${A1}"`));
   assert.ok(!/ src=/.test(markup), "images load through the media proxy");
