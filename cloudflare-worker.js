@@ -191,6 +191,259 @@ function battleTestImageResponse(body, init = {}) {
   });
 }
 
+// --- Prompt Battle: player generation route ----------------------------
+//
+// POST /battle/generate. authorize_battle_generation() reserves one attempt
+// and returns the session's effective engine, so this route only calls the
+// provider, stores what came back as battle media, and records the cost.
+// Engine, model, variants, owner and budget all come from that authorizer:
+// a request body is a suggestion, not a configuration source.
+//
+// Attempts are refunded only when the call was provably unbilled (no provider
+// call at all, Workers AI, or a zero-cost Kaplan block). Anything unknown
+// after a paid call keeps its reservation pending for reconciliation.
+const battleGenerateCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-player-token, content-type",
+  "access-control-max-age": "86400"
+};
+
+const BATTLE_GENERATE_MAX_BODY_BYTES = 8192;
+const BATTLE_GENERATE_MAX_PROMPT_CHARS = 2048;
+const BATTLE_GENERATE_MAX_VARIANTS = 4;
+const BATTLE_GENERATE_MAX_IMAGE_BYTES = 26214400;
+const BATTLE_ASSET_EXPIRY_DAYS = 30;
+const BATTLE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// The only three types the private quiz-media bucket may hold.
+const BATTLE_IMAGE_EXTENSION_BY_MIME = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+const BATTLE_BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+// Said whenever a refund could not be confirmed: it never claims the attempt
+// came back, and never invites a retry the player cannot afford.
+const BATTLE_UNCONFIRMED_ERROR = "Image generation failed. Refresh to check your attempt.";
+const BATTLE_UNAVAILABLE_ERROR = "Image generation is not available for this game.";
+
+function battleGenerateResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { "cache-control": "no-store", ...battleGenerateCorsHeaders, ...(init.headers || {}) }
+  });
+}
+
+// Null means "not usable base64": a malformed, empty or oversize payload fails
+// before an upload instead of storing an object nothing can render. The encoded
+// length is bounded before atob, so an oversize payload cannot make the isolate
+// allocate a huge binary only to throw it away afterwards.
+function decodeBattleImageBytes(encoded) {
+  if (typeof encoded !== "string") return null;
+  const text = encoded.trim();
+  if (text === "" || text.length > Math.ceil(BATTLE_GENERATE_MAX_IMAGE_BYTES / 3) * 4 || !BATTLE_BASE64_PATTERN.test(text)) return null;
+  let binary;
+  try { binary = atob(text); } catch { return null; }
+  if (binary.length === 0 || binary.length > BATTLE_GENERATE_MAX_IMAGE_BYTES) return null;
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+// True only when a reserved attempt is provably back: a 2xx reply saying
+// refunded, or the stored failed/blocked status an idempotent replay answers
+// with. A non-2xx, a network failure, unparseable JSON or an empty object is
+// false, so no caller can report a refund it cannot see.
+async function refundBattleAttempt(env, generationId, reasonKind, reason) {
+  let response;
+  try {
+    response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/refund_battle_attempt`, {
+      method: "POST",
+      headers: supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true }),
+      body: JSON.stringify({ p_generation_id: generationId, p_reason_kind: reasonKind, p_reason: reason })
+    });
+  } catch { return false; }
+  const reply = response.ok ? await response.json().catch(() => null) : null;
+  if (reply === null || typeof reply !== "object") return false;
+  return reply.refunded === true || reply.status === "failed" || reply.status === "blocked";
+}
+
+// A failure that depends on whether the attempt was actually handed back: a
+// confirmed give-back names the ordinary unavailable text, and anything else
+// says only to refresh.
+function battleGenerateFailure(refunded, message) {
+  return battleGenerateResponse({ error: refunded ? message : BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+}
+
+async function battleUnavailable(env, generationId, reason) {
+  return battleGenerateFailure(await refundBattleAttempt(env, generationId, "provider_error", reason), BATTLE_UNAVAILABLE_ERROR);
+}
+
+// Everything after the cheap request checks. One outer catch covers every
+// upstream transport, so a rejected fetch becomes a controlled generic reply;
+// the tracked state decides whether a reservation may be handed back at all.
+async function battleGenerateFlow(env, roomCode, playerToken, playerPrompt) {
+  const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+  const state = { generationId: null, providerCalled: false };
+  try {
+    const authorizeResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/authorize_battle_generation`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_room_code: roomCode, p_player_token: playerToken, p_player_prompt: playerPrompt })
+    });
+    // A refusal reserved nothing: nothing to refund, no provider call, and no
+    // budget detail leaves the server.
+    if (!authorizeResponse.ok) {
+      const refusalStatus = authorizeResponse.status >= 400 && authorizeResponse.status < 500 ? authorizeResponse.status : 502;
+      return battleGenerateResponse({ error: "You cannot generate an image right now." }, { status: refusalStatus });
+    }
+    const authorized = await authorizeResponse.json().catch(() => null);
+    const generationId = typeof authorized?.generationId === "string" && BATTLE_UUID_PATTERN.test(authorized.generationId) ? authorized.generationId : null;
+    // No trustworthy id means nothing can be identified for a refund, and none
+    // is invented.
+    if (!generationId) return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+    state.generationId = generationId;
+    const serverProvider = typeof authorized.provider === "string" ? authorized.provider : "";
+    const serverModel = typeof authorized.model === "string" ? authorized.model.trim() : "";
+    const serverPrompt = typeof authorized.playerPrompt === "string" ? authorized.playerPrompt.trim() : "";
+    const variantCount = authorized.variants;
+    const adapter = serverProvider === "workers_ai" || serverProvider === "kaplan_proxy" ? ENGINES[serverProvider] : null;
+    // The effective engine configuration is refused before the owner lookup and
+    // long before the provider, so an unusable round costs neither.
+    if (!adapter || serverModel === "" || serverPrompt === "" || !Number.isInteger(variantCount) || variantCount < 1 || variantCount > BATTLE_GENERATE_MAX_VARIANTS) {
+      return battleUnavailable(env, generationId, "Unsupported generation configuration");
+    }
+    let auth;
+    try {
+      auth = await adapter.resolveAuth(env);
+    } catch {
+      return battleUnavailable(env, generationId, "Image engine credentials are unavailable");
+    }
+    // The authorizer returns no playerId, so the owner it stamped on the
+    // generation is read back and used instead of any client claim.
+    const ownerResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/session_battle_generations?select=entry:session_battle_entries(player_id)&id=eq.${encodeURIComponent(generationId)}&limit=1`, { headers });
+    const ownerRows = ownerResponse.ok ? await ownerResponse.json().catch(() => null) : null;
+    const ownerRow = Array.isArray(ownerRows) && ownerRows.length === 1 ? ownerRows[0] : null;
+    const playerId = typeof ownerRow?.entry?.player_id === "string" && BATTLE_UUID_PATTERN.test(ownerRow.entry.player_id) ? ownerRow.entry.player_id : null;
+    if (playerId === null) return battleUnavailable(env, generationId, "Generation owner could not be resolved");
+    // Seeds are made here, never inside image-engine.js, so buildRequests()
+    // stays deterministic for its fixtures.
+    const seeds = Array.from({ length: variantCount }, () => crypto.getRandomValues(new Uint32Array(1))[0]);
+    const requestConfig = { model: serverModel, prompt: serverPrompt, variants: variantCount, seeds, auth };
+    if (Number.isInteger(authorized.steps)) requestConfig.steps = authorized.steps;
+    if (typeof authorized.resolution === "string") requestConfig.resolution = authorized.resolution;
+    if (typeof authorized.outputFormat === "string") requestConfig.outputFormat = authorized.outputFormat;
+    let descriptors;
+    try {
+      descriptors = adapter.buildRequests(requestConfig);
+    } catch {
+      return battleUnavailable(env, generationId, "Unsupported generation configuration");
+    }
+    // One dispatch path for every descriptor with allSettled, so one flaky
+    // variant cannot discard the others. From here the provider may have been
+    // paid, so no later failure may invent a refund.
+    state.providerCalled = true;
+    const settled = await Promise.allSettled(descriptors.map((descriptor) => runBattleDescriptor(descriptor, auth)));
+    const results = settled.map((entry) => entry.status === "fulfilled" ? { ok: true, body: entry.value } : { ok: false, status: entry.reason?.status ?? 0, error: entry.reason });
+    let parsed;
+    try {
+      parsed = adapter.parseResponses({ results, expectedVariants: variantCount });
+    } catch {
+      // An unreadable outcome is an unknown charge: never zero, never recorded.
+      return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+    }
+    // A provider that answers with more images than the round asked for cannot
+    // widen the round.
+    const images = (Array.isArray(parsed?.images) ? parsed.images : []).slice(0, variantCount);
+    const costUsd = parsed?.costUsd;
+    const costKnown = typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd >= 0;
+    if (images.length === 0) {
+      // Only a provably unbilled attempt comes back: Workers AI is free, and a
+      // zero-cost Kaplan block or failure was never charged. A billed no-image
+      // response keeps its reservation -- the money is spent.
+      if (!costKnown || costUsd > 0) return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+      if (parsed.blocked === true) {
+        const blockReason = String(parsed.blockReason || "The image model declined that prompt.").slice(0, 500);
+        // The prompt is named back, with the fact that nothing was spent, but
+        // only once the give-back is confirmed.
+        if (await refundBattleAttempt(env, generationId, "safety_block", blockReason)) {
+          return battleGenerateResponse({ error: `That prompt was declined and did not use an attempt. ${blockReason}`, blockReason }, { status: 422 });
+        }
+        return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+      }
+      return battleUnavailable(env, generationId, "The image provider returned no image");
+    }
+    // Images came back but the charge is unreadable, so nothing is stored and
+    // nothing is recorded: a zero here would be a lie.
+    if (!costKnown) return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+    // Every image is checked before anything is written, and nothing is reported
+    // until every upload and both database writes have landed. A failure
+    // part-way leaves the reservation pending and deletes nothing, because a
+    // record call that timed out may still have committed.
+    const uploads = [];
+    for (const image of images) {
+      const mimeType = typeof image?.mimeType === "string" ? image.mimeType : "";
+      const extension = BATTLE_IMAGE_EXTENSION_BY_MIME[mimeType];
+      const bytes = extension ? decodeBattleImageBytes(image?.bytesBase64) : null;
+      if (!bytes) return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+      // Object writes go to /object/quiz-media/<path>; /object/authenticated is
+      // download-only, and x-upsert:false keeps a fresh random path from ever
+      // replacing an existing object.
+      const storagePath = `battle/${generationId}/${crypto.randomUUID()}.${extension}`;
+      const encodedPath = storagePath.split("/").map(encodeURIComponent).join("/");
+      const uploadResponse = await fetch(`${env.SUPABASE_URL}/storage/v1/object/quiz-media/${encodedPath}`, {
+        method: "POST",
+        headers: { ...supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY), "content-type": mimeType, "x-upsert": "false" },
+        body: bytes
+      });
+      if (!uploadResponse.ok) return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+      uploads.push({ storagePath, mimeType, byteSize: bytes.byteLength });
+    }
+    // One batch, and the database supplies the ids: what the player receives is
+    // what Storage and Postgres hold, never a provider body or a client echo.
+    const expiresAt = new Date(Date.now() + BATTLE_ASSET_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const insertResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets`, {
+      method: "POST",
+      headers: { ...headers, Prefer: "return=representation" },
+      body: JSON.stringify(uploads.map((upload) => ({
+        storage_path: upload.storagePath, kind: "image", mime_type: upload.mimeType,
+        byte_size: upload.byteSize, uploaded_by: null, source: "battle",
+        generated_by_player_id: playerId, expires_at: expiresAt
+      })))
+    });
+    const insertedRows = insertResponse.ok ? await insertResponse.json().catch(() => null) : null;
+    const assetIds = Array.isArray(insertedRows) && insertedRows.length === uploads.length
+      ? insertedRows.map((row) => typeof row?.id === "string" && BATTLE_UUID_PATTERN.test(row.id) ? row.id : null)
+      : null;
+    if (!assetIds || assetIds.some((id) => id === null) || assetIds.some((id, index) => assetIds.indexOf(id) !== index)) {
+      return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+    }
+    const recordResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/record_battle_generation`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_generation_id: generationId, p_asset_ids: assetIds, p_cost_usd: costUsd })
+    });
+    const record = recordResponse.ok ? await recordResponse.json().catch(() => null) : null;
+    const recordedIds = record && typeof record === "object" && Array.isArray(record.assetIds) ? record.assetIds : null;
+    // The record must name exactly the rows just inserted and report the
+    // generation complete; a replay of an already-complete generation answers
+    // recorded:false with the stored ids, which still agrees.
+    const recorded = record !== null && typeof record === "object" && record.status === "complete" && recordedIds !== null
+      && recordedIds.length === assetIds.length
+      && recordedIds.every((id, index) => typeof id === "string" && recordedIds.indexOf(id) === index && assetIds.includes(id));
+    if (!recorded) return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+    return battleGenerateResponse({
+      assetIds,
+      partial: assetIds.length < variantCount,
+      generationId,
+      ...(Number.isInteger(authorized.attemptsRemaining) ? { attemptsRemaining: authorized.attemptsRemaining } : {})
+    });
+  } catch {
+    // Any transport throw becomes a controlled generic reply; raw provider URLs,
+    // bodies and errors never reach the player. A reservation is handed back
+    // only when a valid id is known and the provider was never called -- after
+    // that the charge is unknown and stays pending.
+    if (state.generationId !== null && !state.providerCalled) return battleUnavailable(env, state.generationId, "Generation setup failed");
+    return battleGenerateResponse({ error: BATTLE_UNCONFIRMED_ERROR }, { status: 502 });
+  }
+}
+
 // The one dispatch path every adapter's descriptors run through, per
 // addendum section 2.3. A "binding" descriptor calls the named Workers
 // binding directly; an "http" descriptor (openrouter, openai, the Kaplan
@@ -445,6 +698,36 @@ if (request.method === "GET" && url.pathname === "/__version") {
       if (providerErrors.length) console.error("Battle test-image: provider call(s) failed", { provider, model, providerErrors });
 
       return battleTestImageResponse({ model, prompt, ...parsed, ...(providerErrors.length ? { providerErrors } : {}) }, { headers: { "cache-control": "no-store" } });
+    }
+    // Player image generation. Everything the client could lie about --
+    // engine, model, variants, owner, budget -- comes from the authorizer
+    // inside battleGenerateFlow(); only the prompt is read out of the body.
+    if (url.pathname === "/battle/generate") {
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { "cache-control": "no-store", ...battleGenerateCorsHeaders } });
+      if (request.method !== "POST") return battleGenerateResponse({ error: "Method not allowed." }, { status: 405, headers: { allow: "POST, OPTIONS" } });
+
+      const roomCode = request.headers.get("x-quiz-room");
+      const playerToken = request.headers.get("x-quiz-player-token");
+      if (!roomCode || !playerToken) return battleGenerateResponse({ error: "Player authorization is required." }, { status: 401 });
+      if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return battleGenerateResponse({ error: "Image generation is not available." }, { status: 503 });
+
+      // The body is bounded and read for its prompt alone, before anything is
+      // reserved: a request that cannot be accepted must never cost an
+      // attempt or reach a provider.
+      const declaredBytes = Number(request.headers.get("content-length"));
+      if (Number.isFinite(declaredBytes) && declaredBytes > BATTLE_GENERATE_MAX_BODY_BYTES) return battleGenerateResponse({ error: "Invalid request body." }, { status: 400 });
+      let payload = null;
+      try {
+        const raw = await request.text();
+        payload = raw.length > BATTLE_GENERATE_MAX_BODY_BYTES ? null : JSON.parse(raw);
+      } catch { payload = null; }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) return battleGenerateResponse({ error: "Invalid request body." }, { status: 400 });
+      const requestedPrompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+      // Counted in code points, which is how the RPC's char_length counts.
+      const promptLength = Array.from(requestedPrompt).length;
+      if (promptLength === 0 || promptLength > BATTLE_GENERATE_MAX_PROMPT_CHARS) return battleGenerateResponse({ error: "Describe your image in 2048 characters or fewer." }, { status: 400 });
+
+      return battleGenerateFlow(env, roomCode, playerToken, requestedPrompt);
     }
     if (request.method === "GET" && url.pathname.startsWith("/author-media/")) {
       const assetId = decodeURIComponent(url.pathname.slice("/author-media/".length));
