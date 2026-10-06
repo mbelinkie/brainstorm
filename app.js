@@ -2245,14 +2245,22 @@ function exportResults() {
   URL.revokeObjectURL(link.href);
 }
 
+// One row per score event, in the order get_host_score_events returns them.
+// Battle events (0042) arrive with question ID battle-r<round>-m<matchup>,
+// blank base points and multiplier (no multiplier applies to them), and a
+// reason that carries the explanation.
+function scoreEventsCsv(events) {
+  const header = ["Display name", "Question ID", "Base points", "Multiplier", "Points", "Reason", "Recorded at"].map(csvCell).join(",");
+  const rows = events.map((event) => [event.displayName, event.questionId, event.basePoints ?? "", event.multiplier ?? "", event.points, event.reason, event.createdAt].map(csvCell).join(","));
+  return [header, ...rows].join("\n") + "\n";
+}
+
 async function exportDetailedResults() {
   const hostSecret = getHostSecret();
   if (!hostSecret || !params.has("room")) { alert("Detailed results are available for hosted rooms only."); return; }
   try {
     const events = await roomApi.getHostScoreEvents({ roomCode, hostSecret });
-    const header = ["Display name", "Question ID", "Base points", "Multiplier", "Points", "Reason", "Recorded at"].map(csvCell).join(",");
-    const rows = events.map((event) => [event.displayName, event.questionId, event.basePoints ?? "", event.multiplier ?? "", event.points, event.reason, event.createdAt].map(csvCell).join(","));
-    const blob = new Blob([[header, ...rows].join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([scoreEventsCsv(events)], { type: "text/csv;charset=utf-8" });
     const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${(hostQuizDefinition?.title || "quiz-results").replace(/[^a-z0-9-]/gi, "-")}-${roomCode}-score-events.csv` });
     link.click();
     URL.revokeObjectURL(link.href);
