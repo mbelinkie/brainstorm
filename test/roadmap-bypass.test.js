@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { ALLOWED_TRANSPORT_FILES, findBypasses, findTransports, listScriptFiles } from "../scripts/roadmap/bypass-check.mjs";
+import { ALLOWED_TRANSPORT_FILES, VETTED_BACKUP_RUNNER_FILES, findBypasses, findTransports, listScriptFiles } from "../scripts/roadmap/bypass-check.mjs";
 
 // Every repo-owned reader and writer must go through the roadmap gate. These
 // tests scan scripts/ so a new file that shells out to `gh`, hits GitHub's API
@@ -41,6 +41,24 @@ test("only the transport file may contain a direct transport, and it is exempt",
   assert.deepEqual(findTransports([transport]), [ALLOWED_TRANSPORT_FILES[0]]);
 });
 
+test("the vetted Supabase runner may import child_process but never reach GitHub", () => {
+  const runner = {
+    path: VETTED_BACKUP_RUNNER_FILES[0],
+    text: 'import { spawnSync } from "node:child_process";\nspawnSync("supabase", ["--version"]);',
+  };
+  assert.deepEqual(findBypasses([runner]), []);
+
+  const githubViolations = [
+    { path: VETTED_BACKUP_RUNNER_FILES[0], text: 'spawnSync("gh", ["api", "x"]);' },
+    { path: VETTED_BACKUP_RUNNER_FILES[0], text: 'execSync("gh api graphql -f query=x")' },
+    { path: VETTED_BACKUP_RUNNER_FILES[0], text: 'const base = "https://api.github.com/repos";' },
+    { path: VETTED_BACKUP_RUNNER_FILES[0], text: 'await fetch("https://github.com/graphql", {})' },
+  ];
+  for (const file of githubViolations) {
+    assert.ok(findBypasses([file]).length, `${file.text} should still be flagged`);
+  }
+});
+
 test("the transport inventory lists exactly the transports that exist", () => {
   const inventory = fs.readFileSync(new URL("docs/roadmap/transport-inventory.md", new URL("../", import.meta.url)), "utf8");
   const section = inventory.split(/^## /m).find((part) => part.startsWith("Transports in the repo"));
@@ -48,5 +66,5 @@ test("the transport inventory lists exactly the transports that exist", () => {
   const listed = [...section.matchAll(/^- `([^`]+)`/gm)].map((m) => m[1]).sort();
   const actual = findTransports(files()).sort();
   assert.deepEqual(listed, actual);
-  assert.deepEqual(listed, [...ALLOWED_TRANSPORT_FILES].sort());
+  assert.deepEqual(listed, [...ALLOWED_TRANSPORT_FILES, ...VETTED_BACKUP_RUNNER_FILES].sort());
 });

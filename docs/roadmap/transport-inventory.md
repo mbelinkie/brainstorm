@@ -10,10 +10,17 @@ disagree.
 ## Transports in the repo
 
 - `scripts/roadmap/github-transport.mjs`
+- `scripts/backup/run-command.mjs`
 
-That is the only file allowed to start the `gh` CLI. Everything else reaches
-GitHub through `scripts/roadmap/gate.mjs`, which adds the lock, the budget
-accounting, throttle handling, paging bounds and the sanitized log.
+The GitHub transport is the only file allowed to start the `gh` CLI. Everything
+else reaches GitHub through `scripts/roadmap/gate.mjs`, which adds the lock, the
+budget accounting, throttle handling, paging bounds and the sanitized log.
+
+`scripts/backup/run-command.mjs` is a Supabase-only process boundary. It may
+import `child_process` solely to execute the hardcoded `supabase` executable,
+with a fixed allowlist of dump/copy arguments. It is not a GitHub transport:
+GitHub API/host rules, GraphQL endpoint rules, and `gh` execution rules still
+apply to it, and the bypass check enforces them.
 
 ## Callers (all through the gate)
 
