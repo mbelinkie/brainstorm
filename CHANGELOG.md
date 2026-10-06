@@ -4,6 +4,8 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-10-06
 
+- Prepared Prompt Battle submission and host locking: players can replace their chosen image before lock; locking preserves explicit choices, selects the final image of the latest completed attempt, or records a forfeit. Host state includes private submission and spend details. The migration passed real PostgreSQL acceptance checks; production application and UI remain separate work.
+
 - Added the Prompt Battle player generation endpoint: it reserves an attempt, uses the server-selected image engine, saves private variants and returns their asset IDs. Unbilled failures restore the attempt only after a confirmed refund; uncertain paid outcomes require a refresh. This server slice has automated coverage; deployment and the player interface remain separate work.
 
 ## 2026-09-23
