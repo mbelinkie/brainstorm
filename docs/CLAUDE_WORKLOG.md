@@ -2140,3 +2140,13 @@ Branch `claude/battle-score-30` (from origin/main `ef6df5a`). Claude Code (Opus 
 **Decisions to confirm:** (1) A matchup with zero votes, which is every matchup in a 2–3 player room, is a tie, so all viable entrants get `winnerPoints`. (2) The late-join catch-up boost is also excluded from battle points, not only the door multiplier. (3) Resolving moves the phase to `battle_result`, so issue #32's Reveal button is a single call.
 
 **Unproven:** PGlite is not Supabase. Grants and roles are stubbed, and concurrency was not exercised (single connection), so the two-tab race relies on the session `for update` lock plus the unique index. The function uses a transaction-scoped temp table. That is fine under PostgREST's per-request transaction but has not been run on the live project. Matthew applies 0042 after ledger preflight. Before applying, `select count(*) from public.score_events where created_by = 'system' and question_id ~ '^battle-r[0-9]+-m[0-9]+$';` should return 0.
+
+### 2026-10-06 — Prompt Battle score audit: CSV and leaderboard (issue #34)
+
+Branch `claude/battle-score-audit-34` (from origin/main `6b2921a`, after #30 merged and 0038–0042 were applied to production). Claude Code (Opus 5.5). Files: `app.js` (`scoreEventsCsv` extracted from `exportDetailedResults`, no output change), `room-api.js` (`resolveBattleMatchup` wrapper, `resolveBattleMatchupWithStandings`), `test/battle-score-audit.test.js` (new), `test/helpers/battle-fixtures.js` (new, moved out of `test/battle-resolve-runtime.test.js`), `test/battle-resolve-runtime.test.js` (now imports the shared fixtures), this entry.
+
+**Audit result:** Battle events already flowed through both reads unchanged. `get_live_leaderboard` sums every score event, and the detailed CSV prints question ID, points and reason. Battle rows read as `battle-r<round>-m<matchup>`, blank base points and multiplier, and a reason such as `Prompt battle tie (2 ways) · 1 of 2 votes`. No export label change was needed. The one real gap was freshness: standings show battle points only after a fresh leaderboard read. `resolveBattleMatchupWithStandings` mirrors `lockAndScoreWithRecovery` (resolve, then re-read; a failed re-read is reported, never blocking), ready for #32's Reveal.
+
+**Commands run:** `node --test test/battle-score-audit.test.js`: 6/6. The first run crashed because the test's `window` stub, needed by room-api, made PGlite assume a browser; the stub now exists only around that import. `npm test`: tests 785, pass 785, fail 0.
+
+**Unproven:** No host UI calls the new helper yet (#32). The CSV was checked through the lifted builder against real RPC output in PGlite, not through a browser download.
