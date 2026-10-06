@@ -2175,6 +2175,7 @@ Branch `claude/battle-voting-31`, stacked on `claude/battle-player-screen-23` (#
 **Commands run:** `npm test`: tests 821, pass 821, fail 0. The whitelist test caught that a sloppy host object could carry a vetoed entry's asset ID; the whitelist now drops entries marked non-viable, vetoed or forfeited. Browser at 375×812: every vote and result state in the preview page; the real `app.js` player tab driven over BroadcastChannel through ballot → tap-to-expand → ArrowRight → Esc (focus back on the tile) → vote from inside the viewer (closes; retryable message, no Supabase here) → result.
 
 **Unproven:** Real voting against Supabase and real images through `/media` (this Mac has no `.env.local`). The host side that broadcasts `battleVote` / `battleResult` is #32.
+
 ### 2026-10-06 — Prompt Battle score audit: CSV and leaderboard (issue #34)
 
 Branch `claude/battle-score-audit-34` (from origin/main `6b2921a`, after #30 merged and 0038–0042 were applied to production). Claude Code (Opus 5.5). Files: `app.js` (`scoreEventsCsv` extracted from `exportDetailedResults`, no output change), `room-api.js` (`resolveBattleMatchup` wrapper, `resolveBattleMatchupWithStandings`), `test/battle-score-audit.test.js` (new), `test/helpers/battle-fixtures.js` (new, moved out of `test/battle-resolve-runtime.test.js`), `test/battle-resolve-runtime.test.js` (now imports the shared fixtures), this entry.
