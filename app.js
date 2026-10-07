@@ -1,7 +1,12 @@
-import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, resolveBattleMatchupWithStandings, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
 import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { battleRosterRows, battleSpendView, publicBattleProgress } from "./battle-roster.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
+import { presentationBattleMarkup, presentationBattleScene } from "./battle-presentation.js";
+import { battleVoteMarkup, battleVoteRenderKey, battleVoteView, classifyVoteError, publicBattleResult, publicBattleVote, sanitizePublicBattleResult, sanitizePublicBattleVote } from "./battle-vote.js";
+import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
+import { battleReviewMarkup, firstViableBattleMatchupIndex, vetoBattleEntryAndRefresh } from "./battle-review.js";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") || "landing";
@@ -97,7 +102,31 @@ let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_
 // exactly what a player must not hold during battle_prompt, so it must never be
 // assigned onto `state` where publicRoomState() could forward it.
 // See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
-let battleRoundPanel = { busy: false, error: "", state: null };
+let battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, reviewAction: "", confirmedAt: 0, roundIndex: null };
+let battleRosterPollTimer = null;
+let battleRefreshRequestId = 0;
+let battleRefreshInFlight = null;
+let battleLockBusy = false;
+let battleLockGuard = false;
+let battleLockOperationId = 0;
+let battleLockInFlightToken = 0;
+// Prompt Battle player screen (issue #23). The player's own entry, draft and
+// favourite, read from get_player_battle_state(); never part of `state`, which
+// is the shared room broadcast. Variant images are cached by asset ID for the
+// whole round so a redraw never refetches them through the media proxy
+// (mistakes.md #15); render() does not revoke these.
+let battlePlayer = initialBattlePlayer();
+let battlePlayerRenderedKey = "";
+const battleImageUrls = new Map();
+// This phone's vote on the current matchup (issue #31). A confirmed vote is
+// remembered per matchup for the tab, so a refresh shows "Vote counted"
+// instead of an open ballot; the server's one-vote rule is the real guard.
+let battleVote = null;
+let battleVoteRenderedKey = "";
+// Full-screen image viewer on the phone: { surface: "variants" | "vote", key, index }.
+// key is the round (variants) or the matchup (vote), so a viewer left open
+// never carries over to a different set of images.
+let battleLightbox = null;
 // Backoff between host-state save attempts. Kept short: this runs between a
 // host pressing Next and the room actually advancing.
 const HOST_STATE_SAVE_BACKOFF_MS = [400, 1200];
@@ -262,6 +291,14 @@ function publicRoomState() {
     battleRoundIndex: Number.isInteger(state.battleRoundIndex) ? state.battleRoundIndex : null,
     battleMatchupIndex: Number.isInteger(state.battleMatchupIndex) ? state.battleMatchupIndex : null,
     battleMatchupCount: Number.isInteger(state.battleMatchupCount) ? state.battleMatchupCount : null,
+    // Public battle progress: the two aggregate counts only. The private
+    // roster (names, prompts, asset IDs) stays off shared state.
+    battleProgress: publicBattleProgress(battleRoundPanel.state),
+    // The current matchup's anonymous images while voting, and the result
+    // (which by spec reveals creators) after it. Re-whitelisted field by field
+    // in battle-vote.js; the host sets them in #32.
+    battleVote: state.phase === "battle_vote" ? sanitizePublicBattleVote(state.battleVote) : null,
+    battleResult: state.phase === "battle_result" ? sanitizePublicBattleResult(state.battleResult) : null,
     intermissionStage: state.intermissionStage || null,
     // Navigation history contains only screen identifiers and score-display
     // data; it never includes answer keys or authored media.
@@ -381,6 +418,11 @@ function cueFinaleAudio(audioKey) {
 }
 
 async function startFinale() {
+  if ((battleLockGuard || battleLockBusy) && view === "host") {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    if (view === "host") patchBattlePairingPanel();
+    return;
+  }
   rememberCurrentScreen();
   state = {
     ...state,
@@ -470,9 +512,12 @@ function enterBattleRound(roundIndex) {
     activeClipId: null,
     scoreNotification: null,
     submitted: {},
-    battleRoundIndex: roundIndex, battleMatchupIndex: null, battleMatchupCount: null
+    battleRoundIndex: roundIndex, battleMatchupIndex: null, battleMatchupCount: null, battleVote: null, battleResult: null
   };
-  battleRoundPanel = { busy: false, error: "", state: null };
+  battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, reviewAction: "", confirmedAt: 0, roundIndex: null };
+  stopBattleRosterPolling();
+  battleRefreshRequestId++;
+  battleLockOperationId++;
 }
 
 // The host is the only writer of phases (spec decision). open_battle_round()
@@ -503,6 +548,8 @@ async function openBattleRoundFromHost() {
       state.intermissionStage = null;
       state.battleMatchupIndex = 0;
       state.battleMatchupCount = Array.isArray(pairing?.matchups) ? pairing.matchups.length : 0;
+      state.battleVote = null;
+      state.battleResult = null;
       opened = true;
     }
   } catch (error) {
@@ -515,41 +562,516 @@ async function openBattleRoundFromHost() {
   if (opened) await persistHostState();
   emit();
   render();
+  if (opened) refreshBattlePairing();
 }
 
-// Temporary in slice 3a: nothing is generated or voted on yet, so the host
-// needs a way out. No points are awarded. Slices 4 and 5 replace this with
-// Review and voting.
+function nextViableBattleMatchupIndex(payload, currentIndex) {
+  const matchups = Array.isArray(payload?.matchups) ? payload.matchups : [];
+  const next = matchups.find((matchup, arrayIndex) => {
+    const index = Number.isInteger(matchup?.matchupIndex) ? matchup.matchupIndex : arrayIndex;
+    return index > currentIndex && !matchup?.resolvedAt && Array.isArray(matchup?.viableEntryIds) && matchup.viableEntryIds.length > 0;
+  });
+  if (!next) return null;
+  return Number.isInteger(next.matchupIndex) ? next.matchupIndex : matchups.indexOf(next);
+}
+
+// Called after the last resolved matchup; the next normal quiz position (or
+// finale) owns the transition out of this round.
 async function endBattleRound() {
   if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
+  const allMatchupsSkipped = state.phase === "battle_review" && battleRoundPanel.state && !battleRoundPanel.stale && firstViableBattleMatchupIndex(battleRoundPanel.state) === null;
+  if ((state.phase !== "battle_result" && !allMatchupsSkipped) || battleRoundPanel.reviewAction || battleRoundPanel.stale || battleRoundPanel.busy || hostStateSaveFailure) return;
+  if (state.phase === "battle_result" && nextViableBattleMatchupIndex(battleRoundPanel.state, Number(state.battleMatchupIndex)) !== null) return;
+  if (battleLockGuard || battleLockBusy) {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    patchBattlePairingPanel();
+    return;
+  }
   const battleIndex = state.battleRoundIndex;
   const next = nextPlayablePosition(hostQuizDefinition?.rounds, { roundIndex: battleIndex, questionIndex: 0 });
-  state = { ...state, battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null };
-  battleRoundPanel = { busy: false, error: "", state: null };
+  state = { ...state, battleRoundIndex: null, battleMatchupIndex: null, battleMatchupCount: null, battleVote: null, battleResult: null };
+  battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, reviewAction: "", confirmedAt: 0, roundIndex: null };
+  stopBattleRosterPolling();
+  battleRefreshRequestId++;
+  battleLockOperationId++;
   if (next) await startRoundEnd(next.roundIndex);
   else await startFinale();
 }
 
-// Host-only. Fills the pairing panel after a reload into battle_prompt.
-async function refreshBattlePairing() {
-  if (view !== "host" || battleRoundPanel.busy) return;
+async function revealBattleMatchup({ recovery = false } = {}) {
+  const expectedPhase = recovery ? "battle_result" : "battle_vote";
+  if (view !== "host" || state.phase !== expectedPhase || battleRoundPanel.reviewAction || battleRoundPanel.busy || battleRoundPanel.stale) return;
+  const matchupIndex = Number(state.battleMatchupIndex);
+  const matchup = battleRoundPanel.state?.matchups?.find((item) => item?.matchupIndex === matchupIndex);
+  const matchupId = matchup?.matchupId || state.battleVote?.matchupId || state.battleResult?.matchupId;
+  if (!Number.isInteger(matchupIndex) || !matchupId) {
+    battleRoundPanel.error = "The current matchup is not loaded. Refresh the roster before revealing.";
+    render();
+    return;
+  }
   const hostSecret = getHostSecret();
-  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
-  battleRoundPanel.busy = true;
+  if (!hostSecret) {
+    battleRoundPanel.error = "Host authorization is required.";
+    render();
+    return;
+  }
+
+  const requestPanel = battleRoundPanel;
+  const requestRound = state.battleRoundIndex;
+  battleRoundPanel.reviewAction = recovery ? "recover-result" : "reveal";
   battleRoundPanel.error = "";
   render();
   try {
-    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
-    // Same guard as Open: until the save that moved the room onto this round
-    // lands, the server still answers for the previous round.
-    if (Number(result?.roundIndex) === state.battleRoundIndex) { battleRoundPanel.state = result; battleRoundPanel.error = ""; }
-    else battleRoundPanel.error = "The room was still saving the new round. Press Refresh pairing again.";
+    const resolved = await resolveBattleMatchupWithStandings({ roomCode, hostSecret, matchupId, client: roomApi });
+    if (battleRoundPanel !== requestPanel || state.battleRoundIndex !== requestRound || state.battleMatchupIndex !== matchupIndex || state.phase !== expectedPhase) return;
+    const result = publicBattleResult(resolved?.result);
+    if (!result) throw new Error("The matchup result could not be read. Retry reveal.");
+    state.phase = "battle_result";
+    state.presentationScreen = "battle_result";
+    state.battleVote = null;
+    state.battleResult = result;
+    if (Number.isFinite(Number(resolved.result.revision))) state.revision = Number(resolved.result.revision);
+    if (Array.isArray(resolved.players)) state.players = resolved.players;
+    if (resolved.error) requestPanel.error = "The result is confirmed. Standings will refresh when they are available.";
+    requestPanel.state = {
+      ...requestPanel.state,
+      phase: "battle_result",
+      revision: Math.max(Number(requestPanel.state?.revision) || 0, Number(resolved.result.revision) || 0),
+      matchups: (requestPanel.state?.matchups || []).map((item) => item.matchupId === matchupId ? { ...item, resolvedAt: item.resolvedAt || resolved.result.resolvedAt || true } : item)
+    };
+    await persistHostState();
+    emit();
+  } catch (error) {
+    if (battleRoundPanel === requestPanel && state.battleRoundIndex === requestRound && state.battleMatchupIndex === matchupIndex && state.phase === expectedPhase) {
+      requestPanel.error = error?.message || "The matchup could not be revealed. Try again.";
+    }
+  } finally {
+    if (battleRoundPanel === requestPanel) {
+      requestPanel.reviewAction = "";
+      render();
+    }
   }
-  catch (error) { battleRoundPanel.error = error?.message || "Could not load the pairing."; }
-  finally { battleRoundPanel.busy = false; render(); }
 }
 
+async function nextBattleMatchup() {
+  if (view !== "host" || state.phase !== "battle_result" || battleRoundPanel.reviewAction || battleRoundPanel.busy || battleRoundPanel.stale || hostStateSaveFailure) return;
+  const nextIndex = nextViableBattleMatchupIndex(battleRoundPanel.state, Number(state.battleMatchupIndex));
+  if (nextIndex === null) return endBattleRound();
+  const ballot = publicBattleVote(battleRoundPanel.state, nextIndex);
+  if (!ballot?.entries?.length) {
+    battleRoundPanel.error = "The next matchup has no viable images. Refresh the roster before continuing.";
+    render();
+    return;
+  }
+  const previous = { phase: state.phase, presentationScreen: state.presentationScreen, battleMatchupIndex: state.battleMatchupIndex, battleVote: state.battleVote, battleResult: state.battleResult };
+  battleRoundPanel.reviewAction = "next-matchup";
+  battleRoundPanel.error = "";
+  state.phase = "battle_vote";
+  state.presentationScreen = "battle_vote";
+  state.battleMatchupIndex = nextIndex;
+  state.battleVote = ballot;
+  state.battleResult = null;
+  render();
+  await persistHostState();
+  if (hostStateSaveFailure) {
+    state.phase = previous.phase;
+    state.presentationScreen = previous.presentationScreen;
+    state.battleMatchupIndex = previous.battleMatchupIndex;
+    state.battleVote = previous.battleVote;
+    state.battleResult = previous.battleResult;
+    battleRoundPanel.error = `The next matchup did not start: ${hostStateSaveFailure.message}`;
+  } else {
+    if (battleRoundPanel.state) battleRoundPanel.state.phase = "battle_vote";
+    emit();
+  }
+  battleRoundPanel.reviewAction = "";
+  render();
+  if (state.phase === "battle_vote") refreshBattlePairing({ silent: true });
+}
+
+function battlePairingDynamicView() {
+  const pairing = battleRoundPanel.state;
+  const review = state.phase === "battle_review";
+  const staleLine = battleRoundPanel.stale ? `<p class="battle-round-note battle-round-note--stale" role="alert">Showing the last confirmed roster. These totals may be stale. <button class="battle-inline-retry" type="button" data-battle-refresh-pairing>Retry</button></p>` : "";
+  const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
+  const spend = pairing ? battleSpendView(pairing) : null;
+  const spendLine = pairing ? `<p class="battle-roster-spend">Session spend $${spend.spend.toFixed(2)} · ${escapeHtml(spend.capLabel)}</p>` : "";
+  const rows = battleRosterRows(pairing);
+  const rosterView = rows.length
+    ? `<ul class="battle-roster">${rows.map((row) => `<li class="battle-roster-row"><span class="battle-roster-name">${escapeHtml(row.playerName)}</span><span class="battle-roster-status">${escapeHtml(row.status)}</span><span class="battle-roster-meta">${row.attemptsUsed} attempt${row.attemptsUsed === 1 ? "" : "s"}${row.refunded ? " · refunded" : ""}</span></li>`).join("")}</ul>`
+    : `<p class="battle-round-note" role="status">${review ? "Submissions are locked." : battleRoundPanel.busy ? "Loading the roster…" : "The roster has not loaded. Press Refresh roster."}</p>`;
+  const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
+  const reviewGrid = review && pairing ? battleReviewMarkup(pairing, escapeHtml, { busy: battleRoundPanel.busy || Boolean(battleRoundPanel.reviewAction) }) : "";
+  return `${errorLine}${staleLine}${spendLine}${rosterView}${seedLine}${reviewGrid}`;
+}
+
+function patchBattlePairingPanel() {
+  const dynamic = document.querySelector('[data-battle-pairing-dynamic]');
+  if (dynamic) {
+    dynamic.innerHTML = battlePairingDynamicView();
+    dynamic.querySelectorAll('[data-battle-refresh-pairing]').forEach(btn => {
+      btn.addEventListener('click', () => refreshBattlePairing());
+    });
+    attachBattleReviewEvents(dynamic);
+    loadBattleReviewImages();
+  }
+  const mainRefresh = document.querySelector('.host-actions [data-battle-refresh-pairing]');
+  if (mainRefresh) {
+    const busy = battleRoundPanel.busy;
+    mainRefresh.disabled = busy;
+    mainRefresh.setAttribute('aria-disabled', busy ? 'true' : 'false');
+    mainRefresh.textContent = busy ? 'Refreshing…' : 'Refresh roster';
+    if (busy) {
+      mainRefresh.setAttribute('data-busy', 'true');
+    } else {
+      mainRefresh.removeAttribute('data-busy');
+    }
+  }
+  const startVoting = document.querySelector('[data-battle-start-voting]');
+  if (startVoting) {
+    const ready = firstViableBattleMatchupIndex(battleRoundPanel.state) !== null;
+    const busy = battleRoundPanel.busy || Boolean(battleRoundPanel.reviewAction);
+    startVoting.disabled = !ready || busy || battleRoundPanel.stale || Boolean(hostStateSaveFailure);
+    startVoting.textContent = battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting";
+  }
+  const actionBusy = battleRoundPanel.busy || Boolean(battleRoundPanel.reviewAction) || battleRoundPanel.stale || Boolean(hostStateSaveFailure) || !battleRoundPanel.state;
+  const reveal = document.querySelector("[data-battle-reveal]");
+  if (reveal) {
+    reveal.disabled = actionBusy;
+    reveal.textContent = battleRoundPanel.reviewAction === "reveal" ? "Revealing…" : "Reveal result";
+  }
+  const next = document.querySelector("[data-battle-next-matchup]");
+  if (next) {
+    next.disabled = actionBusy;
+    next.textContent = battleRoundPanel.reviewAction === "next-matchup" ? "Opening matchup…" : "Next matchup";
+  }
+  const finish = document.querySelector("[data-battle-end-round]");
+  if (finish) finish.disabled = actionBusy;
+  const progress = document.querySelector("[data-battle-vote-progress]");
+  if (progress && state.phase === "battle_vote") {
+    const matchup = battleRoundPanel.state?.matchups?.find((item) => item?.matchupIndex === state.battleMatchupIndex);
+    progress.textContent = `${Number(matchup?.votesCast) || 0} of ${Number(matchup?.eligibleVoters) || 0} votes received.`;
+  }
+  const actionError = document.querySelector("[data-battle-action-error]");
+  if (actionError) {
+    actionError.textContent = battleRoundPanel.error || "";
+    actionError.hidden = !battleRoundPanel.error;
+  }
+}
+
+function attachBattleReviewEvents(root = document) {
+  root.querySelectorAll('[data-battle-review-action]').forEach((button) => {
+    button.addEventListener('click', () => handleBattleReviewAction(button));
+  });
+}
+
+function loadBattleReviewImages() {
+  if (view !== "host" || state.phase !== "battle_review") return;
+  document.querySelectorAll("[data-battle-review-image]").forEach((image) => {
+    image.onerror = () => image.closest(".battle-review-image")?.classList.add("is-broken");
+    battleVariantImageUrl(image.dataset.battleReviewImage).then((url) => {
+      if (!image.isConnected) return;
+      if (url) image.src = url;
+      else image.closest(".battle-review-image")?.classList.add("is-broken");
+    });
+  });
+}
+
+async function handleBattleReviewAction(button) {
+  if (view !== "host" || state.phase !== "battle_review" || battleRoundPanel.busy || battleRoundPanel.reviewAction) return;
+  const entryId = button.dataset.battleEntryId;
+  const veto = button.dataset.battleReviewAction === "veto";
+  if (!entryId) return;
+  let reason = "";
+  if (veto) {
+    reason = window.prompt("Reason for vetoing this entry?")?.trim() || "";
+    if (!reason) return;
+    if (reason.length > 500) {
+      battleRoundPanel.error = "A veto reason is limited to 500 characters.";
+      patchBattlePairingPanel();
+      return;
+    }
+  }
+
+  const hostSecret = getHostSecret();
+  if (!hostSecret) {
+    battleRoundPanel.error = "Host authorization is required.";
+    patchBattlePairingPanel();
+    return;
+  }
+  const requestPanel = battleRoundPanel;
+  const requestRound = state.battleRoundIndex;
+  battleRoundPanel.reviewAction = entryId;
+  battleRoundPanel.error = "";
+  patchBattlePairingPanel();
+  try {
+    await vetoBattleEntryAndRefresh({
+      api: roomApi,
+      refresh: () => refreshBattlePairing({ silent: true }),
+      roomCode,
+      hostSecret,
+      entryId,
+      reason,
+      veto
+    });
+    if (battleRoundPanel === requestPanel && state.battleRoundIndex === requestRound && battleRoundPanel.stale) {
+      throw new Error(battleRoundPanel.error || "The updated review could not be confirmed. Retry refresh.");
+    }
+  } catch (error) {
+    if (battleRoundPanel === requestPanel) battleRoundPanel.error = error?.message || "The review action failed.";
+  } finally {
+    if (battleRoundPanel === requestPanel) {
+      battleRoundPanel.reviewAction = "";
+      patchBattlePairingPanel();
+    }
+  }
+}
+
+async function startBattleVoting() {
+  if (view !== "host" || state.phase !== "battle_review" || battleRoundPanel.reviewAction || battleRoundPanel.busy) return;
+  if (battleRoundPanel.stale) {
+    battleRoundPanel.error = "The review state is stale. Refresh the roster before starting voting.";
+    patchBattlePairingPanel();
+    return;
+  }
+  if (hostStateSaveFailure) {
+    battleRoundPanel.error = "Retry the room save before starting voting.";
+    patchBattlePairingPanel();
+    return;
+  }
+  const matchupIndex = firstViableBattleMatchupIndex(battleRoundPanel.state);
+  if (matchupIndex === null) {
+    battleRoundPanel.error = "Voting cannot start until a matchup has a viable entry.";
+    patchBattlePairingPanel();
+    return;
+  }
+  const ballot = publicBattleVote(battleRoundPanel.state, matchupIndex);
+  if (!ballot?.entries?.length) {
+    battleRoundPanel.error = "Voting cannot start until a matchup has a viable image.";
+    patchBattlePairingPanel();
+    return;
+  }
+  const previous = {
+    phase: state.phase,
+    presentationScreen: state.presentationScreen,
+    battleMatchupIndex: state.battleMatchupIndex,
+    battleVote: state.battleVote,
+    battleResult: state.battleResult
+  };
+  battleRoundPanel.reviewAction = "start-voting";
+  battleRoundPanel.error = "";
+  patchBattlePairingPanel();
+  state.phase = "battle_vote";
+  state.presentationScreen = "battle_vote";
+  state.battleMatchupIndex = matchupIndex;
+  state.battleVote = ballot;
+  state.battleResult = null;
+  await persistHostState();
+  if (hostStateSaveFailure) {
+    state.phase = previous.phase;
+    state.presentationScreen = previous.presentationScreen;
+    state.battleMatchupIndex = previous.battleMatchupIndex;
+    state.battleVote = previous.battleVote;
+    state.battleResult = previous.battleResult;
+    battleRoundPanel.error = `Voting did not start: ${hostStateSaveFailure.message}`;
+    battleRoundPanel.reviewAction = "";
+    render();
+    return;
+  }
+  if (battleRoundPanel.state) battleRoundPanel.state.phase = "battle_vote";
+  battleRoundPanel.reviewAction = "";
+  emit();
+  render();
+}
+
+function patchLockUi() {
+  const lockButton = document.querySelector('[data-battle-lock]');
+  if (lockButton) {
+    lockButton.disabled = battleLockBusy;
+    lockButton.textContent = battleLockBusy ? "Locking submissions…" : "Lock submissions";
+  }
+  patchBattlePairingPanel();
+}
+
+function stopBattleRosterPolling() {
+  if (battleRosterPollTimer !== null) { clearInterval(battleRosterPollTimer); battleRosterPollTimer = null; }
+}
+
+function syncBattleRosterPolling() {
+  if (view !== "host" || document.hidden || !["battle_prompt", "battle_vote"].includes(state.phase)) { stopBattleRosterPolling(); return; }
+  if (battleRosterPollTimer !== null) return;
+  battleRosterPollTimer = setInterval(() => {
+    // Self-check: leaving the phase, hiding the tab or ending the round stops
+    // polling even when the battle screen is no longer the one being rendered.
+    if (view !== "host" || document.hidden || !["battle_prompt", "battle_vote"].includes(state.phase) || !Number.isInteger(state.battleRoundIndex)) { stopBattleRosterPolling(); return; }
+    refreshBattlePairing({ silent: true });
+  }, 5000);
+}
+
+// Host-only. Loads the private get_host_battle_state roster for the current
+// battle round. The payload stays in battleRoundPanel -- never on `state` --
+// so only the aggregate { submitted, total } projection can reach players.
+async function refreshBattlePairing({ silent = false } = {}) {
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
+  if (!["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
+  if (battleRefreshInFlight) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; patchBattlePairingPanel(); return; }
+  const requestPanel = battleRoundPanel;
+  const requestRound = state.battleRoundIndex;
+  const requestPhase = state.phase;
+  const hadPanelState = Boolean(battleRoundPanel.state);
+  const requestId = ++battleRefreshRequestId;
+  const inFlight = { requestId, panel: requestPanel };
+  let recoverResult = false;
+  battleRefreshInFlight = inFlight;
+  requestPanel.busy = true;
+  requestPanel.error = "";
+  if (!silent) patchBattlePairingPanel();
+  try {
+    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
+    if (requestId !== battleRefreshRequestId) return;
+    if (battleRefreshInFlight !== inFlight) return;
+    if (battleRoundPanel !== requestPanel) return;
+    if (view !== "host" || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+    const phaseOrder = { battle_prompt: 0, battle_review: 1, battle_vote: 2, battle_result: 3 };
+    if (!result || Number(result?.roundIndex) !== requestRound || !(result?.phase in phaseOrder) || phaseOrder[result.phase] < phaseOrder[requestPhase]) {
+      requestPanel.stale = true;
+      requestPanel.error = "The server returned an unexpected round or phase. Retry refresh.";
+      return;
+    }
+    const nextPhase = result.phase;
+    if (requestPhase !== "battle_prompt" && Number.isFinite(Number(result?.revision)) && Number.isFinite(state.revision) && Number(result.revision) < Number(state.revision)) {
+      requestPanel.stale = true;
+      requestPanel.error = "A newer roster is already confirmed. Retry refresh.";
+      return;
+    }
+    requestPanel.state = result;
+    requestPanel.stale = false;
+    requestPanel.confirmedAt = Date.now();
+    requestPanel.roundIndex = requestRound;
+    state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
+    if (Number.isFinite(Number(result?.revision))) state.revision = Math.max(state.revision, Number(result.revision));
+    state.phase = nextPhase;
+    state.presentationScreen = nextPhase;
+    if (nextPhase === "battle_vote") state.battleVote = publicBattleVote(result, Number(state.battleMatchupIndex)) || state.battleVote;
+    if (nextPhase === "battle_result") {
+      state.battleVote = null;
+      recoverResult = !state.battleResult;
+      stopBattleRosterPolling();
+    } else if (nextPhase === "battle_review") stopBattleRosterPolling();
+    else syncBattleRosterPolling();
+    if (!battleLockBusy) battleLockGuard = false;
+    emit();
+    if (nextPhase !== requestPhase || !hadPanelState || nextPhase === "battle_review") {
+      render();
+    }
+  } catch (error) {
+    if (requestId !== battleRefreshRequestId) return;
+    if (battleRefreshInFlight !== inFlight) return;
+    if (battleRoundPanel !== requestPanel) return;
+    if (view !== "host" || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+    requestPanel.stale = true;
+    requestPanel.error = error?.message || "Could not load the roster.";
+  } finally {
+    if (battleRefreshInFlight === inFlight) {
+      battleRefreshInFlight = null;
+    }
+    requestPanel.busy = false;
+    if (battleRoundPanel === requestPanel) {
+      patchBattlePairingPanel();
+    }
+  }
+  if (recoverResult && battleRoundPanel === requestPanel && state.phase === "battle_result") await revealBattleMatchup({ recovery: true });
+}
+
+// Host-only. Locking is idempotent on the server: a repeated call returns the
+// already-confirmed battle_review state. The browser never claims success on a
+// rejected or lost response; the prompt stays open until the server confirms.
+async function lockBattlePrompt() {
+  if (view !== "host" || !isHostedRoom || !Number.isInteger(state.battleRoundIndex)) return;
+  if (state.phase !== "battle_prompt" || battleLockBusy) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; patchBattlePairingPanel(); return; }
+
+  const lockOperation = ++battleLockOperationId;
+  const lockToken = ++battleLockInFlightToken;
+  const lockPanel = battleRoundPanel;
+  battleLockBusy = true;
+  battleLockGuard = true;
+  lockPanel.lockBusy = true;
+  lockPanel.error = "";
+  battleRefreshRequestId++;
+  patchLockUi();
+
+  const requestRound = state.battleRoundIndex;
+  const requestPhase = state.phase;
+
+  hostStateSaveRequest += 1;
+
+  const lockOperationChained = hostStateSaveSequence
+    .catch(() => {})
+    .then(async () => {
+      try {
+        if (battleLockOperationId !== lockOperation) return;
+        if (battleRoundPanel !== lockPanel || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) {
+          return;
+        }
+
+        const result = await roomApi.lockBattlePrompt({ roomCode, hostSecret });
+
+        if (battleLockOperationId !== lockOperation) return;
+        if (battleRoundPanel !== lockPanel || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+
+        if (!result || Number(result?.roundIndex) !== requestRound || result?.phase !== "battle_review") {
+          lockPanel.error = "The lock was not confirmed. Refresh roster, then lock again.";
+          return;
+        }
+
+        lockPanel.state = result;
+        lockPanel.stale = false;
+        lockPanel.confirmedAt = Date.now();
+        lockPanel.roundIndex = requestRound;
+        state.phase = "battle_review";
+        state.presentationScreen = "battle_review";
+        if (Number.isFinite(Number(result?.revision))) state.revision = Number(result.revision);
+        state.battleMatchupCount = Array.isArray(result?.matchups) ? result.matchups.length : state.battleMatchupCount;
+        stopBattleRosterPolling();
+        battleLockGuard = false;
+        emit();
+        render();
+      } catch (error) {
+        if (battleLockOperationId !== lockOperation) return;
+        if (battleRoundPanel !== lockPanel || state.battleRoundIndex !== requestRound || state.phase !== requestPhase) return;
+        lockPanel.error = error?.message || "The lock request failed. Refresh roster before saving.";
+      } finally {
+        lockPanel.lockBusy = false;
+        if (battleLockInFlightToken === lockToken) {
+          battleLockBusy = false;
+          battleLockInFlightToken = null;
+        }
+        if (battleRoundPanel === lockPanel) {
+          patchLockUi();
+        }
+      }
+    });
+
+  hostStateSaveSequence = lockOperationChained.catch(() => {});
+  await hostStateSaveSequence;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex)) return;
+  if (document.hidden) { stopBattleRosterPolling(); return; }
+  if (["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) { refreshBattlePairing(); syncBattleRosterPolling(); }
+});
+
 async function startRound(targetRoundIndex = state.targetRoundIndex) {
+  if ((battleLockGuard || battleLockBusy) && view === "host") {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    if (view === "host") patchBattlePairingPanel();
+    return;
+  }
   if (!Number.isInteger(targetRoundIndex)) return;
   clearRoundStartAdvance();
   rememberCurrentScreen();
@@ -678,8 +1200,8 @@ async function showNextScreen() {
   }
   if (state.phase === "door_choice") return revealDoorRewards();
   if (state.phase === "door_reveal") return advanceQuestion();
-  // End battle round is a deliberate click in slice 3a, never a stray N.
-  if (state.phase === "battle_prompt") return;
+  // Battle progression is deliberately controlled in its panel, never by a stray N.
+  if (["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
   if (state.phase === "lobby") {
     if (state.presentationScreen === "title") return startRound(0);
     // The end-of-round card reveals its own scoreboard after the hero. Do not
@@ -904,6 +1426,8 @@ function playerRenderKey(roomState) {
     battleRoundIndex: roomState?.battleRoundIndex,
     battleMatchupIndex: roomState?.battleMatchupIndex,
     battleMatchupCount: roomState?.battleMatchupCount,
+    battleVote: roomState?.battleVote,
+    battleResult: roomState?.battleResult,
     timerEndsAt: roomState?.timerEndsAt,
     timerDurationSeconds: roomState?.timerDurationSeconds,
     // Scores can change without a phase or question change (for example, a
@@ -985,7 +1509,7 @@ function emit() {
 // a queued retry re-sends the screen the host was on when the save was asked
 // for, never a half-updated mix of that and a later one.
 function hostStatePayload() {
-  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" };
+  const phaseMap = { lobby: "lobby", open: "question_open", locked: "question_locked", reveal: "answer_reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt", battle_review: "battle_review", battle_vote: "battle_vote", battle_result: "battle_result" };
   const position = hostSavedPosition(state);
   return {
     phase: phaseMap[state.phase] || "lobby",
@@ -1004,6 +1528,11 @@ function hostStatePayload() {
 async function persistHostState() {
   const hostSecret = getHostSecret();
   if (!hostSecret || !params.has("room")) return;
+  if (battleLockGuard || battleLockBusy) {
+    battleRoundPanel.error = "Battle lock pending or unconfirmed. Refresh roster before saving.";
+    if (view === "host") patchBattlePairingPanel();
+    return;
+  }
   const request = ++hostStateSaveRequest;
   const payload = hostStatePayload();
   // Saves are serialized and last-request-wins. A retry that outlived a newer
@@ -1022,6 +1551,12 @@ async function saveHostState(request, hostSecret, payload) {
     // A newer save is already queued with fresher state. Let it own the server
     // and let its own outcome decide whether the room is in sync.
     if (request !== hostStateSaveRequest) return;
+    if (battleLockGuard || battleLockBusy) {
+      // A lock is pending or its outcome is uncertain. Do not write this
+      // captured prompt state to the server; a confirmed refresh will clear
+      // the guard and queue a fresh save.
+      return;
+    }
     try {
       const result = await roomApi.setRoomState({ roomCode, hostSecret, ...payload });
       // Only advance the revision the server actually confirmed. The submit
@@ -1184,13 +1719,20 @@ async function connectHostedRoom() {
         const definition = await roomApi.getHostQuizDefinition({ roomCode, hostSecret });
         hostQuizDefinition = definition;
         const savedRoom = await roomApi.getHostRoomState({ roomCode, hostSecret });
+        const savedPhaseMap = { lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt", battle_review: "battle_review", battle_vote: "battle_vote", battle_result: "battle_result" };
+        const savedPhase = savedPhaseMap[savedRoom.phase] || "lobby";
         const hasSavedQuestion = savedRoom.state?.questionId;
         const savedQuestionPosition = hasSavedQuestion ? questionPosition(savedRoom.state.questionId) : null;
-        if (hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex)) {
-          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: ({ lobby: "lobby", question_open: "open", question_locked: "locked", answer_reveal: "reveal", door_choice: "door_choice", door_reveal: "door_reveal", complete: "complete", battle_prompt: "battle_prompt" })[savedRoom.phase] || "lobby" };
-          // open_battle_round writes only phase and the battle fields, so a
-          // lost Open response leaves the saved screen on round_start.
-          if (state.phase === "battle_prompt") state.presentationScreen = "battle_prompt";
+        const restoredQuestion = hasSavedQuestion && setHostQuestion(savedQuestionPosition?.roundIndex ?? savedRoom.roundIndex, savedQuestionPosition?.questionIndex ?? savedRoom.questionIndex);
+        if (restoredQuestion || ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(savedPhase)) {
+          state = { ...state, ...savedRoom.state, revision: savedRoom.revision, phase: savedPhase };
+          // open_battle_round and lock_battle_prompt write the battle phase and
+          // fields server-side, so a lost response or an obsolete saved screen
+          // must restore the confirmed battle phase rather than the lobby.
+          if (["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) state.presentationScreen = state.phase;
+          // The saved public screen can be obsolete (a lock that landed after
+          // the last save), so the round the server is on wins.
+          if (!Number.isInteger(state.battleRoundIndex) && Number.isInteger(savedRoom.roundIndex)) state.battleRoundIndex = savedRoom.roundIndex;
           if (["door_choice", "door_reveal"].includes(state.phase)) {
             state.targetRoundIndex = savedRoom.roundIndex;
             state.doorBonus = hostQuizDefinition?.betweenRoundBonus || state.doorBonus;
@@ -1201,7 +1743,7 @@ async function connectHostedRoom() {
           state.presentationScreen = "title";
           await persistHostState();
         }
-        if (view === "host" && state.phase === "battle_prompt") refreshBattlePairing();
+        if (view === "host" && ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) refreshBattlePairing();
         emit();
         render();
         // Un-awaited on purpose: the host screen must paint immediately, and
@@ -2168,6 +2710,13 @@ async function clearActiveClip() {
   render();
 }
 
+// Which credential a battle image fetch carries: Presentation (and the host)
+// use the host secret, as loadPrivateImage() does; a phone its player token.
+function battleMediaCredential() {
+  const hostSecret = ["host", "presenter"].includes(view) ? getHostSecret() : "";
+  return hostSecret ? { "x-quiz-host-secret": hostSecret } : { "x-quiz-player-token": playerId };
+}
+
 async function loadPrivateImage(image) {
   const assetId = image.dataset.privateImage;
   if (!assetId || !params.has("room")) return;
@@ -2236,14 +2785,22 @@ function exportResults() {
   URL.revokeObjectURL(link.href);
 }
 
+// One row per score event, in the order get_host_score_events returns them.
+// Battle events (0042) arrive with question ID battle-r<round>-m<matchup>,
+// blank base points and multiplier (no multiplier applies to them), and a
+// reason that carries the explanation.
+function scoreEventsCsv(events) {
+  const header = ["Display name", "Question ID", "Base points", "Multiplier", "Points", "Reason", "Recorded at"].map(csvCell).join(",");
+  const rows = events.map((event) => [event.displayName, event.questionId, event.basePoints ?? "", event.multiplier ?? "", event.points, event.reason, event.createdAt].map(csvCell).join(","));
+  return [header, ...rows].join("\n") + "\n";
+}
+
 async function exportDetailedResults() {
   const hostSecret = getHostSecret();
   if (!hostSecret || !params.has("room")) { alert("Detailed results are available for hosted rooms only."); return; }
   try {
     const events = await roomApi.getHostScoreEvents({ roomCode, hostSecret });
-    const header = ["Display name", "Question ID", "Base points", "Multiplier", "Points", "Reason", "Recorded at"].map(csvCell).join(",");
-    const rows = events.map((event) => [event.displayName, event.questionId, event.basePoints ?? "", event.multiplier ?? "", event.points, event.reason, event.createdAt].map(csvCell).join(","));
-    const blob = new Blob([[header, ...rows].join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([scoreEventsCsv(events)], { type: "text/csv;charset=utf-8" });
     const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${(hostQuizDefinition?.title || "quiz-results").replace(/[^a-z0-9-]/gi, "-")}-${roomCode}-score-events.csv` });
     link.click();
     URL.revokeObjectURL(link.href);
@@ -2286,17 +2843,42 @@ function doorChoiceCards({ interactive = false, compact = false } = {}) {
   }).join("")}</div>`;
 }
 
-// Host view for the whole battle round (slice 3a): its start card, with Open,
-// and the battle_prompt screen, with End. Generation arrives in slice 3b.
+// Host view for the whole battle round: its start card, the live submission
+// roster during battle_prompt, and the neutral locked holding state during
+// battle_review. The review grid arrives in #28; this ticket adds no images.
 function renderHostBattle() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   const count = Number(state.battleMatchupCount) || 0;
-  const opened = state.phase === "battle_prompt";
-  const summary = opened ? `${count} matchup${count === 1 ? "" : "s"} paired. Players are waiting for their prompts.` : "Open the round when everyone has joined. Pairing locks the roster.";
-  const endControl = opened ? '<button class="btn btn-primary" data-battle-end-round>End battle round</button>' : "";
-  const endNote = opened ? '<p class="battle-round-note">Ending the round awards no points yet.</p>' : "";
+  const review = state.phase === "battle_review";
+  const voting = state.phase === "battle_vote";
+  const resultPhase = state.phase === "battle_result";
+  const opened = state.phase === "battle_prompt" || review || voting || resultPhase;
+  const lockBusy = battleRoundPanel.lockBusy;
+  const currentMatchup = battleRoundPanel.state?.matchups?.find((matchup) => matchup?.matchupIndex === state.battleMatchupIndex);
+  const votesCast = Number(currentMatchup?.votesCast) || 0;
+  const eligibleVoters = Number(currentMatchup?.eligibleVoters) || 0;
+  const nextMatchupIndex = resultPhase ? nextViableBattleMatchupIndex(battleRoundPanel.state, Number(state.battleMatchupIndex)) : null;
+  const actionBusy = battleRoundPanel.busy || Boolean(battleRoundPanel.reviewAction) || battleRoundPanel.stale || Boolean(hostStateSaveFailure) || !battleRoundPanel.state;
+  const summary = review ? "Submissions are locked. Review every entry before voting." : voting ? "Voting is open on the players’ phones." : resultPhase ? "This matchup is resolved. Continue when you’re ready." : opened ? `${count} matchup${count === 1 ? "" : "s"} paired. Players are submitting on their phones.` : "Open the round when everyone has joined. Pairing locks the roster.";
+  const lockControl = state.phase === "battle_prompt" ? `<button class="btn btn-primary" data-battle-lock ${lockBusy ? "disabled" : ""}>${lockBusy ? "Locking submissions…" : "Lock submissions"}</button>` : "";
+  const endControl = voting
+    ? `<button class="btn btn-primary" data-battle-reveal ${actionBusy ? "disabled" : ""}>${battleRoundPanel.reviewAction === "reveal" ? "Revealing…" : "Reveal result"}</button>`
+    : resultPhase && nextMatchupIndex !== null
+    ? `<button class="btn btn-primary" data-battle-next-matchup ${actionBusy ? "disabled" : ""}>${battleRoundPanel.reviewAction === "next-matchup" ? "Opening matchup…" : "Next matchup"}</button>`
+    : (resultPhase && battleRoundPanel.state) || (review && battleRoundPanel.state && firstViableBattleMatchupIndex(battleRoundPanel.state) === null && !battleRoundPanel.stale)
+    ? `<button class="btn btn-secondary" data-battle-end-round ${actionBusy ? "disabled" : ""}>Finish battle round</button>`
+    : "";
+  const resultMarkup = state.battleResult?.outcome === "skipped"
+    ? '<p class="battle-round-note">This matchup was skipped. No points were awarded.</p>'
+    : state.battleResult?.entries?.length
+    ? `<ol class="battle-result-list">${state.battleResult.entries.map((entry) => `<li class="battle-result-row${entry.winner ? " is-winner" : ""}"><div><strong>${escapeHtml(entry.playerName || "Player")}${entry.winner ? " · Winner" : ""}</strong><span>${Number(entry.votes) || 0} ${(Number(entry.votes) || 0) === 1 ? "vote" : "votes"}</span></div></li>`).join("")}</ol>`
+    : resultPhase ? '<p class="battle-round-note" role="status">Loading the resolved result…</p>' : "";
+  const voteProgress = voting ? `<p class="battle-round-note" data-battle-vote-progress role="status">${votesCast} of ${eligibleVoters} votes received.</p>` : "";
+  const actionError = `<p class="battle-round-note battle-round-note--error" data-battle-action-error role="alert" ${battleRoundPanel.error ? "" : "hidden"}>${escapeHtml(battleRoundPanel.error)}</p>`;
+  const endNote = review ? firstViableBattleMatchupIndex(battleRoundPanel.state) === null && battleRoundPanel.state ? '<p class="battle-round-note">Every matchup is skipped. Finish the round when you are ready.</p>' : '<p class="battle-round-note">Veto any entry, then start voting when a matchup has a viable entry.</p>' : voting ? '<p class="battle-round-note">Reveal resolves this matchup once and shows the result.</p>' : resultPhase ? '<p class="battle-round-note">Continue to the next matchup with a viable entry, or finish the round.</p>' : opened ? '<p class="battle-round-note">Locking closes submissions and moves the room to review.</p>' : "";
+  if (state.phase === "battle_prompt" || voting) syncBattleRosterPolling(); else stopBattleRosterPolling();
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}${voteProgress}${resultMarkup}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${lockControl}${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${actionError}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostDoors() {
@@ -2348,25 +2930,25 @@ function battleTestImagePanel() {
   return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
 }
 
-// Host-only Prompt Battle pairing panel (slice 2, placed by slice 3a): shown
-// on the battle round's start card with Open, and in battle_prompt with
-// Refresh only. The pairing lives in battleRoundPanel, never on `state`.
+// Host-only Prompt Battle panel. Its private review grid is backed only by
+// get_host_battle_state and never merged into the public room state.
 function battlePairingPanel() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   if (!isHostedRoom || !isBattleRound(round)) return "";
+  if (["battle_vote", "battle_result"].includes(state.phase)) {
+    const voting = state.phase === "battle_vote";
+    const action = voting ? "voting open" : "result";
+    const progress = battleRoundPanel.state?.matchups?.find((matchup) => matchup?.matchupIndex === state.battleMatchupIndex);
+    const counts = voting ? `<p class="battle-round-title">${Number(progress?.votesCast) || 0} of ${Number(progress?.eligibleVoters) || 0} votes received.</p>` : "";
+    const refresh = battleRoundPanel.busy ? "Refreshing…" : voting ? "Refresh vote progress" : "Refresh matchup state";
+    return `<div class="battle-round-panel"><h3>Prompt Battle — ${action}</h3><p class="battle-round-title">Matchup ${Number(state.battleMatchupIndex) + 1} of ${Number(state.battleMatchupCount) || 0}.</p>${counts}<div class="host-actions"><button class="btn btn-secondary" data-battle-refresh-pairing ${battleRoundPanel.busy ? "disabled" : ""}>${refresh}</button></div></div>`;
+  }
   const busy = battleRoundPanel.busy;
-  const pairing = battleRoundPanel.state;
-  const opened = state.phase === "battle_prompt";
-  const errorLine = battleRoundPanel.error ? `<p class="battle-round-note battle-round-note--error" role="alert">${escapeHtml(battleRoundPanel.error)}</p>` : "";
-  const matchups = Array.isArray(pairing?.matchups) ? pairing.matchups : [];
-  const pairingView = matchups.length
-    ? `<ol class="battle-pairing">${matchups.map((matchup) => `<li><p class="battle-pairing-prompt">${escapeHtml(matchup.promptText || "")}</p><ul class="battle-pairing-entrants">${(matchup.entrants || []).map((entrant) => `<li>${escapeHtml(entrant.playerName || "")}${entrant.submitted ? " <span>submitted</span>" : ""}${entrant.vetoed ? " <span>vetoed</span>" : ""}</li>`).join("")}</ul>${(matchup.entrants || []).length === 3 ? '<p class="battle-pairing-threeway">Three-way</p>' : ""}</li>`).join("")}</ol>`
-    : opened
-    ? `<p class="battle-round-note" role="status">${busy ? "Loading the pairing…" : "The pairing has not loaded. Press Refresh pairing."}</p>`
-    : `<p class="battle-round-note" role="status">Pairing happens when you open the round. Players who join after that watch and vote but are not paired.</p>`;
-  const seedLine = pairing?.shuffleSeed ? `<p class="battle-round-seed">Shuffle seed ${escapeHtml(pairing.shuffleSeed)}</p>` : "";
-  const openButton = opened ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
-  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}<button class="btn btn-secondary" data-battle-refresh-pairing ${busy ? "disabled" : ""}>Refresh pairing</button></div>${errorLine}${seedLine}${pairingView}</div>`;
+  const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
+  const viableMatchup = firstViableBattleMatchupIndex(battleRoundPanel.state);
+  const startVoting = state.phase === "battle_review" ? `<button class="btn btn-primary" data-battle-start-voting ${viableMatchup === null || busy || battleRoundPanel.stale || battleRoundPanel.reviewAction || hostStateSaveFailure ? "disabled" : ""}>${battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting"}</button>` : "";
+  const refreshText = busy ? "Refreshing…" : "Refresh roster";
+  return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}${startVoting}<button class="btn btn-secondary" data-battle-refresh-pairing aria-disabled="${busy}" ${busy ? 'data-busy="true"' : ''}>${refreshText}</button></div><div data-battle-pairing-dynamic>${battlePairingDynamicView()}</div></div>`;
 }
 
 function renderHost() {
@@ -2573,16 +3155,59 @@ function presentationTimerBadge() {
   return readout ? `<div class="presentation-timer-badge" data-presentation-timer-badge>${readout}</div>` : "";
 }
 
-// Presentation during battle_prompt (slice 3a): a strict projection of public
-// state. Never images in this phase (architecture spec section 7).
+// Presentation during battle_prompt: a strict projection of public state.
+// Only the host-confirmed aggregate counts are shown; never images, creators,
+// prompts or private battle payloads.
 function presenterBattlePrompt() {
   const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
   const count = Number(state.battleMatchupCount) || 0;
-  return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${count} matchup${count === 1 ? "" : "s"} · check your phone for your prompt</p></section>`;
+  const progress = state.battleProgress;
+  const submitted = Number.isInteger(progress?.submitted) ? progress.submitted : 0;
+  const total = Number.isInteger(progress?.total) ? progress.total : 0;
+  const progressCopy = total > 0 ? `${submitted} of ${total} submissions in (${submitted}/${total})` : `${count} matchup${count === 1 ? "" : "s"}`;
+  return `<section class="presentation-card presentation-card--battle-prompt" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>${escapeHtml(round?.title || "Prompt Battle")}</h2><p>${escapeHtml(progressCopy)} · check your phone for your prompt</p></section>`;
+}
+
+// Neutral locked holding state. Ticket #28 supplies the review grid; until then
+// Presentation shows no battle images, creators or prompt text here.
+function presenterBattleReview() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  return `<section class="presentation-card presentation-card--battle-review" aria-live="polite"><p class="eyebrow">Prompt Battle</p><h2>Submissions locked</h2><p>${escapeHtml(round?.title || "Prompt Battle")} · review starts shortly</p></section>`;
+}
+
+// Presentation during battle_review / battle_vote / battle_result (issue #33):
+// a strict projection of the broadcast ballot and result. Images only in
+// vote and result, and they appear together once all have loaded.
+function presenterBattleStage() {
+  const round = hostQuizDefinition?.rounds?.[state.battleRoundIndex];
+  const scene = presentationBattleScene({
+    phase: state.phase,
+    battleVote: state.battleVote,
+    battleResult: state.battleResult,
+    matchupIndex: state.battleMatchupIndex,
+    matchupCount: state.battleMatchupCount,
+  });
+  return presentationBattleMarkup(scene, escapeHtml, { roundTitle: round?.title || "Prompt Battle", logo: (entry) => playerLogoMarkup(entry, "player-logo--presentation-battle") });
+}
+
+async function revealPresentationBattleStage() {
+  const stage = document.querySelector("[data-battle-stage]");
+  if (!stage) return;
+  const images = [...stage.querySelectorAll("[data-battle-stage-image]")];
+  await Promise.all(images.map(async (image) => {
+    const url = await battleVariantImageUrl(image.dataset.battleStageImage);
+    if (!image.isConnected) return;
+    if (!url) { image.closest(".presentation-battle-tile")?.classList.add("is-broken"); return; }
+    image.src = url;
+    try { await image.decode(); } catch { image.closest(".presentation-battle-tile")?.classList.add("is-broken"); }
+  }));
+  if (!stage.isConnected) return;
+  stage.classList.add("is-ready");
+  stage.setAttribute("aria-busy", "false");
 }
 
 function renderPresenter() {
-  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : "Final standings";
+  const phaseLabel = state.phase === "lobby" ? "Get ready" : state.phase === "open" ? "Question" : state.phase === "locked" ? "Answers locked" : state.phase === "reveal" ? "Answer reveal" : state.phase === "door_choice" ? "Choose your door" : state.phase === "door_reveal" ? "Rewards revealed" : state.phase === "battle_prompt" ? "Prompt Battle" : state.phase === "battle_review" ? "Prompt Battle · Judging" : state.phase === "battle_vote" ? "Prompt Battle · Vote" : state.phase === "battle_result" ? "Prompt Battle · Results" : "Final standings";
   const questionNumber = Number(state.question?.questionInRound) || 1;
   const quizHasAudio = Boolean(hostQuizDefinition?.titlePage?.audio?.mediaAssetId || hostQuizDefinition?.titlePage?.audio?.url || Object.values(hostQuizDefinition?.betweenRoundBonus?.audio || {}).some(hasPlayableAudio) || Object.values(hostQuizDefinition?.finale?.audio || {}).some(hasPlayableAudio) || hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.audio?.mediaAssetId || question.audio?.url)));
   const quizHasVideo = Boolean(hostQuizDefinition?.rounds?.some((round) => round.questions?.some((question) => question.video?.mediaAssetId || question.video?.url)));
@@ -2602,6 +3227,8 @@ function renderPresenter() {
     ? `<section class="presentation-card presentation-card--doors presentation-card--${state.phase}" aria-live="polite"><div class="presentation-door-heading"><p class="eyebrow">${state.phase === "door_reveal" ? "The doors are open" : "Pick on your phone"}</p><h2>${state.phase === "door_reveal" ? "Here are your next-round multipliers." : "Feeling lucky?"}</h2>${state.phase === "door_reveal" ? "" : "<p>Choose your door.</p>"}</div>${doorChoiceCards()}</section>`
     : state.phase === "battle_prompt"
     ? presenterBattlePrompt()
+    : ["battle_review", "battle_vote", "battle_result"].includes(state.phase)
+    ? presenterBattleStage()
     : state.phase === "complete"
     ? `<section class="presentation-card presentation-card--final">${confettiMarkup(28)}${presentationLeaderboard({ final: true })}</section>`
     : state.phase === "lobby"
@@ -2626,6 +3253,7 @@ function renderPresenter() {
   if (presentationAudioPlayer && !presentationAudioPlayer.paused && state.presentationScreen === "title") startTitleCaptionClock();
   else if (state.presentationScreen !== "title") stopTitleCaptionClock();
   syncFinalScorePager();
+  revealPresentationBattleStage();
 }
 
 function playerScoreCards(players = state.players, limit = 6) {
@@ -2675,6 +3303,273 @@ function updateDoorChoicePlayingState() {
   if (status) status.textContent = selectedDoor ? `You picked ${selectedDoor.name}.` : "Choose a door to lock in your chance.";
 }
 
+// --- Prompt Battle player screen (issue #23) ---------------------------
+
+function battleFavouriteStorageKey() {
+  return `quiz-battle-favourite:${roomCode}:${battlePlayer.key}`;
+}
+
+function resetBattlePlayer(key) {
+  battleImageUrls.forEach((entry) => entry.then((url) => url && URL.revokeObjectURL(url)));
+  battleImageUrls.clear();
+  battlePlayer = initialBattlePlayer(key);
+  battlePlayerRenderedKey = "";
+  try { battlePlayer.favouriteAssetId = sessionStorage.getItem(battleFavouriteStorageKey()) || ""; } catch { /* storage unavailable: favourite is per-tab only */ }
+}
+
+// Redraws only when a structural field of the battle screen moved, so a
+// returning fetch with identical data leaves focus and typing alone.
+function redrawBattlePlayer() {
+  if (view !== "player" || state.phase !== "battle_prompt") return;
+  if (battlePlayerRenderKey(battlePlayerViewForState()) !== battlePlayerRenderedKey) render();
+}
+
+async function loadBattlePlayerState({ redraw = true } = {}) {
+  const key = battlePlayer.key;
+  battlePlayer.loading = true;
+  try {
+    const result = await roomApi.getPlayerBattleState({ roomCode, playerToken: playerId });
+    if (battlePlayer.key !== key) return;
+    battlePlayer.entry = result?.entry ?? null;
+    battlePlayer.loadError = "";
+  } catch (error) {
+    if (battlePlayer.key !== key) return;
+    recordDiagnostic("battle-player-state", error, { roomCode });
+    battlePlayer.loadError = "Could not load your prompt. Check your connection and try again.";
+  } finally {
+    if (battlePlayer.key === key) {
+      battlePlayer.loading = false;
+      if (redraw) { redrawBattlePlayer(); redrawBattleVote(); }
+    }
+  }
+}
+
+async function generateBattleImages() {
+  if (battlePlayer.request.status === "pending" || !battlePlayerView(battlePlayer).canGenerate) return;
+  const key = battlePlayer.key;
+  battlePlayer.request = { status: "pending", message: "" };
+  render();
+  let reply;
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/battle/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-player-token": playerId },
+      body: JSON.stringify({ prompt: battlePlayer.draft.trim() })
+    });
+    reply = classifyGenerateReply(response.status, await response.json().catch(() => null));
+  } catch (error) {
+    recordDiagnostic("battle-generate", error, { roomCode });
+    reply = classifyGenerateReply(0, null);
+  }
+  if (battlePlayer.key !== key) return;
+  // Whatever the reply said, re-read the entry: attempts and images on screen
+  // are only ever the server's own record.
+  await loadBattlePlayerState({ redraw: false });
+  if (battlePlayer.key !== key) return;
+  battlePlayer.request = settleGenerateRequest(reply, battlePlayer.entry);
+  render();
+}
+
+function battleVariantImageUrl(assetId) {
+  if (!battleImageUrls.has(assetId)) {
+    const request = fetch(`/media/${encodeURIComponent(assetId)}`, { headers: { "x-quiz-room": roomCode, ...battleMediaCredential() } })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Battle image ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => URL.createObjectURL(blob))
+      .catch((error) => {
+        battleImageUrls.delete(assetId);
+        recordDiagnostic("battle-variant-image", error, { roomCode, assetId });
+        return null;
+      });
+    battleImageUrls.set(assetId, request);
+  }
+  return battleImageUrls.get(assetId);
+}
+
+function battlePlayerViewForState() {
+  const open = battleLightbox?.surface === "variants" && battleLightbox.key === battlePlayer.key;
+  return battlePlayerView(battlePlayer, { expandedIndex: open ? battleLightbox.index : null });
+}
+
+// Loads every image on the current battle screen, the full-screen one
+// included, from the per-round cache.
+function loadBattleScreenImages() {
+  // The branded .player-card has a backdrop-filter, which turns it into the
+  // containing block for position:fixed children: left inside the card, the
+  // viewer would be clipped to it instead of covering the screen. Lift it to
+  // #app, which the next render() still replaces.
+  const lightbox = document.querySelector("[data-battle-lightbox]");
+  if (lightbox && lightbox.parentElement !== app) app.appendChild(lightbox);
+  document.querySelectorAll("[data-battle-variant-image], [data-battle-vote-image], [data-battle-lightbox-image]").forEach((image) => {
+    const assetId = image.dataset.battleVariantImage || image.dataset.battleVoteImage || image.dataset.battleLightboxImage;
+    battleVariantImageUrl(assetId).then((url) => {
+      if (!image.isConnected) return;
+      if (url) image.src = url;
+      else image.closest(".battle-variant, .battle-vote-option, .battle-result-row, .battle-lightbox")?.classList.add("is-broken");
+    });
+  });
+  // Opening the viewer moves focus into it; closing returns it to the tile.
+  const close = document.querySelector("[data-battle-lightbox-close]");
+  if (close && !close.contains(document.activeElement)) close.focus();
+}
+
+function openBattleLightbox(surface, key, index) {
+  battleLightbox = { surface, key, index };
+  render();
+}
+
+function closeBattleLightbox() {
+  if (!battleLightbox) return;
+  const index = battleLightbox.index;
+  battleLightbox = null;
+  render();
+  document.querySelector(`[data-battle-expand="${index}"]`)?.focus();
+}
+
+function stepBattleLightbox(delta) {
+  if (!battleLightbox) return;
+  const count = document.querySelectorAll("[data-battle-expand]").length;
+  const index = battleLightbox.index + delta;
+  if (index < 0 || index >= count) return;
+  battleLightbox = { ...battleLightbox, index };
+  render();
+}
+
+function attachBattleLightboxEvents(surface, key) {
+  document.querySelectorAll("[data-battle-expand]").forEach((button) => button.addEventListener("click", () => openBattleLightbox(surface, key, Number(button.dataset.battleExpand))));
+  document.querySelector("[data-battle-lightbox-close]")?.addEventListener("click", closeBattleLightbox);
+  document.querySelectorAll("[data-battle-lightbox-step]").forEach((button) => button.addEventListener("click", () => stepBattleLightbox(Number(button.dataset.battleLightboxStep))));
+}
+
+document.addEventListener("keydown", (event) => {
+  if (view !== "player" || !battleLightbox || !document.querySelector("[data-battle-lightbox]")) return;
+  if (event.key === "Escape") { event.preventDefault(); closeBattleLightbox(); }
+  else if (event.key === "ArrowLeft") stepBattleLightbox(-1);
+  else if (event.key === "ArrowRight") stepBattleLightbox(1);
+});
+
+function renderPlayerBattle() {
+  const key = battlePlayerKey(state);
+  if (battlePlayer.key !== key) resetBattlePlayer(key);
+  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  const battleView = battlePlayerViewForState();
+  // A redraw for any other reason (a score or roster broadcast) must not drop
+  // the player's caret mid-sentence.
+  const input = document.querySelector("[data-battle-prompt-input]");
+  const focus = input && document.activeElement === input ? { start: input.selectionStart, end: input.selectionEnd } : null;
+  const heading = battleView.kind === "compose" ? "Your matchup" : "Get ready";
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${battleView.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battlePlayerMarkup(battleView, escapeHtml)}</section></main>`, true);
+  battlePlayerRenderedKey = battlePlayerRenderKey(battleView);
+  const nextInput = document.querySelector("[data-battle-prompt-input]");
+  if (focus && nextInput && !nextInput.disabled) {
+    nextInput.focus();
+    nextInput.setSelectionRange(focus.start, focus.end);
+  }
+  loadBattleScreenImages();
+}
+
+function attachBattlePlayerEvents() {
+  const input = document.querySelector("[data-battle-prompt-input]");
+  input?.addEventListener("input", (event) => {
+    battlePlayer.draft = event.currentTarget.value;
+    // Typing updates the button in place; a redraw here would cost the caret.
+    const generate = document.querySelector("[data-battle-generate]");
+    if (generate) generate.disabled = !battlePlayerView(battlePlayer).canGenerate;
+  });
+  document.querySelector("[data-battle-generate]")?.addEventListener("click", () => generateBattleImages());
+  document.querySelector("[data-battle-reload]")?.addEventListener("click", () => {
+    battlePlayer.loadError = "";
+    render();
+  });
+  attachBattleLightboxEvents("variants", battlePlayer.key);
+  document.querySelectorAll("[data-battle-favourite]").forEach((button) => button.addEventListener("click", () => {
+    battlePlayer.favouriteAssetId = button.dataset.battleFavourite;
+    try { sessionStorage.setItem(battleFavouriteStorageKey(), battlePlayer.favouriteAssetId); } catch { /* per-tab only */ }
+    render();
+  }));
+}
+
+// --- Prompt Battle voting and result, phone side (issue #31) -------------
+
+function battleVoteStorageKey(matchupId) {
+  return `quiz-battle-vote:${roomCode}:${matchupId}`;
+}
+
+function currentBattleVote(matchupId) {
+  if (!matchupId) return null;
+  if (battleVote?.matchupId === matchupId) return battleVote;
+  try {
+    const entryId = sessionStorage.getItem(battleVoteStorageKey(matchupId));
+    if (entryId) battleVote = { matchupId, entryId, status: "confirmed", message: "" };
+  } catch { /* storage unavailable: the server still refuses a second vote */ }
+  return battleVote?.matchupId === matchupId ? battleVote : null;
+}
+
+function battleVoteViewForState() {
+  const key = battlePlayerKey(state);
+  if (battlePlayer.key !== key) resetBattlePlayer(key);
+  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  // Until this phone knows its own images it cannot tell a ballot from its
+  // own matchup, so it waits rather than offering a vote it would lose.
+  if (state.phase === "battle_vote" && battlePlayer.entry === undefined && !battlePlayer.loadError) return { kind: "vote-wait" };
+  const ownAssetIds = new Set((battlePlayer.entry?.generations || []).flatMap((generation) => generation.assetIds || []));
+  return battleVoteView({
+    phase: state.phase,
+    battleVote: state.battleVote,
+    battleResult: state.battleResult,
+    matchupIndex: state.battleMatchupIndex,
+    ownAssetIds,
+    vote: currentBattleVote(state.battleVote?.matchupId || state.battleResult?.matchupId),
+    expandedIndex: battleLightbox?.surface === "vote" && battleLightbox.key === state.battleVote?.matchupId ? battleLightbox.index : null,
+  });
+}
+
+function renderPlayerBattleVote() {
+  const voteView = battleVoteViewForState();
+  const heading = { "review-wait": "Judging time", "vote-wait": "Get ready", "on-stage": "On stage", vote: "Vote now", "result-wait": "Counting", result: "Results" }[voteView.kind] || "Prompt Battle";
+  const matchupLabel = Number.isInteger(state.battleMatchupIndex) && Number(state.battleMatchupCount) > 0 && state.phase !== "battle_review"
+    ? ` · Matchup ${state.battleMatchupIndex + 1} of ${state.battleMatchupCount}` : "";
+  const calm = ["review-wait", "vote-wait", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}</section></main>`, true);
+  battleVoteRenderedKey = battleVoteRenderKey(voteView);
+  loadBattleScreenImages();
+}
+
+function redrawBattleVote() {
+  if (view !== "player" || !["battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
+  if (battleVoteRenderKey(battleVoteViewForState()) !== battleVoteRenderedKey) render();
+}
+
+async function castBattleVoteFromPhone(entryId) {
+  const matchupId = state.battleVote?.matchupId;
+  const existing = currentBattleVote(matchupId);
+  if (!matchupId || (existing && !["idle", "retryable"].includes(existing.status))) return;
+  battleVote = { matchupId, entryId, status: "pending", message: "" };
+  battleLightbox = null;
+  render();
+  let next;
+  try {
+    await roomApi.castBattleVote({ roomCode, playerToken: playerId, matchupId, entryId });
+    next = { status: "confirmed", message: "" };
+  } catch (error) {
+    next = classifyVoteError(error);
+    if (next.status === "retryable") recordDiagnostic("battle-vote", error, { roomCode });
+  }
+  if (battleVote?.matchupId !== matchupId) return;
+  battleVote = { matchupId, entryId, ...next };
+  if (next.status === "confirmed") {
+    try { sessionStorage.setItem(battleVoteStorageKey(matchupId), entryId); } catch { /* per-tab only */ }
+  }
+  render();
+}
+
+function attachBattleVoteEvents() {
+  document.querySelectorAll("[data-battle-vote]").forEach((button) => button.addEventListener("click", () => castBattleVoteFromPhone(button.dataset.battleVote)));
+  attachBattleLightboxEvents("vote", state.battleVote?.matchupId);
+}
+
 function renderPlayer() {
   if (params.has("room") && !playerName) {
     const logoChoices = PLAYER_LOGOS.map((logo) => `<label class="player-logo-choice"><input type="radio" name="player-logo" value="${logo.key}" aria-label="${logo.label}" ${playerLogoKey === logo.key ? "checked" : ""} /><span class="player-logo player-logo--${logo.key}" aria-hidden="true">${playerLogoArtwork(logo)}</span></label>`).join("");
@@ -2701,10 +3596,15 @@ function renderPlayer() {
     app.innerHTML = shell(`<main class="player-main player-main--doors">${brandTopbar()}<section class="player-card player-card--doors"><header class="player-round"><p class="eyebrow">Between rounds</p><h1>${state.phase === "door_reveal" ? "Your reward is in" : "Feeling lucky?"}</h1>${playerIdentityBadge()}${lateJoinBonusBadge()}</header><section class="player-door-content">${state.phase === "door_reveal" ? revealCopy : `<p>Choose your door. You can change your mind until the host reveals the rewards.</p>${doorChoiceCards({ interactive: true })}<span class="door-phone-status" role="status">${selectedDoor ? `You picked ${escapeHtml(selectedDoor.name)}.` : "Choose a door to lock in your chance."}</span>`}</section></section></main>`, true);
     return;
   }
-  // Prompt Battle slice 3a: a phone cannot read its own matchup's prompt until
-  // slice 3b adds a player RPC, so every phone gets the same holding screen.
+  // Prompt Battle: a paired phone gets its own prompt, Generate and its own
+  // variants; a late joiner keeps the holding screen. This branch sits above
+  // every state.question read, so no question or future state can render here.
   if (state.phase === "battle_prompt") {
-    app.innerHTML = shell(`<main class="player-main player-main--holding">${brandTopbar()}<section class="player-card player-card--holding player-holding-card"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>Get ready</h1>${playerIdentityBadge()}</header><section class="player-question"><p>Your prompt is on its way.</p></section></section></main>`, true);
+    renderPlayerBattle();
+    return;
+  }
+  if (["battle_review", "battle_vote", "battle_result"].includes(state.phase)) {
+    renderPlayerBattleVote();
     return;
   }
   if (state.phase === "lobby" || state.presentationScreen === "intermission") {
@@ -2961,12 +3861,22 @@ function attachEvents() {
       render();
     }
   });
-  // Prompt Battle pairing. Both calls go straight to the host RPCs; the
-  // pairing they return stays in battleRoundPanel and is never merged into
-  // `state`, so it cannot reach publicRoomState().
+  // Prompt Battle host controls. The private payload they return stays in
+  // battleRoundPanel and is never merged into `state`, so only the aggregate
+  // public projection can reach publicRoomState().
   document.querySelector("[data-battle-open-round]")?.addEventListener("click", () => openBattleRoundFromHost());
   document.querySelector("[data-battle-refresh-pairing]")?.addEventListener("click", () => refreshBattlePairing());
+  document.querySelector("[data-battle-lock]")?.addEventListener("click", () => lockBattlePrompt());
   document.querySelector("[data-battle-end-round]")?.addEventListener("click", () => endBattleRound());
+  document.querySelector("[data-battle-start-voting]")?.addEventListener("click", () => startBattleVoting());
+  document.querySelector("[data-battle-reveal]")?.addEventListener("click", () => revealBattleMatchup());
+  document.querySelector("[data-battle-next-matchup]")?.addEventListener("click", () => nextBattleMatchup());
+  if (view === "host" && state.phase === "battle_review") {
+    attachBattleReviewEvents(document);
+    loadBattleReviewImages();
+  }
+  if (view === "player" && state.phase === "battle_prompt") attachBattlePlayerEvents();
+  if (view === "player" && state.phase === "battle_vote") attachBattleVoteEvents();
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;
     let completed = {};

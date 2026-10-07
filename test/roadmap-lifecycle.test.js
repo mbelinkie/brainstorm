@@ -225,14 +225,14 @@ test("the config routing block mirrors docs/roadmap/routing.md", () => {
   for (const [logical, effective] of Object.entries(config.routing.effectiveEfforts)) {
     assert.ok(md.includes(`| \`${logical}\` | \`${effective}\` |`), `routing.md maps ${logical} -> ${effective}`);
   }
-  assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["coordinator", "economy", "standard"]);
+  assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["claude", "controller", "coordinator", "economy", "standard"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.routing.profiles).map(([name, profile]) => [name, profile.model])),
-    { coordinator: "Sol coordinator (not implementation)", economy: "DeepSeek Flash", standard: "DeepSeek Pro" },
+    { claude: "Claude Code session (not implementation label)", controller: "Luna controller (not implementation)", coordinator: "Sol coordinator (not implementation)", economy: "DeepSeek Flash", standard: "DeepSeek Pro" },
   );
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.routing.profiles).map(([name, profile]) => [name, profile.modelId])),
-    { coordinator: "gpt-6.1-sol", economy: "deepseek-flash", standard: "deepseek-v4-pro" },
+    { claude: "claude-opus-5-5", controller: "gpt-6-luna", coordinator: "gpt-6.1-sol", economy: "deepseek-flash", standard: "deepseek-v4-pro" },
   );
 });
 
@@ -770,7 +770,7 @@ test("claim refuses a model or effort that does not match the issue's labels unl
 });
 
 test("claim refuses an unsupported coding model even with --allow-mismatch", async () => {
-  for (const model of ["gpt-6-luna", "claude-sonnet-5-5"]) {
+  for (const model of ["gpt-6-astra", "claude-sonnet-5-5"]) {
     const { lifecycle, transport } = setup({ world: readyWorld() });
     const result = await lifecycle.claim(3, claimOpts({ model, allowMismatch: "deliberate" }));
     assert.equal(result.code, "MODEL_UNSUPPORTED", model);
@@ -799,6 +799,31 @@ test("coordinator: Sol is accepted only with a written mismatch reason, never as
   assert.ok(comment.body.includes("effort `medium`"), "the coordinator records its logical effort");
   assert.ok(comment.body.includes("effective `high`"), "the coordinator records its effective effort");
   assert.ok(comment.body.includes("Sol coordinates; DeepSeek implements all slices"), "the comment records the written reason");
+  assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
+});
+
+test("controller: Luna is accepted only with a written mismatch reason, never as the DeepSeek implementation", async () => {
+  const refusedWorld = readyWorld();
+  const refusedSetup = setup({ world: refusedWorld });
+  const refused = await refusedSetup.lifecycle.claim(3, claimOpts({ model: "gpt-6-luna", effort: "medium" }));
+  assert.equal(refused.code, "ROUTING_MISMATCH");
+  assertNoWrites(refusedSetup.transport);
+
+  const world = readyWorld();
+  const { lifecycle, transport } = setup({ world });
+  const accepted = await lifecycle.claim(3, claimOpts({
+    model: "gpt-6-luna",
+    effort: "medium",
+    effectiveEffort: "high",
+    allowMismatch: "Luna controls; DeepSeek implements all slices",
+  }));
+  assert.equal(accepted.ok, true);
+  const [comment] = world.issues[3].comments;
+  assert.ok(comment.body.includes(SELF), "the controller records its own genuine execution ID");
+  assert.ok(comment.body.includes("gpt-6-luna"), "the controller records its actual Luna model");
+  assert.ok(comment.body.includes("effort `medium`"), "the controller records its logical effort");
+  assert.ok(comment.body.includes("effective `high`"), "the controller records its effective effort");
+  assert.ok(comment.body.includes("Luna controls; DeepSeek implements all slices"), "the comment records the written reason");
   assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
 });
 

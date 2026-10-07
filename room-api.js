@@ -75,9 +75,10 @@ export const roomApi = {
     return call("reveal_live_door_rewards", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
-  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql).
-  // All three are host-secret authorized: there is no player-facing battle call
-  // yet, and the pairing these return is host-only data.
+  // Prompt Battle host RPCs (supabase/migrations/0036_prompt_battle_rounds.sql
+  // and 0039_prompt_battle_submission.sql). All are host-secret authorized:
+  // the data they return is host-only. The player's own read is
+  // getPlayerBattleState() below, and player vote/resolve are also available.
   openBattleRound({ roomCode, hostSecret }) {
     return call("open_battle_round", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
@@ -88,6 +89,42 @@ export const roomApi = {
 
   getHostBattleState({ roomCode, hostSecret }) {
     return call("get_host_battle_state", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
+  // Idempotent server-side: a repeated call on an already-locked round returns
+  // the confirmed battle_review payload rather than reopening submissions.
+  lockBattlePrompt({ roomCode, hostSecret }) {
+    return call("lock_battle_prompt", { p_room_code: roomCode, p_host_secret: hostSecret });
+  },
+
+  // Host-only review action (0040). The host re-reads the private battle
+  // state after either direction so the grid always reflects server state.
+  vetoBattleEntry({ roomCode, hostSecret, entryId, reason = "", veto = true }) {
+    return call("veto_battle_entry", {
+      p_room_code: roomCode,
+      p_host_secret: hostSecret,
+      p_entry_id: entryId,
+      p_reason: reason,
+      p_veto: veto
+    });
+  },
+
+  // Player read of their own battle entry (0038 get_player_battle_state):
+  // their prompt, attempts remaining and their own generations, nothing else.
+  getPlayerBattleState({ roomCode, playerToken }) {
+    return call("get_player_battle_state", { p_room_code: roomCode, p_player_token: playerToken });
+  },
+
+  // Player vote (0041). One vote per player per matchup; a repeat is refused
+  // with "You have already voted in this matchup".
+  castBattleVote({ roomCode, playerToken, matchupId, entryId }) {
+    return call("cast_battle_vote", { p_room_code: roomCode, p_player_token: playerToken, p_matchup_id: matchupId, p_entry_id: entryId });
+  },
+
+  // Host-only (0042). Resolves the current matchup once; a repeat call returns
+  // the stored result with created:false and writes nothing.
+  resolveBattleMatchup({ roomCode, hostSecret, matchupId }) {
+    return call("resolve_battle_matchup", { p_room_code: roomCode, p_host_secret: hostSecret, p_matchup_id: matchupId });
   },
 
   adjustScore({ roomCode, hostSecret, playerId, points, reason }) {
@@ -278,5 +315,23 @@ export async function lockAndScoreWithRecovery({ roomCode, hostSecret, client = 
     return { status, revision, players };
   } catch (error) {
     return { status, revision, players: null, error };
+  }
+}
+
+// Resolves a battle matchup and re-reads the standings, the same way
+// lockAndScoreWithRecovery() follows automatic scoring: battle points land in
+// score_events, so the leaderboard only shows them after a fresh read.
+//
+// Returns { result, players, error? }. A failed resolution throws (nothing was
+// awarded); a failed standings read after a good resolution returns
+// players: null with the error, which is worth reporting, never worth
+// blocking the reveal.
+export async function resolveBattleMatchupWithStandings({ roomCode, hostSecret, matchupId, client = roomApi }) {
+  const result = await client.resolveBattleMatchup({ roomCode, hostSecret, matchupId });
+  try {
+    const players = await client.getLeaderboard({ roomCode, accessToken: hostSecret });
+    return { result, players };
+  } catch (error) {
+    return { result, players: null, error };
   }
 }

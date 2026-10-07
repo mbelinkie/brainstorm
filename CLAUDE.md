@@ -49,22 +49,21 @@ read `docs/PROJECT_OPERATING_PLAYBOOK.md`, `docs/roadmap/config.json` and
 (user project #4). Preserve explicit dependencies, bounded scope, exact routing
 (`model:economy` uses `deepseek-flash`; `model:standard` uses
 `deepseek-v4-pro`; logical `low`/`medium`/`high` maps to effective
-`low`/`high`/`high`), acceptance class, and private-data boundaries. Before
-planning, dispatching or repairing DeepSeek work, read
-`docs/DEEPSEEK_CODING_GUIDE.md`. DeepSeek implements all product slices and
-review fixes; Sol owns contracts, tests, coordination and independent review.
-The native Sol coordinator holds the lifecycle claim with its genuine
-`CODEX_THREAD_ID` and an explicit routing mismatch reason identifying its
-coordination role. Record DeepSeek’s actual API model/request IDs separately;
-never represent an API request as a Codex execution. Use the shared lifecycle
-wrapper (`scripts/roadmap/lifecycle.mjs`) through `scripts/roadmap/gate.mjs`.
-Start a batch only when Matthew asks; one DeepSeek session at a time, up to eight
-hours and the recorded $10 DeepSeek spend threshold. The planner command
-`node tools/codex-batch.mjs --dry-run` only reads a proposal for issues #13–44;
-it cannot claim, launch,
-publish, merge or complete work. Read `docs/roadmap/WORKING_A_TICKET.md` before working
-a ticket. Report missing capabilities or conflicting evidence instead of
-bypassing the gates.
+`low`/`high`/`high`), acceptance class, and private-data boundaries. The
+delegation process is `docs/DELEGATION.md`: DeepSeek implements every product
+slice and fix through the delegation harness; a Luna Controller (Sol for
+Protected tickets) holds the claim with its genuine `CODEX_THREAD_ID` and a
+written coordination mismatch; a separate Luna execution verifies the final
+published commit. Sessions launched by the harness read only their role card
+in `docs/delegation/cards/`. Record DeepSeek's actual API model/request IDs
+separately; never represent an API request as a Codex execution. Use the shared
+lifecycle wrapper (`scripts/roadmap/lifecycle.mjs`) through
+`scripts/roadmap/gate.mjs`. Batches start only when Matthew asks, through the
+harness, within its deadline, DeepSeek spend and Codex budgets. The planner
+command `node tools/codex-batch.mjs --dry-run` only reads a proposal for issues
+#13–44; it cannot claim, launch, publish, merge or complete work. Read
+`docs/roadmap/WORKING_A_TICKET.md` before working a ticket. Report missing
+capabilities or conflicting evidence instead of bypassing the gates.
 
 ## Attribution: distinguishing Claude's work
 
