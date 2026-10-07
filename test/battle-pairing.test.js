@@ -182,9 +182,11 @@ test("source presence: room-api exposes the three host RPCs and no player battle
     assert.match(roomApi, new RegExp(`${wrapper}\\(\\{ roomCode, hostSecret`), `${wrapper} must take a host secret`);
     assert.match(roomApi, new RegExp(`call\\("${rpc}"`));
   }
-  // No player-token battle wrapper exists yet: submission and voting are
-  // slices 3 and 5.
-  assert.doesNotMatch(roomApi, /playerToken[^)]*battle|battle[A-Za-z]*\(\{ roomCode, playerToken/i);
+  // Player-token battle wrappers: #23's read of the player's own entry and
+  // #31's vote. Submission belongs to its own slice (#26).
+  const playerBattleWrappers = [...roomApi.matchAll(/([A-Za-z]*battle[A-Za-z]*)\(\{ roomCode, playerToken/gi)].map((match) => match[1]);
+  assert.deepEqual(playerBattleWrappers.sort(), ["castBattleVote", "getPlayerBattleState"]);
+  assert.doesNotMatch(roomApi, /playerToken[^)]*battle/i);
 });
 
 test("source presence: the pairing panel is host-only and never touches broadcast state", () => {

@@ -2,6 +2,30 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-10-07
+
+- Fixed Prompt Battle load-error text on player holding cards: the failed-state red now takes precedence over the generic muted paragraph color, keeping the message readable on phones.
+- Added the Prompt Battle media purge schedule (#39): a daily 03:00 UTC Worker run deletes up to 1,000 expired battle objects in one Supabase Storage batch, then migration 0043 finalizes only objects absent from Storage metadata. Failed batches and still-present objects remain retryable; the trigger has not been deployed or run against live Storage.
+- Added authoritative Prompt Battle submission status to the player refresh RPC (#84): each entrant now reads `open`, `submitted`, or `forfeited` from the persisted entry timestamps. PGlite runtime regressions and the full test suite pass; migration `0045` has not been applied to production.
+
+- Added the Prompt Battle host review UI (#28): each submitted image is shown with its creator and matching player prompt; skipped matchups remain visible; veto and undo refresh authoritative host state. Hosts can start voting only when an entry is viable, beginning with the first viable matchup. Private review details stay out of player and Presentation state. Automated and offline browser tests pass; Producer acceptance and a real-room rehearsal remain unproven.
+- Fixed Prompt Battle scoring collisions when an authored ordinary question ID equals the readable battle label. Migration `0044` gives battle awards a matchup identity, keeps ordinary re-scoring from deleting battle events, and backfills existing events from resolved results and persisted ballots without changing award values. PGlite migration and runtime regressions pass; the migration has not been applied to production.
+- Fixed a Prompt Battle stale-roster race (#28 follow-up): after a veto or undo whose authoritative refresh fails, the host sees the last confirmed review state but cannot start voting until a fresh read confirms a viable matchup.
+- Added host-controlled Prompt Battle voting and results (#32): the host can start a viable matchup, follow live vote progress, reveal its result once, move to the next viable matchup, and finish the round through the normal round-end or finale flow. Matchup position and public vote/result projections survive refresh; skipped matchups are bypassed, and private review data stays host-only. Offline browser and automated coverage pass; no live room or provider was used.
+- Fixed two host-screen issues in Prompt Battle results (#32 follow-up): refresh buttons become clickable after the post-reload roster read, and result names/vote counts use a readable single-column style on the host's light card while phone styling stays unchanged.
+
+## 2026-10-06
+
+- Completed the Prompt Battle host roster (#27): hosts can see paired entrants’ submission status and server-reported spend, while Presentation receives aggregate progress. Lock and refresh races now retain confirmed phase state, and polling preserves host focus and drafts.
+
+- Prepared Prompt Battle blind voting: eligible players can cast one private vote for the current matchup, and vote-time image access is limited to its submitted, available entries. Hosts see aggregate progress. Entrants and duplicate votes are rejected. The migration passed actual PostgreSQL acceptance and regression checks; production application and UI remain separate work.
+
+- Prepared Prompt Battle host review and veto: hosts can inspect every generation attempt, veto an entry with a reason, and undo the veto during review. Matchup viability reflects vetoes and forfeits without exposing private review data to players. The migration passed actual PostgreSQL acceptance and regression checks; production application and UI remain separate work.
+
+- Prepared Prompt Battle submission and host locking: players can replace their chosen image before lock; locking preserves explicit choices, selects the final image of the latest completed attempt, or records a forfeit. Host state includes private submission and spend details. The migration passed real PostgreSQL acceptance checks; production application and UI remain separate work.
+
+- Added the Prompt Battle player generation endpoint: it reserves an attempt, uses the server-selected image engine, saves private variants and returns their asset IDs. Unbilled failures restore the attempt only after a confirmed refund; uncertain paid outcomes require a refresh. This server slice has automated coverage; deployment and the player interface remain separate work.
+
 ## 2026-09-23
 
 - Fixed the question-bank editor losing a saved draft when given a quiz containing a Prompt Battle round. Applying or importing such a quiz overwrote the browser draft, then broke the editor, reported "Not applied", and discarded the draft on the next refresh. The editor cannot edit Prompt Battle rounds yet, so it now refuses the quiz up front with a message naming the round, and leaves the open quiz and the saved draft untouched.

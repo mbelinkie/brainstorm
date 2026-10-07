@@ -314,10 +314,24 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
     }
     if (typeof opts.model !== "string" || !opts.model.trim()) return refuse("MODEL_MISSING", "state the exact model id this run is using");
     if (!config.routing.efforts.includes(opts.effort)) return refuse("EFFORT_INVALID", `effort must be one of ${config.routing.efforts.join(", ")}`);
-    const effective = effectiveEffort(opts.effort, config.routing);
-    if (!effective) return refuse("EFFORT_INVALID", `effort:${opts.effort} has no runner effective effort defined`);
-    if (opts.effectiveEffort !== undefined && String(opts.effectiveEffort).trim() !== effective) {
-      return refuse("EFFECTIVE_EFFORT_MISMATCH", `the runner's effective effort for effort:${opts.effort} is ${effective}, not ${opts.effectiveEffort}; record the real effective effort`);
+    const configuredEffective = effectiveEffort(opts.effort, config.routing);
+    if (!configuredEffective) return refuse("EFFORT_INVALID", `effort:${opts.effort} has no runner effective effort defined`);
+    const allowMismatch = typeof opts.allowMismatch === "string" ? opts.allowMismatch.trim() : "";
+    let effective = configuredEffective;
+    if (opts.effectiveEffort !== undefined) {
+      if (typeof opts.effectiveEffort !== "string") {
+        return refuse("EFFECTIVE_EFFORT_INVALID", "effective-effort must be a string");
+      }
+      const actualEffective = String(opts.effectiveEffort).trim();
+      if (actualEffective !== configuredEffective) {
+        if (!allowMismatch) {
+          return refuse("EFFECTIVE_EFFORT_MISMATCH", `effective effort ${actualEffective} differs from configured ${configuredEffective}; an explicit override needs --allow-mismatch with a reason`);
+        }
+        if (actualEffective !== "max") {
+          return refuse("EFFECTIVE_EFFORT_INVALID", `unsupported effective-effort override ${actualEffective}; only max is currently supported`);
+        }
+        effective = actualEffective;
+      }
     }
     const worktree = (opts.worktree ?? "").trim() || "not recorded";
     if (/^(?:[A-Za-z]:[\\/]|[\\/]|~)/.test(worktree)) {
@@ -325,7 +339,7 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
     }
     return {
       ok: true, executionId: id.executionId, branch: opts.branch.trim(), startCommit: opts.startCommit.trim().toLowerCase(),
-      model: opts.model.trim(), effort: opts.effort, effectiveEffort: effective, worktree, owner: (opts.owner ?? repoOwner).trim(), allowMismatch: (opts.allowMismatch ?? "").trim(),
+      model: opts.model.trim(), effort: opts.effort, effectiveEffort: effective, worktree, owner: (opts.owner ?? repoOwner).trim(), allowMismatch,
     };
   }
 
@@ -334,6 +348,10 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
     const problems = [];
     if (profile && facts.model !== profile.modelId) problems.push(`model ${facts.model} is not ${profile.modelId} (model:${snap.routing.profile})`);
     if (snap.routing.effort && facts.effort !== snap.routing.effort) problems.push(`effort ${facts.effort} is not effort:${snap.routing.effort}`);
+    const configuredEffective = snap.routing.effort && effectiveEffort(snap.routing.effort, config.routing);
+    if (configuredEffective && facts.effectiveEffort !== configuredEffective) {
+      problems.push(`effective effort ${facts.effectiveEffort} differs from configured ${configuredEffective} (effort:${snap.routing.effort})`);
+    }
     return problems;
   }
 
