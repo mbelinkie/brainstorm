@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-10-07
+
+- Added the Prompt Battle host review UI (#28): each submitted image is shown with its creator and matching player prompt; skipped matchups remain visible; veto and undo refresh authoritative host state. Hosts can start voting only when an entry is viable, beginning with the first viable matchup. Private review details stay out of player and Presentation state. Automated and offline browser tests pass; Producer acceptance and a real-room rehearsal remain unproven.
+
 ## 2026-10-06
 
 - Completed the Prompt Battle host roster (#27): hosts can see paired entrants’ submission status and server-reported spend, while Presentation receives aggregate progress. Lock and refresh races now retain confirmed phase state, and polling preserves host focus and drafts.

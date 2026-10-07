@@ -2219,3 +2219,14 @@ Branch `claude/battle-purge-38` (from origin/main `0d0b8ea`, after #73–#77 mer
 **Commands run:** `node --test test/battle-media-purge.test.js`: 6/6. Hand mutations: deleting rows while the object still exists failed 3; finalize touching author media failed 1; listing author media failed 1; not clearing the submitted reference failed 1. A first "undated images" mutation was redundant (another guard still filtered) and survived; the corrected version, with both guards removed, failed 1. File restored. `npm test`: tests 840, pass 840, fail 0.
 
 **Unproven:** Not applied. Matthew applies 0043 (`npx supabase migration list --linked` should show only 0043 local-only). No Worker calls it yet (#39). PGlite's `storage.objects` is a stub, so whether the live table matches by `bucket_id` / `name` is confirmed only by 0013 and 0014 using the same columns.
+
+
+### 2026-10-07 — Prompt Battle host review grid (issue #28)
+
+Branch `codex/host-review-veto-28`, based on `b45be75c4f884989fcb14b90c84f0f15d1c1e087`. Implementation commit `4ba125eae163cf558258996923cbd646f36ce369`. Codex `gpt-6-luna` (logical medium, effective max). Matthew explicitly authorized this Luna Max implementation and Sol review on 2026-10-06; the issue claim records the genuine branch, base and native task identity. The required deploy manifest entry and room API wrapper were included so the helper ships and the existing host-only RPC can be called.
+
+**Built:** the host-only `battle_review` screen shows each submitted image, the player prompt tied to that image, its creator, veto status/reason, and server-reported skipped matchups. Veto and undo call `veto_battle_entry` and then re-read `get_host_battle_state`, including after an uncertain RPC response. Review data stays in the private host panel; public state retains only aggregate battle progress. Start voting remains disabled until a matchup has a viable entry, selects the first viable matchup, and saves/restores the `battle_vote` phase. No vote collection or result handling was added.
+
+**Checks at implementation commit `4ba125eae163cf558258996923cbd646f36ce369`:** frozen `npm ci` completed; `npm test`: 859/859 passed; focused host sync, phase and review tests: 47/47; `node --check` passed for the application, helper, deploy manifest and changed JS tests; `git diff --check` passed. Offline browser fixture using bundled Playwright and installed Chrome: 4/4 passed. It blocked external-origin requests and covered image fetch with the host secret, presentation/public-state privacy, veto and undo across host refresh, skipped/no-viable controls, viable matchup selection, and saved voting-phase recovery.
+
+**Unproven:** Matthew did not personally view or accept the screen; parent-coordinated independent Sol review remains separate. No real room/provider call, migration, deployment, or live rehearsal was run. Producer acceptance and real-room behavior remain unproven.
