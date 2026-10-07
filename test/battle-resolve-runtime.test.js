@@ -177,8 +177,8 @@ test("no second scoring path: a duplicate battle score event is rejected by the 
 
   await assert.rejects(
     db.query(
-      "insert into public.score_events (session_id, player_id, question_id, points, reason, created_by) values ($1, $2, $3, 100, 'again', 'system')",
-      [fixture.session, winnerEvent.player_id, winnerEvent.question_id]
+      "insert into public.score_events (session_id, battle_matchup_id, player_id, question_id, points, reason, created_by) values ($1, $2, $3, $4, 100, 'again', 'system')",
+      [fixture.session, fixture.matchup, winnerEvent.player_id, winnerEvent.question_id]
     ),
     /duplicate key/
   );
