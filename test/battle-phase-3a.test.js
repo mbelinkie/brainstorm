@@ -141,10 +141,10 @@ test("the player render key includes the battle fields", () => {
 
 test("a host or Presentation reload maps the battle phases back instead of falling to lobby", () => {
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
-  assert.ok(reload.includes('battle_prompt: "battle_prompt", battle_review: "battle_review"'), "the saved-phase map carries both battle phases");
+  assert.ok(reload.includes('battle_prompt: "battle_prompt", battle_review: "battle_review", battle_vote: "battle_vote"'), "the saved-phase map carries battle phases");
   assert.ok(reload.includes('savedPhaseMap[savedRoom.phase] || "lobby"'), "an unknown saved phase still falls back to lobby");
   assert.ok(reload.includes("phase: savedPhase"), "the server's phase wins over the saved public screen");
-  assert.ok(reload.includes('["battle_prompt", "battle_review"].includes(savedPhase)'), "a room locked on the server restores into review");
+  assert.ok(reload.includes('["battle_prompt", "battle_review", "battle_vote"].includes(savedPhase)'), "a room locked on the server restores into its confirmed battle phase");
 });
 
 test("startRound enters a battle round without a question and without auto-advancing", () => {
@@ -179,9 +179,9 @@ test("End battle round walks on to the round-end card or the finale", () => {
   assert.match(body, /startFinale\(\)/);
 });
 
-test("N on a battle round opens it rather than a stale question, and does nothing in battle_prompt or battle_review", () => {
+test("N on a battle round opens it rather than a stale question, and does nothing during battle phases", () => {
   const body = fn("showNextScreen");
-  assert.ok(body.includes('if (state.phase === "battle_prompt" || state.phase === "battle_review") return;'), "N does nothing once submissions are open or locked");
+  assert.ok(body.includes('["battle_prompt", "battle_review", "battle_vote"].includes(state.phase)'), "N does nothing during submission, review or voting");
   const openIdx = body.indexOf("return openBattleRoundFromHost();");
   const phaseIdx = body.indexOf('return setPhase("open");');
   assert.ok(openIdx >= 0 && phaseIdx > openIdx, "a battle round is opened, never a stale question");
@@ -197,12 +197,12 @@ test("the host has a battle_prompt screen and re-fetches the pairing after a rel
   assert.match(fn("renderHost"), /if \(Number\.isInteger\(state\.battleRoundIndex\)\) \{ renderHostBattle\(\); return; \}/);
   assert.doesNotMatch(fn("renderHost"), /battlePairingPanel\(\)/, "renderHost no longer renders the pairing panel");
   const battle = fn("renderHostBattle");
-  assert.ok(battle.includes('const opened = state.phase === "battle_prompt" || review;'), "the battle screen is open in prompt and review");
+  assert.ok(battle.includes('const opened = state.phase === "battle_prompt" || review || voting;'), "the battle screen remains open during prompt, review and voting");
   assert.match(battle, /opened \? [^:]*data-battle-end-round/, "End battle round is shown only once the round is open");
   assert.equal((battle.match(/data-battle-end-round/g) || []).length, 1);
   assert.match(battle, /Open the round when everyone has joined\. Pairing locks the roster\./);
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
-  assert.ok(reload.includes('if (view === "host" && ["battle_prompt", "battle_review"].includes(state.phase)) refreshBattlePairing();'), "a reload into either battle phase re-reads the private roster");
+  assert.ok(reload.includes('if (view === "host" && ["battle_prompt", "battle_review"].includes(state.phase)) refreshBattlePairing();'), "a reload into prompt or review re-reads the private roster");
 });
 
 test("P never rewinds into a battle_prompt screen", () => {
@@ -279,7 +279,7 @@ test("a reload into battle_prompt also restores the battle_prompt screen", () =>
   // open_battle_round writes phase but not presentationScreen to sessions.state.
   const reload = app.slice(app.indexOf("const savedRoom = await roomApi.getHostRoomState"), app.indexOf("restoreHostSubmissions();", app.indexOf("const savedRoom = await roomApi.getHostRoomState")));
   const merge = reload.indexOf("state = { ...state, ...savedRoom.state");
-  const fix = reload.indexOf('if (state.phase === "battle_prompt" || state.phase === "battle_review") state.presentationScreen = state.phase;');
+  const fix = reload.indexOf('if (["battle_prompt", "battle_review", "battle_vote"].includes(state.phase)) state.presentationScreen = state.phase;');
   assert.ok(fix > merge && merge >= 0, "the screen is set after the saved state is merged");
   assert.ok(fix < reload.indexOf('if (["door_choice", "door_reveal"].includes(state.phase))'), "directly after the merge");
 });

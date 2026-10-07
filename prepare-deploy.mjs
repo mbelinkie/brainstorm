@@ -10,6 +10,7 @@ const publicFiles = [
   "assets",
   "app.js",
   "battle-roster.js",
+  "battle-review.js",
   "room-api.js",
   "quiz-core.js",
   "battle-player.js",
