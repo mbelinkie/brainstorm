@@ -3494,17 +3494,34 @@ function attachBattlePlayerEvents() {
 // --- Prompt Battle voting and result, phone side (issue #31) -------------
 
 function battleVoteStorageKey(matchupId) {
-  return `quiz-battle-vote:${roomCode}:${matchupId}`;
+  return `quiz-battle-vote:${roomCode}:${playerId}:${matchupId}`;
+}
+
+function persistBattleVote(vote) {
+  if (!vote?.matchupId) return;
+  const key = battleVoteStorageKey(vote.matchupId);
+  try {
+    if (vote.status === "rejected") sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, JSON.stringify(vote));
+  } catch { /* per-tab only */ }
 }
 
 function currentBattleVote(matchupId) {
   if (!matchupId) return null;
-  if (battleVote?.matchupId === matchupId) return battleVote;
+  if (battleVote?.matchupId === matchupId && battleVote.playerId === playerId) return battleVote;
   try {
-    const entryId = sessionStorage.getItem(battleVoteStorageKey(matchupId));
-    if (entryId) battleVote = { matchupId, entryId, status: "confirmed", message: "" };
-  } catch { /* storage unavailable: the server still refuses a second vote */ }
-  return battleVote?.matchupId === matchupId ? battleVote : null;
+    const saved = sessionStorage.getItem(battleVoteStorageKey(matchupId));
+    if (saved) {
+      const vote = JSON.parse(saved);
+      if (vote.matchupId === matchupId && vote.playerId === playerId && typeof vote.entryId === "string" && ["pending", "retryable", "confirmed"].includes(vote.status)) {
+        battleVote = vote.status === "pending"
+          ? { ...vote, status: "retryable", message: "Your vote may have gone through. Retry the same image to confirm." }
+          : vote;
+        return battleVote;
+      }
+    }
+  } catch { /* storage unavailable or from an older format */ }
+  return null;
 }
 
 function battleVoteViewForState() {
@@ -3513,7 +3530,10 @@ function battleVoteViewForState() {
   if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
   // Until this phone knows its own images it cannot tell a ballot from its
   // own matchup, so it waits rather than offering a vote it would lose.
-  if (state.phase === "battle_vote" && battlePlayer.entry === undefined && !battlePlayer.loadError) return { kind: "vote-wait" };
+  if (state.phase === "battle_vote" && battlePlayer.entry === undefined) {
+    if (battlePlayer.loadError) return { kind: "eligibility-error", message: battlePlayer.loadError };
+    return { kind: "vote-wait" };
+  }
   const ownAssetIds = new Set((battlePlayer.entry?.generations || []).flatMap((generation) => generation.assetIds || []));
   return battleVoteView({
     phase: state.phase,
@@ -3528,10 +3548,10 @@ function battleVoteViewForState() {
 
 function renderPlayerBattleVote() {
   const voteView = battleVoteViewForState();
-  const heading = { "review-wait": "Judging time", "vote-wait": "Get ready", "on-stage": "On stage", vote: "Vote now", "result-wait": "Counting", result: "Results" }[voteView.kind] || "Prompt Battle";
+  const heading = { "review-wait": "Judging time", "vote-wait": "Get ready", "eligibility-error": "Reconnect", "on-stage": "On stage", vote: "Vote now", "result-wait": "Counting", result: "Results" }[voteView.kind] || "Prompt Battle";
   const matchupLabel = Number.isInteger(state.battleMatchupIndex) && Number(state.battleMatchupCount) > 0 && state.phase !== "battle_review"
     ? ` · Matchup ${state.battleMatchupIndex + 1} of ${state.battleMatchupCount}` : "";
-  const calm = ["review-wait", "vote-wait", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
+  const calm = ["review-wait", "vote-wait", "eligibility-error", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
   app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}</section></main>`, true);
   battleVoteRenderedKey = battleVoteRenderKey(voteView);
   loadBattleScreenImages();
@@ -3545,8 +3565,10 @@ function redrawBattleVote() {
 async function castBattleVoteFromPhone(entryId) {
   const matchupId = state.battleVote?.matchupId;
   const existing = currentBattleVote(matchupId);
-  if (!matchupId || (existing && !["idle", "retryable"].includes(existing.status))) return;
-  battleVote = { matchupId, entryId, status: "pending", message: "" };
+  if (!matchupId || (existing && !["idle", "retryable"].includes(existing.status)) || (existing?.status === "retryable" && existing.entryId !== entryId)) return;
+  const voterId = playerId;
+  battleVote = { matchupId, playerId: voterId, entryId, status: "pending", message: "Your vote may have gone through. Retry the same image to confirm." };
+  persistBattleVote(battleVote);
   battleLightbox = null;
   render();
   let next;
@@ -3555,17 +3577,20 @@ async function castBattleVoteFromPhone(entryId) {
     next = { status: "confirmed", message: "" };
   } catch (error) {
     next = classifyVoteError(error);
+    if (next.status === "confirmed" && existing?.status === "retryable" && existing.entryId === entryId) next = { status: "confirmed", entryId, message: "" };
     if (next.status === "retryable") recordDiagnostic("battle-vote", error, { roomCode });
   }
-  if (battleVote?.matchupId !== matchupId) return;
-  battleVote = { matchupId, entryId, ...next };
-  if (next.status === "confirmed") {
-    try { sessionStorage.setItem(battleVoteStorageKey(matchupId), entryId); } catch { /* per-tab only */ }
-  }
+  if (playerId !== voterId || battleVote?.matchupId !== matchupId || battleVote.playerId !== voterId) return;
+  battleVote = { matchupId, playerId: voterId, entryId, ...next };
+  persistBattleVote(battleVote);
   render();
 }
 
 function attachBattleVoteEvents() {
+  document.querySelector("[data-battle-vote-retry]")?.addEventListener("click", () => {
+    battlePlayer.loadError = "";
+    return loadBattlePlayerState();
+  });
   document.querySelectorAll("[data-battle-vote]").forEach((button) => button.addEventListener("click", () => castBattleVoteFromPhone(button.dataset.battleVote)));
   attachBattleLightboxEvents("vote", state.battleVote?.matchupId);
 }
