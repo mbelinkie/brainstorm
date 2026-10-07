@@ -3438,7 +3438,7 @@ function battleSubmissionMarkup() {
   const variants = confirmedVariants(entry);
   const selectedIndex = variants.findIndex((variant) => variant.assetId === battlePlayer.favouriteAssetId);
   const selectedAssetId = selectedIndex < 0 ? "" : variants[selectedIndex].assetId;
-  const request = battlePlayerSubmitRequest.assetId === selectedAssetId ? battlePlayerSubmitRequest : { status: "idle", message: "" };
+  const request = battlePlayerSubmitRequest.assetId === selectedAssetId || battlePlayerSubmitRequest.status === "pending" ? battlePlayerSubmitRequest : { status: "idle", message: "" };
   const requestMessages = {
     pending: "Submitting your image…",
     confirmed: "Your image is submitted. You can change it until the host locks submissions.",
