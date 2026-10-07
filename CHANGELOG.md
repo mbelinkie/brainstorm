@@ -4,7 +4,9 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-10-07
 
+- Added the Prompt Battle host review UI (#28): each submitted image is shown with its creator and matching player prompt; skipped matchups remain visible; veto and undo refresh authoritative host state. Hosts can start voting only when an entry is viable, beginning with the first viable matchup. Private review details stay out of player and Presentation state. Automated and offline browser tests pass; Producer acceptance and a real-room rehearsal remain unproven.
 - Fixed Prompt Battle scoring collisions when an authored ordinary question ID equals the readable battle label. Migration `0044` gives battle awards a matchup identity, keeps ordinary re-scoring from deleting battle events, and backfills existing events from resolved results and persisted ballots without changing award values. PGlite migration and runtime regressions pass; the migration has not been applied to production.
+- Fixed a Prompt Battle stale-roster race (#28 follow-up): after a veto or undo whose authoritative refresh fails, the host sees the last confirmed review state but cannot start voting until a fresh read confirms a viable matchup.
 
 ## 2026-10-06
 
