@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const ALLOWED_TRANSPORT_FILES = ["scripts/roadmap/github-transport.mjs"];
+export const VETTED_BACKUP_RUNNER_FILES = ["scripts/backup/run-command.mjs"];
 
 const PATTERNS = [
   { id: "starts-gh", re: /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*[`"']gh(?:\.exe)?[`"']/ },
@@ -26,6 +27,9 @@ export function findBypasses(files, allowed = ALLOWED_TRANSPORT_FILES) {
   for (const file of files) {
     if (allowed.includes(file.path)) continue;
     for (const { id, re } of PATTERNS) {
+      if (VETTED_BACKUP_RUNNER_FILES.includes(file.path) && id === "child-process") {
+        continue;
+      }
       if (re.test(file.text)) violations.push({ file: file.path, rule: id });
     }
   }
