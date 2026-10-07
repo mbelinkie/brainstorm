@@ -18,6 +18,7 @@ import {
 } from '../scripts/backup/files.mjs';
 import { createRunner } from '../scripts/backup/run-command.mjs';
 import { parseMediaRows, collectSupabase } from '../scripts/backup/supabase.mjs';
+import { runBackup } from '../scripts/backup/backup.mjs';
 
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -1067,4 +1068,74 @@ test('collectSupabase wrong size and symlink fail safely with media step', async
       },
     );
   }
+});
+
+test('runBackup orchestrates fake exports, manifests a required failure, and keeps dry-run inert', async (t) => {
+  const scratch = await mkdtemp('backup-orchestration-');
+  t.after(() => fs.rm(scratch, { recursive: true, force: true }));
+
+  const repoRoot = path.join(scratch, 'repo');
+  const originalsDir = path.join(scratch, 'originals');
+  await fs.mkdir(repoRoot);
+  await fs.mkdir(path.join(originalsDir, 'nested'), { recursive: true });
+  await fs.writeFile(path.join(originalsDir, 'nested', 'original song.wav'), 'sound');
+  const now = () => new Date('2026-10-01T12:00:00Z');
+  const gitCommit = 'a'.repeat(40);
+  const dataSql = copyMediaSql({ rows: [['author/audio.wav', 'audio', 'audio/wav', '5']] });
+  const config = roadmapConfig;
+  const backupDir = (out) => path.join(out, 'brainstorm-backup-2026-10-01');
+  const run = async (name, options = {}) => {
+    const out = path.join(scratch, name);
+    const fake = createSupabaseFake({ repoRoot, backupDir: backupDir(out), dataSql, mediaContents: { 'author/audio.wav': 'sound' }, failStep: options.failStep });
+    const gate = options.gate ?? makeRoadmapFakeGate();
+    const result = await runBackup({ out, repoRoot, originalsDir, now, gitCommit, runner: fake.runner, gate, config, includeOriginals: options.includeOriginals });
+    return { result, out, fake, gate };
+  };
+
+  const { result, out, fake, gate } = await run('success');
+  assert.equal(result.ok, true);
+  assert.equal(result.manifest.gitCommit, gitCommit);
+  assert.equal(result.manifest.versions.supabase, '2.119.0');
+  assert.ok(result.manifest.files.some((file) => file.path === 'roadmap.json'));
+  assert.ok(result.manifest.files.some((file) => file.path === 'RESTORE.md'));
+  assert.equal(result.manifest.originals[0].copied, false);
+  assert.equal((await verifyBackup(result.dir)).ok, true);
+  assert.ok(fake.calls.length > 0);
+  assert.ok(gate.calls.length > 0);
+  await assert.rejects(() => fs.access(path.join(result.dir, 'originals', 'nested', 'original song.wav')));
+
+  const copied = await run('copy-originals', { includeOriginals: true });
+  assert.equal(copied.result.ok, true);
+  assert.equal(copied.result.manifest.originals[0].copied, true);
+  assert.equal(await fs.readFile(path.join(copied.result.dir, 'originals', 'nested', 'original song.wav'), 'utf8'), 'sound');
+
+  const failed = await run('schema-failure', { failStep: 'schema' });
+  assert.equal(failed.result.ok, false);
+  assert.equal(failed.result.manifest.status, 'failed');
+  assert.equal(failed.result.manifest.steps.database.status, 'failed');
+  assert.equal(failed.result.manifest.steps.integrity.required, true);
+  assert.equal((await verifyBackup(failed.result.dir)).ok, false);
+
+  const manifestBefore = await fs.readFile(path.join(result.dir, 'MANIFEST.json'));
+  const duplicate = await runBackup({ out, repoRoot, originalsDir, now, gitCommit, runner: fake.runner, gate, config });
+  assert.equal(duplicate.ok, false);
+  assert.equal(duplicate.error.code, 'DESTINATION_EXISTS');
+  assert.deepEqual(await fs.readFile(path.join(result.dir, 'MANIFEST.json')), manifestBefore);
+
+  const dryOut = path.join(scratch, 'dry-run');
+  let calls = 0;
+  const forbidden = async () => { calls += 1; throw new Error('must not be called'); };
+  const dryRun = await runBackup({
+    out: dryOut,
+    repoRoot,
+    originalsDir: path.join(scratch, 'missing originals'),
+    now,
+    dryRun: true,
+    runner: forbidden,
+    gate: { read: forbidden },
+  });
+  assert.equal(dryRun.ok, true);
+  assert.equal(dryRun.dryRun, true);
+  assert.equal(calls, 0);
+  await assert.rejects(() => fs.access(dryOut));
 });
