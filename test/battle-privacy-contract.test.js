@@ -42,11 +42,11 @@ room.prompts = [
 {
   const quizId = randomUUID(), versionId = randomUUID();
   room.session = randomUUID();
-  const definition = { rounds: [{
-    type: "prompt_battle", title: "Battle", prompts: room.prompts,
-    engine: { defaultProvider: "workers_ai", defaultModel: "flux", permittedModels: ["flux"], attemptBudget: 3, maxSessionSpendUsd: 5, maxSessionGenerations: 50, variants: 2, resolution: "1024x1024", outputFormat: "webp" },
-    scoring: { winnerPoints: 100, voterPoints: 10 },
-  }] };
+  const engine = { defaultProvider: "workers_ai", defaultModel: "flux", permittedModels: ["flux"], attemptBudget: 3, maxSessionSpendUsd: 5, maxSessionGenerations: 50, variants: 2, resolution: "1024x1024", outputFormat: "webp" };
+  const definition = { rounds: [
+    { type: "prompt_battle", title: "Battle", prompts: room.prompts, engine, scoring: { winnerPoints: 100, voterPoints: 10 } },
+    { type: "prompt_battle", title: "Next battle", prompts: [{ id: "p-next", text: "Illustrate a fresh start." }], engine, scoring: { winnerPoints: 100, voterPoints: 10 } },
+  ] };
   await sql("insert into public.quizzes (id, slug, title) values ($1, 'priv-35', 'Privacy')", [quizId]);
   await sql("insert into public.quiz_versions (id, quiz_id, version, definition) values ($1, $2, 1, $3)", [versionId, quizId, JSON.stringify(definition)]);
   await sql(`insert into public.sessions (id, room_code, quiz_version_id, host_secret_hash, phase, state, battle_engine_provider, battle_engine_model)
@@ -115,7 +115,11 @@ async function assertPlayerReadsClean(stage) {
 
 test("lobby: no battle data exists for any player", async () => {
   await assertPlayerReadsClean("lobby");
-  for (const player of room.players) assert.equal((await playerCall("get_player_battle_state", player)).entry, null);
+  for (const player of room.players) {
+    const state = await playerCall("get_player_battle_state", player);
+    assert.equal(state.entry, null);
+    assert.deepEqual(Object.keys(state).sort(), ["entry", "phase", "roomCode"]);
+  }
 });
 
 test("battle_prompt: each phone gets only its own prompt; pairing and other prompts stay on the host", async () => {
@@ -126,7 +130,8 @@ test("battle_prompt: each phone gets only its own prompt; pairing and other prom
   for (const player of room.players) {
     const own = await playerCall("get_player_battle_state", player);
     assert.equal(own.entry.promptText, player.promptText);
-    assert.deepEqual(Object.keys(own.entry).sort(), ["attemptsRemaining", "generations", "promptText"]);
+    assert.equal(own.entry.submissionStatus, "open");
+    assert.deepEqual(Object.keys(own.entry).sort(), ["attemptsRemaining", "generations", "promptText", "submissionStatus"]);
   }
   await assertPlayerReadsClean("battle_prompt, after pairing");
 });
@@ -157,13 +162,42 @@ test("battle_prompt: a phone sees its own variants and no one else's", async () 
 });
 
 test("battle_review: submissions and vetoes are invisible to players", async () => {
-  // Everyone with images submits their first variant; the forfeiter has none
-  // and forfeits at lock. The host then vetoes one entry of the three-way.
-  for (const player of room.players) if (player !== room.forfeiter) await playerCall("submit_battle_entry", player, player.assets[0]);
-  await hostCall("lock_battle_prompt");
+  // One player submits manually, others leave a completed generation for the
+  // lock to auto-submit, and the player with no generation forfeits.
+  room.manualSubmitter = room.players.find((player) => player !== room.forfeiter);
+  await playerCall("submit_battle_entry", room.manualSubmitter, room.manualSubmitter.assets[0]);
+  for (const player of room.players) {
+    const state = await playerCall("get_player_battle_state", player);
+    assert.equal(state.entry.submissionStatus, player === room.manualSubmitter ? "submitted" : "open");
+  }
+
+  const firstLock = await hostCall("lock_battle_prompt");
+  assert.equal(firstLock.locked, true);
   await pairing();
   const forfeited = await one("select forfeited_at from public.session_battle_entries where id = $1", [room.forfeiter.entryId]);
   assert.ok(forfeited.forfeited_at, "a player with no images forfeits at lock");
+  assert.equal(room.manualSubmitter.submitted, room.manualSubmitter.assets[0], "manual submission remains selected");
+  for (const player of room.players) {
+    const state = await playerCall("get_player_battle_state", player);
+    assert.equal(state.entry.submissionStatus, player === room.forfeiter ? "forfeited" : "submitted");
+    if (player !== room.forfeiter && player !== room.manualSubmitter) {
+      assert.equal(player.submitted, player.assets.at(-1), "lock auto-submits the last complete generation asset");
+    }
+  }
+
+  const statusesBeforeReplay = await Promise.all(room.players.map(async (player) => [
+    player.id,
+    (await playerCall("get_player_battle_state", player)).entry.submissionStatus,
+  ]));
+  const sessionBeforeReplay = await one("select revision::int as revision, state from public.sessions where id = $1", [room.session]);
+  const replay = await hostCall("lock_battle_prompt");
+  assert.equal(replay.locked, false);
+  assert.deepEqual(await one("select revision::int as revision, state from public.sessions where id = $1", [room.session]), sessionBeforeReplay);
+  assert.deepEqual(await Promise.all(room.players.map(async (player) => [
+    player.id,
+    (await playerCall("get_player_battle_state", player)).entry.submissionStatus,
+  ])), statusesBeforeReplay);
+
   room.vetoed = room.players.find((player) => player.matchupIndex === 1 && player !== room.forfeiter);
   await hostCall("veto_battle_entry", room.vetoed.entryId, "Not allowed");
 
@@ -179,8 +213,8 @@ test("battle_vote: only the current matchup's viable submissions are viewable; f
   const future = room.players.filter((player) => player.matchupIndex === 1);
   for (const viewer of room.players) {
     for (const entrant of current) {
-      assert.equal(await canSee(viewer, entrant.assets[0]), true, `${viewer.name} sees current submission of ${entrant.name}`);
-      for (const unused of entrant.assets.slice(1)) assert.equal(await canSee(viewer, unused), false, `${viewer.name} must not see ${entrant.name}'s unused variant`);
+      assert.equal(await canSee(viewer, entrant.submitted), true, `${viewer.name} sees current submission of ${entrant.name}`);
+      for (const unused of entrant.assets.filter((assetId) => assetId !== entrant.submitted)) assert.equal(await canSee(viewer, unused), false, `${viewer.name} must not see ${entrant.name}'s unused variant`);
     }
     for (const entrant of future) for (const assetId of entrant.assets) assert.equal(await canSee(viewer, assetId), false, `${viewer.name} must not see future matchup image of ${entrant.name}`);
   }
@@ -252,11 +286,48 @@ test("a late joiner sees no battle data and only the current viable images", asy
   const late = { id: randomUUID(), token: "token-late", name: "Late", assets: [] };
   await sql("insert into public.session_players (id, session_id, player_token_hash, display_name) values ($1, $2, public.token_hash($3), 'Late')", [late.id, room.session, late.token]);
   assert.equal((await playerCall("get_player_battle_state", late)).entry, null);
+  room.late = late;
   const forbidden = {};
   for (const other of room.players) { forbidden[other.name] = other.name; forbidden[other.id] = other.id; forbidden[`${other.name} entry`] = other.entryId; }
   assert.deepEqual(findLeaks(await playerCall("get_live_room_state", late), forbidden), []);
   const viable = room.players.filter((player) => player.matchupIndex === 1 && player !== room.vetoed && player !== room.forfeiter);
   for (const player of viable) assert.equal(await canSee(late, player.submitted), true);
+});
+
+test("player battle state rejects wrong credentials and returns only the current-round entry", async () => {
+  const player = room.manualSubmitter;
+  const other = room.players.find((candidate) => candidate !== player);
+  await assert.rejects(
+    db.query("select public.get_player_battle_state($1, $2)", [room.code, "wrong-player-token"]),
+    /Player is not in this room/
+  );
+  await assert.rejects(
+    db.query("select public.get_player_battle_state($1, $2)", ["WRONG-ROOM", player.token]),
+    /Player is not in this room/
+  );
+
+  const nextMatchupId = randomUUID(), nextEntryId = randomUUID();
+  await sql(
+    `insert into public.session_battle_matchups (id, session_id, round_index, matchup_index, prompt_id, prompt_text)
+     values ($1, $2, 1, 0, 'p-next', 'Illustrate a fresh start.')`,
+    [nextMatchupId, room.session]
+  );
+  await sql(
+    "insert into public.session_battle_entries (id, matchup_id, player_id) values ($1, $2, $3)",
+    [nextEntryId, nextMatchupId, player.id]
+  );
+  await sql(
+    "update public.sessions set current_round_index = 1, phase = 'battle_prompt', state = state || '{\"phase\":\"battle_prompt\"}'::jsonb where id = $1",
+    [room.session]
+  );
+
+  const current = await playerCall("get_player_battle_state", player);
+  assert.equal(current.entry.promptText, "Illustrate a fresh start.");
+  assert.equal(current.entry.submissionStatus, "open");
+  assert.equal(current.entry.attemptsRemaining, 3);
+  assert.deepEqual(Object.keys(current.entry).sort(), ["attemptsRemaining", "generations", "promptText", "submissionStatus"]);
+  assert.equal((await playerCall("get_player_battle_state", other)).entry, null, "a prior-round entry is not projected");
+  assert.equal((await playerCall("get_player_battle_state", room.late)).entry, null, "a late joiner still has no entry");
 });
 
 // --- host-only fields never reach publicRoomState --------------------------

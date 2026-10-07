@@ -2230,6 +2230,7 @@ Branch `codex/host-review-veto-28`, based on `b45be75c4f884989fcb14b90c84f0f15d1
 **Checks at implementation commit `4ba125eae163cf558258996923cbd646f36ce369`:** frozen `npm ci` completed; `npm test`: 859/859 passed; focused host sync, phase and review tests: 47/47; `node --check` passed for the application, helper, deploy manifest and changed JS tests; `git diff --check` passed. Offline browser fixture using bundled Playwright and installed Chrome: 4/4 passed. It blocked external-origin requests and covered image fetch with the host secret, presentation/public-state privacy, veto and undo across host refresh, skipped/no-viable controls, viable matchup selection, and saved voting-phase recovery.
 
 **Unproven:** Matthew did not personally view or accept the screen; parent-coordinated independent Sol review remains separate. No real room/provider call, migration, deployment, or live rehearsal was run. Producer acceptance and real-room behavior remain unproven.
+
 ### 2026-10-07 — Repair Prompt Battle score event identity (issue #30)
 
 - **Branch and claim:** `codex/scoring-records-30`, based on `b45be75c4f884989fcb14b90c84f0f15d1c1e087`. Claimed through the lifecycle gate by Codex thread `01a11478-5125-77f2-942a-93d469bfcf4e` as GPT-6 Luna with effective effort `max` for this invocation; claim: https://github.com/mbelinkie/brainstorm/issues/30#issuecomment-6030507310. Independent Sol verification is pending.
@@ -2284,3 +2285,15 @@ Branch `codex/scheduled-purge-39`, resumed at `9c0f8908ebe2a6b58a7a114b4959bf0cb
 **Checks:** `node --test test/battle-media-scheduled.test.js test/battle-media-purge.test.js test/battle-generate-route.test.js`: 27/27; `npm test`: 872/872, no skips; `node --check cloudflare-worker.js`; `node --check test/battle-media-scheduled.test.js`; `git diff --check`. The runtime fakes cover a 1,000-object batch in three subrequests, thrown/HTTP-failed batches without finalization, partial finalization, retry, and mixed valid/invalid paths.
 
 **Unproven / excluded:** The Worker and cron were not deployed or invoked by Cloudflare. Worker Storage/RPC calls used fakes; PGlite exercised migration 0043, not live Supabase Storage or production configuration. No live Storage deletion, production migration, provider call or deployment occurred. Independent Sol verification remains pending.
+
+### 2026-10-07 — Player submission outcome on refresh (issue #84)
+
+Branch `codex/player-submission-state-84`, based on `main` at `1f6951836500c42b6b3f6916467652c0d3788c60`. Codex `gpt-6-luna` (logical high, effective max). The stopped prior claim was released through the lifecycle gate using the 2026-10-07 checkpoint evidence; #84 was then claimed with this run's native ID under Matthew's resumed Luna Max authorization.
+
+**Files:** `supabase/migrations/0045_player_battle_submission_state.sql` (new), `test/battle-privacy-contract.test.js`, `CHANGELOG.md`, this entry.
+
+**Built:** the existing player RPC now adds `entry.submissionStatus`, derived from `forfeited_at` and `submitted_at`; it retains its player credential check, battle phase guard, current-round/own-player lookup, null-entry behavior, prompt, attempts and own generations. Runtime coverage now observes a manual submit, a lock auto-submit, a forfeit, a repeated lock and fresh reads, plus invalid room/player credentials, null entries and current-round scoping. The first focused run exposed an old fixture assertion that assumed lock selected each player's first image; the fixture now checks the actual submitted image while keeping the existing privacy assertion.
+
+**Checks:** `ctx-wire run rtk proxy node --test test/battle-privacy-contract.test.js`: 13/13. `ctx-wire run rtk proxy node --test test/battle-generation-rpcs.test.js test/battle-submission-rpcs.test.js test/battle-privacy-contract.test.js`: 47/47. `ctx-wire run rtk proxy npm test`: 863/863, no skips. All SQL ran in the existing PGlite database fixture. No production migration, external service, or deployment was used.
+
+**Unproven:** migration `0045` has not been applied; live Supabase behavior and the dependent player UI are not covered here. Independent Sol verification of the published commit is pending.
