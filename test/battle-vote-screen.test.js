@@ -220,7 +220,7 @@ test("eligibility read errors fail closed and expose a retry that reloads the pl
   assert.equal(h.run("battleVoteViewForState()").kind, "on-stage");
 });
 
-test("an uncertain vote survives reload, freezes the original choice and confirms only that choice", async () => {
+test("same-tab retry freezes the choice but a duplicate response confirms no entry", async () => {
   const calls = [];
   const session = new Map();
   let serverVote = "";
@@ -232,11 +232,11 @@ test("an uncertain vote survives reload, freezes the original choice and confirm
     }
     throw new Error("You have already voted in this matchup");
   };
-  const h = phoneApp({ session, castVote });
+  const h = phoneApp({ entry: null, session, castVote });
 
   await h.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
   assert.equal(h.context.battleVote.status, "retryable");
-  const reloaded = phoneApp({ session, castVote });
+  const reloaded = phoneApp({ entry: null, session, castVote });
   const restored = reloaded.run(`currentBattleVote(${JSON.stringify(M)})`);
   assert.deepEqual([restored.status, restored.entryId], ["retryable", E1]);
   await reloaded.run(`castBattleVoteFromPhone(${JSON.stringify(E3)})`);
@@ -246,8 +246,47 @@ test("an uncertain vote survives reload, freezes the original choice and confirm
 
   await reloaded.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
   assert.deepEqual(calls, [E1, E1]);
-  assert.equal(reloaded.context.battleVote.entryId, E1);
+  assert.equal(reloaded.context.battleVote.entryId, "");
   assert.equal(reloaded.context.battleVote.status, "confirmed");
+  assert.match(reloaded.context.battleVote.message, /could not confirm which image/);
+  const markup = battleVoteMarkup(reloaded.run("battleVoteViewForState()"), escapeHtml);
+  assert.match(markup, /could not confirm which image/);
+  assert.doesNotMatch(markup, /✓ Your vote/);
+  const refreshed = phoneApp({ entry: null, session, castVote });
+  const restoredAfterRefresh = refreshed.run(`currentBattleVote(${JSON.stringify(M)})`);
+  assert.deepEqual([restoredAfterRefresh.status, restoredAfterRefresh.entryId, restoredAfterRefresh.message], ["confirmed", "", reloaded.context.battleVote.message]);
+});
+
+test("a same-player cross-tab vote stays unknown after refreshing the ambiguous tab", async () => {
+  const firstTabSession = new Map();
+  const secondTabSession = new Map();
+  let serverVote = "";
+  const firstTabCast = async () => {
+    if (serverVote) throw new Error("You have already voted in this matchup");
+    throw new Error("Failed to fetch"); // This tab's first request did not reach the server.
+  };
+  const secondTabCast = async ({ entryId }) => {
+    if (serverVote) throw new Error("You have already voted in this matchup");
+    serverVote = entryId;
+  };
+  const firstTab = phoneApp({ playerId: "player-a", entry: null, session: firstTabSession, castVote: firstTabCast });
+  await firstTab.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.equal(firstTab.context.battleVote.status, "retryable");
+
+  const secondTab = phoneApp({ playerId: "player-a", entry: null, session: secondTabSession, castVote: secondTabCast });
+  await secondTab.run(`castBattleVoteFromPhone(${JSON.stringify(E3)})`);
+  assert.equal(serverVote, E3);
+  assert.deepEqual([secondTab.context.battleVote.status, secondTab.context.battleVote.entryId], ["confirmed", E3]);
+
+  const refreshedTab = phoneApp({ playerId: "player-a", entry: null, session: firstTabSession, castVote: firstTabCast });
+  const restored = refreshedTab.run(`currentBattleVote(${JSON.stringify(M)})`);
+  assert.deepEqual([restored.status, restored.entryId], ["retryable", E1]);
+  await refreshedTab.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.deepEqual([refreshedTab.context.battleVote.status, refreshedTab.context.battleVote.entryId], ["confirmed", ""]);
+  assert.match(refreshedTab.context.battleVote.message, /could not confirm which image/);
+  const markup = battleVoteMarkup(refreshedTab.run("battleVoteViewForState()"), escapeHtml);
+  assert.match(markup, /could not confirm which image/);
+  assert.doesNotMatch(markup, /✓ Your vote/);
 });
 
 test("an initial already-voted error does not falsely confirm this phone's selected image", async () => {

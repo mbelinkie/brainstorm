@@ -3577,7 +3577,6 @@ async function castBattleVoteFromPhone(entryId) {
     next = { status: "confirmed", message: "" };
   } catch (error) {
     next = classifyVoteError(error);
-    if (next.status === "confirmed" && existing?.status === "retryable" && existing.entryId === entryId) next = { status: "confirmed", entryId, message: "" };
     if (next.status === "retryable") recordDiagnostic("battle-vote", error, { roomCode });
   }
   if (playerId !== voterId || battleVote?.matchupId !== matchupId || battleVote.playerId !== voterId) return;
