@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-10-07
+
+- Fixed Prompt Battle scoring collisions when an authored ordinary question ID equals the readable battle label. Migration `0044` gives battle awards a matchup identity, keeps ordinary re-scoring from deleting battle events, and backfills existing events from resolved results and persisted ballots without changing award values. PGlite migration and runtime regressions pass; the migration has not been applied to production.
+
 ## 2026-10-06
 
 - Completed the Prompt Battle host roster (#27): hosts can see paired entrants’ submission status and server-reported spend, while Presentation receives aggregate progress. Lock and refresh races now retain confirmed phase state, and polling preserves host focus and drafts.
