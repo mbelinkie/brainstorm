@@ -170,7 +170,7 @@ function renderNav() {
     const roundMatches = round.title.toLowerCase().includes(needle);
     const isBattle = round.type === "prompt_battle";
     const visibleQuestions = (round.questions || []).map((item, questionIndex) => ({ item, questionIndex })).filter(({ item }) => (!needle || roundMatches || `${item.prompt} ${item.type}`.toLowerCase().includes(needle)) && (!navTypeFilter || item.type === navTypeFilter));
-    const battleMatches = isBattle && round.prompts?.some((prompt) => `${prompt.id} ${prompt.text}`.toLowerCase().includes(needle));
+    const battleMatches = isBattle && Array.isArray(round.prompts) && round.prompts.some((prompt) => `${prompt?.id} ${prompt?.text}`.toLowerCase().includes(needle));
     return { round, roundIndex, visibleQuestions, roundMatches, battleMatches };
   }).filter(({ visibleQuestions, roundMatches, battleMatches }) => visibleQuestions.length || roundMatches || battleMatches);
   $("#round-nav").innerHTML = `${visibleRounds.length ? visibleRounds.map(({ round, roundIndex, visibleQuestions }) => `
@@ -334,7 +334,7 @@ function battleField(label, path, value, errors, options = {}) {
 
 function renderPromptBattleEditor(round) {
   const errors = promptBattleErrorsByField(round, selection.roundIndex);
-  const prompts = (round.prompts || []).map((prompt, index) => `<article class="battle-prompt-row"><div class="field-grid">${battleField(`Prompt ${index + 1} ID`, `prompts.${index}.id`, prompt.id || "", errors)}<button class="button button-danger" data-remove-battle-prompt="${index}" type="button">Delete prompt</button></div>${battleField("Prompt text", `prompts.${index}.text`, prompt.text || "", errors, { textarea: true, maxlength: 2048 })}</article>`).join("");
+  const prompts = (Array.isArray(round.prompts) ? round.prompts : []).map((prompt, index) => `<article class="battle-prompt-row"><div class="field-grid">${battleField(`Prompt ${index + 1} ID`, `prompts.${index}.id`, prompt?.id || "", errors)}<button class="button button-danger" data-remove-battle-prompt="${index}" type="button">Delete prompt</button></div>${battleField("Prompt text", `prompts.${index}.text`, prompt?.text || "", errors, { textarea: true, maxlength: 2048 })}</article>`).join("");
   const engine = round.engine && typeof round.engine === "object" && !Array.isArray(round.engine) ? round.engine : {};
   const scoring = round.scoring && typeof round.scoring === "object" && !Array.isArray(round.scoring) ? round.scoring : {};
   return `<section class="section"><span class="section-label">Round details</span>${battleField("Round title", "title", round.title || "", errors)}</section>

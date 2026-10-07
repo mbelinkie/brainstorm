@@ -15,10 +15,15 @@ export function createPromptBattleRound(id, title) {
 }
 
 export function addPromptToBattleRound(round, id) {
+  if (!Array.isArray(round.prompts)) {
+    if (round.prompts !== undefined) return;
+    round.prompts = [];
+  }
   round.prompts.push({ id, text: "" });
 }
 
 export function removePromptFromBattleRound(round, index) {
+  if (!Array.isArray(round.prompts)) return;
   round.prompts.splice(index, 1);
 }
 
@@ -26,7 +31,7 @@ export function duplicatePromptBattleRound(round, id, newPromptId) {
   const copy = structuredClone(round);
   copy.id = id;
   copy.title = `${round.title || "Untitled round"} (copy)`;
-  copy.prompts.forEach((prompt) => { prompt.id = newPromptId(); });
+  if (Array.isArray(copy.prompts)) copy.prompts.forEach((prompt) => { if (prompt && typeof prompt === "object") prompt.id = newPromptId(); });
   return copy;
 }
 
