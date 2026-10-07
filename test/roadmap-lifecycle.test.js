@@ -920,6 +920,7 @@ test("claim requires a reason for max override and refuses unsupported effective
   for (const [extra, code] of [
     [{ effectiveEffort: "max" }, "EFFECTIVE_EFFORT_MISMATCH"],
     [{ effectiveEffort: "unlimited", allowMismatch: "reason" }, "EFFECTIVE_EFFORT_INVALID"],
+    [{ effectiveEffort: { toString: () => "max" }, allowMismatch: "reason" }, "EFFECTIVE_EFFORT_INVALID"],
   ]) {
     const { lifecycle, transport } = setup({ world: readyWorld() });
     const result = await lifecycle.claim(3, claimOpts(extra));

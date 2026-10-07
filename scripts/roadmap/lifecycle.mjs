@@ -319,6 +319,9 @@ export function createLifecycle({ gate, config, env = process.env, now = Date.no
     const allowMismatch = typeof opts.allowMismatch === "string" ? opts.allowMismatch.trim() : "";
     let effective = configuredEffective;
     if (opts.effectiveEffort !== undefined) {
+      if (typeof opts.effectiveEffort !== "string") {
+        return refuse("EFFECTIVE_EFFORT_INVALID", "effective-effort must be a string");
+      }
       const actualEffective = String(opts.effectiveEffort).trim();
       if (actualEffective !== configuredEffective) {
         if (!allowMismatch) {
