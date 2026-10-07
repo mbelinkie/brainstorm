@@ -69,7 +69,7 @@ test("scheduled purge removes objects before finalizing their metadata", async (
 
   assert.equal(error, undefined);
   assert.deepEqual(order, ["list", "remove", "finalize"]);
-  assert.deepEqual(json(requests[0]), { p_limit: 100 });
+  assert.deepEqual(json(requests[0]), { p_limit: 1000 });
   assert.equal(requests[0].method, "POST");
   assert.equal(requests[0].headers.get("apikey"), ENV.SUPABASE_SERVICE_ROLE_KEY);
   assert.equal(requests[0].headers.get("content-type"), "application/json");
@@ -79,35 +79,30 @@ test("scheduled purge removes objects before finalizing their metadata", async (
   assert.deepEqual(finalized, { p_asset_ids: [ASSET_A] });
 });
 
-test("a storage failure is excluded from finalization while successful deletes proceed", async () => {
-  const finalized = [];
-  const { requests, logs, error } = await runScheduled(async (request) => {
-    if (request.url.endsWith(rpc("purge_expired_battle_media"))) {
-      return Response.json([
-        asset(ASSET_A, "battle/generation-a/a.webp"),
-        asset(ASSET_B, "battle/generation-b/b.webp"),
-      ]);
-    }
-    if (request.url.endsWith(storageUrl)) {
-      if (json(request).prefixes[0].endsWith("a.webp")) return new Response(null, { status: 503 });
-      return new Response(null, { status: 204 });
-    }
+test("one scheduled run batches up to 1000 assets in at most three subrequests", async () => {
+  const assets = Array.from({ length: 1000 }, (_, index) => {
+    const id = `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`;
+    return asset(id, `battle/generation-${index}/image.webp`);
+  });
+  let finalized;
+  const { requests, error } = await runScheduled(async (request) => {
+    if (request.url.endsWith(rpc("purge_expired_battle_media"))) return Response.json(assets);
+    if (request.url.endsWith(storageUrl)) return new Response(null, { status: 204 });
     if (request.url.endsWith(rpc("finalize_battle_media_purge"))) {
-      finalized.push(...json(request).p_asset_ids);
-      return Response.json({ deleted: [ASSET_B], keptObjectStillPresent: [] });
+      finalized = json(request);
+      return Response.json({ deleted: assets.map(({ assetId }) => assetId), keptObjectStillPresent: [] });
     }
     return new Response(null, { status: 404 });
   });
 
-  assert.match(String(error), /left objects for retry/i);
-  assert.equal(requests.filter((request) => request.url.endsWith(storageUrl)).length, 2);
-  assert.match(JSON.stringify(logs), /storage delete/i);
-  assert.deepEqual(finalized, [ASSET_B]);
-  assert.ok(!json(requests.at(-1)).p_asset_ids.includes(ASSET_A));
+  assert.equal(error, undefined);
+  assert.equal(requests.length, 3);
+  assert.equal(requests.filter((request) => request.url.endsWith(storageUrl)).length, 1);
+  assert.equal(json(requests[1]).prefixes.length, 1000);
+  assert.deepEqual(finalized.p_asset_ids, assets.map(({ assetId }) => assetId));
 });
 
-test("a thrown Storage request leaves its row for a later run and does not stop other assets", async () => {
-  const finalized = [];
+test("a failed Storage batch is not finalized and leaves every row retryable", async () => {
   const sentinel = "private-storage-error-detail";
   const { requests, logs, error } = await runScheduled(async (request) => {
     if (request.url.endsWith(rpc("purge_expired_battle_media"))) {
@@ -116,22 +111,72 @@ test("a thrown Storage request leaves its row for a later run and does not stop 
         asset(ASSET_B, "battle/generation-b/b.webp"),
       ]);
     }
-    if (request.url.endsWith(storageUrl)) {
-      if (json(request).prefixes[0].endsWith("a.webp")) throw new Error(sentinel);
-      return new Response(null, { status: 204 });
+    if (request.url.endsWith(storageUrl)) return new Response(sentinel, { status: 503 });
+    return new Response(null, { status: 404 });
+  });
+
+  assert.match(String(error), /storage delete failed/i);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(json(requests[1]).prefixes, ["battle/generation-a/a.webp", "battle/generation-b/b.webp"]);
+  assert.match(JSON.stringify(logs), /storage delete/i);
+  assert.doesNotMatch(JSON.stringify(logs), new RegExp(sentinel));
+  assert.doesNotMatch(JSON.stringify(logs), /battle\/generation-/);
+});
+
+test("a thrown Storage batch is not finalized and does not expose error details", async () => {
+  const sentinel = "private-storage-error-detail";
+  const { requests, logs, error } = await runScheduled(async (request) => {
+    if (request.url.endsWith(rpc("purge_expired_battle_media"))) return Response.json([asset(ASSET_A, "battle/generation-a/a.webp")]);
+    if (request.url.endsWith(storageUrl)) throw new Error(sentinel);
+    return new Response(null, { status: 404 });
+  });
+
+  assert.match(String(error), /storage delete failed/i);
+  assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(logs), new RegExp(sentinel));
+  assert.doesNotMatch(JSON.stringify(logs), /battle\/generation-/);
+});
+
+test("a kept object in a partial finalization fails the run and remains listed for retry", async () => {
+  const { requests, logs, error } = await runScheduled(async (request) => {
+    if (request.url.endsWith(rpc("purge_expired_battle_media"))) {
+      return Response.json([asset(ASSET_A, "battle/generation-a/a.webp"), asset(ASSET_B, "battle/generation-b/b.webp")]);
     }
+    if (request.url.endsWith(storageUrl)) return new Response(null, { status: 204 });
     if (request.url.endsWith(rpc("finalize_battle_media_purge"))) {
-      finalized.push(...json(request).p_asset_ids);
-      return Response.json({ deleted: [ASSET_B], keptObjectStillPresent: [] });
+      return Response.json({ deleted: [ASSET_A], keptObjectStillPresent: [ASSET_B] });
     }
     return new Response(null, { status: 404 });
   });
 
   assert.match(String(error), /left objects for retry/i);
-  assert.deepEqual(finalized, [ASSET_B]);
-  assert.ok(logs.length > 0);
-  assert.doesNotMatch(JSON.stringify(logs), new RegExp(sentinel));
+  assert.deepEqual(json(requests[2]), { p_asset_ids: [ASSET_A, ASSET_B] });
+  assert.match(JSON.stringify(logs), /finalize objects still present/);
   assert.doesNotMatch(JSON.stringify(logs), /battle\/generation-/);
+});
+
+test("a failed batch is retried on the next scheduled run", async () => {
+  let storageAttempts = 0;
+  let finalized = 0;
+  const handle = async (request) => {
+    if (request.url.endsWith(rpc("purge_expired_battle_media"))) return Response.json([asset(ASSET_A, "battle/generation-a/a.webp")]);
+    if (request.url.endsWith(storageUrl)) {
+      storageAttempts += 1;
+      return new Response(null, { status: storageAttempts === 1 ? 503 : 204 });
+    }
+    if (request.url.endsWith(rpc("finalize_battle_media_purge"))) {
+      finalized += 1;
+      return Response.json({ deleted: [ASSET_A], keptObjectStillPresent: [] });
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  const first = await runScheduled(handle);
+  const retry = await runScheduled(handle);
+  assert.match(String(first.error), /storage delete failed/i);
+  assert.equal(retry.error, undefined);
+  assert.equal(storageAttempts, 2);
+  assert.equal(finalized, 1);
 });
 
 test("a finalization failure leaves metadata available for the next scheduled retry", async () => {
@@ -173,15 +218,25 @@ test("an empty purge list does not call Storage or finalization", async () => {
 });
 
 test("a non-battle storage path is never sent to the privileged delete API", async () => {
+  let finalized;
   const { requests, logs, error } = await runScheduled(async (request) => {
     if (request.url.endsWith(rpc("purge_expired_battle_media"))) {
-      return Response.json([asset(ASSET_A, "author/author-id/image.webp")]);
+      return Response.json([
+        asset(ASSET_A, "author/author-id/image.webp"),
+        asset(ASSET_B, "battle/generation-b/b.webp"),
+      ]);
     }
-    return new Response(null, { status: 500 });
+    if (request.url.endsWith(storageUrl)) return new Response(null, { status: 204 });
+    if (request.url.endsWith(rpc("finalize_battle_media_purge"))) {
+      finalized = json(request);
+      return Response.json({ deleted: [ASSET_B], keptObjectStillPresent: [] });
+    }
+    return new Response(null, { status: 404 });
   });
 
   assert.match(String(error), /left objects for retry/i);
   assert.match(JSON.stringify(logs), /storage delete validation/i);
-  assert.match(JSON.stringify(requests), /purge_expired_battle_media/);
-  assert.equal(requests.length, 1);
+  assert.deepEqual(json(requests[1]), { prefixes: ["battle/generation-b/b.webp"] });
+  assert.deepEqual(finalized, { p_asset_ids: [ASSET_B] });
+  assert.doesNotMatch(JSON.stringify(logs), /author-id/);
 });
