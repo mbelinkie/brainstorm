@@ -20,10 +20,10 @@ function fixture() {
   ];
   const battle = {roundIndex:1,phase:'battle_prompt',revision:41,opened:true,sessionSpendUsd:1.25,maxSessionSpendUsd:9.5,matchups:[{matchupId:'m1',matchupIndex:0,promptText:privateValues[2],viableEntryIds:[privateValues[3]],skipped:false,entrants}]};
   const state = {phase:'battle_prompt',presentationScreen:'battle_prompt',questionId:'q1',question:{...question,round:2,roundTitle:'Fixture Battle'},battleRoundIndex:1,battleMatchupIndex:0,battleMatchupCount:1,players:[{id:'spectator',name:'Late Spectator',points:0}],presenterOverride:'Preserved credit',submitted:{}};
-  return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],mode:'normal',hold:false };
+  return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],mode:'normal',hold:false,failNextReviewRefresh:false };
 }
 const hook = `\nwindow.__acceptance = {
- get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)},
+ get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, startVoting:()=>startBattleVoting(),
  projection:()=>publicRoomState(), payload:()=>hostStatePayload(),
  seed:(value,privatePayload)=>{state={...state,...value}; if(privatePayload) battleRoundPanel={...battleRoundPanel,state:privatePayload}; render()},
  refresh:()=>refreshBattlePairing(), render:()=>render(),
@@ -35,6 +35,7 @@ const fakeModule = `export function createClient(){return {
  if(name==='get_host_live_room_state')return {data:structuredClone(f.saved)};
  if(name==='get_host_battle_state'){
   if(f.hold)await new Promise(resolve=>window.__release=resolve);
+  if(f.failNextReviewRefresh){f.failNextReviewRefresh=false;window.__persistFixture?.();return {error:{message:'Fixture review refresh failure',code:'P0001'}};}
   if(f.mode==='fail-refresh')return {error:{message:'Fixture transport failure',code:'P0001'}};
   return {data:structuredClone(f.battle)};
  }
@@ -55,7 +56,9 @@ const fakeModule = `export function createClient(){return {
   entry.vetoed=Boolean(args.p_veto);entry.vetoReason=args.p_veto?args.p_reason:null;
   matchup.viableEntryIds=matchup.entrants.filter(e=>e.submittedAssetId&&!e.vetoed&&!e.forfeited).map(e=>e.entryId);
   matchup.skipped=!matchup.entrants.some(e=>!e.vetoed&&!e.forfeited);
-  f.battle.revision++;f.saved.revision=f.battle.revision;window.__persistFixture?.();
+  f.battle.revision++;f.saved.revision=f.battle.revision;
+  if(f.mode==='fail-review-refresh')f.failNextReviewRefresh=true;
+  window.__persistFixture?.();
   return {data:structuredClone(f.battle)};
  }
  if(name==='set_live_room_state'){ f.saved.phase=args.p_phase;f.saved.state=structuredClone(args.p_public_state);f.saved.revision++;window.__persistFixture?.();return {data:{revision:f.saved.revision}}; }
@@ -202,6 +205,49 @@ await run('host-review', 'host review shows every entry, veto and undo survive r
  const secondEntry={entryId:'e4',playerId:'p4',playerName:'Second Creator',submitted:true,submittedAssetId:'ASSET-SECOND',generations:[{attemptIndex:1,status:'complete',assetIds:['ASSET-SECOND'],playerPrompt:'Second entry prompt'}]};
  f.battle.matchups.push({matchupId:'m2',matchupIndex:1,promptText:'Second matchup prompt',viableEntryIds:['e4'],skipped:false,entrants:[secondEntry]});
  f.saved.state.battleMatchupCount=2;
+});
+await run('stale-review', 'voting stays blocked after a veto cannot be confirmed and recovers only from a fresh viable roster', async ({page}) => {
+ await (await lockControl(page)).click();
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_review');
+ await settle(page);
+ assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),false,'a confirmed viable matchup enables voting');
+
+ await page.evaluate(()=>{window.__fixture.mode='fail-review-refresh';});
+ page.once('dialog',dialog=>dialog.accept('Remove the final viable entry'));
+ await page.getByRole('button',{name:'Veto entry'}).click();
+ await settle(page);
+ const stale=await page.evaluate(()=>({panel:window.__acceptance.panel,serverViable:window.__fixture.battle.matchups[0].viableEntryIds}));
+ assert.equal(stale.panel.stale,true,'failed authoritative refresh marks the retained panel stale');
+ assert.deepEqual(stale.panel.state.matchups[0].viableEntryIds,['e1'],'the last confirmed roster remains visible');
+ assert.deepEqual(stale.serverViable,[],'the successful veto removed the final viable entry on the server');
+ assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),true,'patched start button is disabled while the roster is stale');
+ assert.match(await body(page),/Fixture review refresh failure/);
+ assert.match(await body(page),/last confirmed roster/i);
+
+ await page.evaluate(()=>window.__acceptance.render());
+ assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),true,'full render also disables voting while stale');
+ const writesBefore=await page.evaluate(()=>window.__fixture.calls.filter(call=>call.name==='set_live_room_state').length);
+ await page.evaluate(()=>window.__acceptance.startVoting());
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_review','the stale-state action guard keeps review open');
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(call=>call.name==='set_live_room_state').length),writesBefore,'the rejected stale action writes no voting state');
+ assert.match(await body(page),/stale\. Refresh the roster before starting voting/i,'the action guard explains how to recover');
+
+ await page.evaluate(()=>{window.__fixture.mode='normal';});
+ await page.getByRole('button',{name:/retry/i}).click();
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.panel.stale),false,'a successful authoritative refresh clears stale state');
+ assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),true,'a fresh roster with no viable matchups still cannot start voting');
+ assert.match(await page.locator('[data-battle-matchup-index="0"]').innerText(),/Skipped — no viable entries/);
+
+ await page.getByRole('button',{name:'Undo veto'}).click();
+ await settle(page);
+ assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),false,'voting becomes available only after fresh state confirms a viable entry');
+ assert.equal(await page.evaluate(()=>window.__acceptance.panel.stale),false);
+ assert.deepEqual(await page.evaluate(()=>window.__acceptance.panel.state.matchups[0].viableEntryIds),['e1']);
+},f=>{
+ f.battle.matchups[0].entrants=[f.battle.matchups[0].entrants[0]];
+ f.battle.matchups[0].viableEntryIds=['e1'];
 });
 await run('focus', 'five-second polling preserves manual score inputs, selection and focus', async ({page}) => {
  const points = page.locator('[data-score-points]');

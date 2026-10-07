@@ -626,7 +626,7 @@ function patchBattlePairingPanel() {
   if (startVoting) {
     const ready = firstViableBattleMatchupIndex(battleRoundPanel.state) !== null;
     const busy = battleRoundPanel.busy || Boolean(battleRoundPanel.reviewAction);
-    startVoting.disabled = !ready || busy || Boolean(hostStateSaveFailure);
+    startVoting.disabled = !ready || busy || battleRoundPanel.stale || Boolean(hostStateSaveFailure);
     startVoting.textContent = battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting";
   }
 }
@@ -701,6 +701,11 @@ async function handleBattleReviewAction(button) {
 
 async function startBattleVoting() {
   if (view !== "host" || state.phase !== "battle_review" || battleRoundPanel.reviewAction || battleRoundPanel.busy) return;
+  if (battleRoundPanel.stale) {
+    battleRoundPanel.error = "The review state is stale. Refresh the roster before starting voting.";
+    patchBattlePairingPanel();
+    return;
+  }
   if (hostStateSaveFailure) {
     battleRoundPanel.error = "Retry the room save before starting voting.";
     patchBattlePairingPanel();
@@ -2782,7 +2787,7 @@ function battlePairingPanel() {
   const busy = battleRoundPanel.busy;
   const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
   const viableMatchup = firstViableBattleMatchupIndex(battleRoundPanel.state);
-  const startVoting = state.phase === "battle_review" ? `<button class="btn btn-primary" data-battle-start-voting ${viableMatchup === null || busy || battleRoundPanel.reviewAction || hostStateSaveFailure ? "disabled" : ""}>${battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting"}</button>` : "";
+  const startVoting = state.phase === "battle_review" ? `<button class="btn btn-primary" data-battle-start-voting ${viableMatchup === null || busy || battleRoundPanel.stale || battleRoundPanel.reviewAction || hostStateSaveFailure ? "disabled" : ""}>${battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting"}</button>` : "";
   const refreshText = busy ? "Refreshing…" : "Refresh roster";
   return `<div class="battle-round-panel"><h3>Prompt Battle — round ${Number(state.battleRoundIndex) + 1}</h3><p class="battle-round-title">${escapeHtml(round.title || "Prompt Battle")}</p><div class="host-actions">${openButton}${startVoting}<button class="btn btn-secondary" data-battle-refresh-pairing aria-disabled="${busy}" ${busy ? 'data-busy="true"' : ''}>${refreshText}</button></div><div data-battle-pairing-dynamic>${battlePairingDynamicView()}</div></div>`;
 }
