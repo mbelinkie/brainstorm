@@ -5,11 +5,14 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 ## 2026-10-07
 
 - Fixed Prompt Battle load-error text on player holding cards: the failed-state red now takes precedence over the generic muted paragraph color, keeping the message readable on phones.
+- Added the Prompt Battle media purge schedule (#39): a daily 03:00 UTC Worker run deletes up to 1,000 expired battle objects in one Supabase Storage batch, then migration 0043 finalizes only objects absent from Storage metadata. Failed batches and still-present objects remain retryable; the trigger has not been deployed or run against live Storage.
 - Added authoritative Prompt Battle submission status to the player refresh RPC (#84): each entrant now reads `open`, `submitted`, or `forfeited` from the persisted entry timestamps. PGlite runtime regressions and the full test suite pass; migration `0045` has not been applied to production.
 
 - Added the Prompt Battle host review UI (#28): each submitted image is shown with its creator and matching player prompt; skipped matchups remain visible; veto and undo refresh authoritative host state. Hosts can start voting only when an entry is viable, beginning with the first viable matchup. Private review details stay out of player and Presentation state. Automated and offline browser tests pass; Producer acceptance and a real-room rehearsal remain unproven.
 - Fixed Prompt Battle scoring collisions when an authored ordinary question ID equals the readable battle label. Migration `0044` gives battle awards a matchup identity, keeps ordinary re-scoring from deleting battle events, and backfills existing events from resolved results and persisted ballots without changing award values. PGlite migration and runtime regressions pass; the migration has not been applied to production.
 - Fixed a Prompt Battle stale-roster race (#28 follow-up): after a veto or undo whose authoritative refresh fails, the host sees the last confirmed review state but cannot start voting until a fresh read confirms a viable matchup.
+- Added host-controlled Prompt Battle voting and results (#32): the host can start a viable matchup, follow live vote progress, reveal its result once, move to the next viable matchup, and finish the round through the normal round-end or finale flow. Matchup position and public vote/result projections survive refresh; skipped matchups are bypassed, and private review data stays host-only. Offline browser and automated coverage pass; no live room or provider was used.
+- Fixed two host-screen issues in Prompt Battle results (#32 follow-up): refresh buttons become clickable after the post-reload roster read, and result names/vote counts use a readable single-column style on the host's light card while phone styling stays unchanged.
 
 ## 2026-10-06
 

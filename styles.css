@@ -373,3 +373,8 @@ h1, h2, h3 { margin: 0; font-family: var(--heading); font-weight: 300; }
 .battle-review-veto-reason { color: #8e1433; }
 .battle-review-action { justify-self: start; min-height: 40px; margin-top: 4px; }
 @media (max-width: 520px) { .battle-review-matchup-heading { display: grid; } .battle-review-grid { grid-template-columns: 1fr; } }
+
+/* Host results sit on a white card; keep the phone's dark result palette intact. */
+.host-layout .battle-result-row { grid-template-columns: minmax(0, 1fr); border-color: #ddd2ff; background: #fff; }
+.host-layout .battle-result-row strong { color: var(--purple); }
+.host-layout .battle-result-row span { color: #5b4a9c; }
