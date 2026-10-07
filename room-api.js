@@ -97,6 +97,18 @@ export const roomApi = {
     return call("lock_battle_prompt", { p_room_code: roomCode, p_host_secret: hostSecret });
   },
 
+  // Host-only review action (0040). The host re-reads the private battle
+  // state after either direction so the grid always reflects server state.
+  vetoBattleEntry({ roomCode, hostSecret, entryId, reason = "", veto = true }) {
+    return call("veto_battle_entry", {
+      p_room_code: roomCode,
+      p_host_secret: hostSecret,
+      p_entry_id: entryId,
+      p_reason: reason,
+      p_veto: veto
+    });
+  },
+
   // Player read of their own battle entry (0038 get_player_battle_state):
   // their prompt, attempts remaining and their own generations, nothing else.
   getPlayerBattleState({ roomCode, playerToken }) {
