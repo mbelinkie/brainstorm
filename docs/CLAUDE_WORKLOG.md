@@ -2230,6 +2230,7 @@ Branch `codex/host-review-veto-28`, based on `b45be75c4f884989fcb14b90c84f0f15d1
 **Checks at implementation commit `4ba125eae163cf558258996923cbd646f36ce369`:** frozen `npm ci` completed; `npm test`: 859/859 passed; focused host sync, phase and review tests: 47/47; `node --check` passed for the application, helper, deploy manifest and changed JS tests; `git diff --check` passed. Offline browser fixture using bundled Playwright and installed Chrome: 4/4 passed. It blocked external-origin requests and covered image fetch with the host secret, presentation/public-state privacy, veto and undo across host refresh, skipped/no-viable controls, viable matchup selection, and saved voting-phase recovery.
 
 **Unproven:** Matthew did not personally view or accept the screen; parent-coordinated independent Sol review remains separate. No real room/provider call, migration, deployment, or live rehearsal was run. Producer acceptance and real-room behavior remain unproven.
+
 ### 2026-10-07 — Repair Prompt Battle score event identity (issue #30)
 
 - **Branch and claim:** `codex/scoring-records-30`, based on `b45be75c4f884989fcb14b90c84f0f15d1c1e087`. Claimed through the lifecycle gate by Codex thread `01a11478-5125-77f2-942a-93d469bfcf4e` as GPT-6 Luna with effective effort `max` for this invocation; claim: https://github.com/mbelinkie/brainstorm/issues/30#issuecomment-6030507310. Independent Sol verification is pending.
@@ -2244,3 +2245,15 @@ Branch `codex/host-review-veto-28`, based on `b45be75c4f884989fcb14b90c84f0f15d1
 Repair commit `c5a97d5` (`gpt-6-luna`, max) disables both rendered and patched Start voting controls while the authoritative host roster is stale, and `startBattleVoting()` independently rejects stale-state calls with a refresh instruction. The offline Chrome regression confirms that a successful final-entry veto followed by a failed host-state read cannot write a voting phase; a retry confirms the skipped roster but stays disabled, and undo only enables voting after fresh state confirms a viable entry.
 
 **Checks on repair commit `c5a97d5`:** `npm test`: 859/859; offline Chrome fixture: 5/5; `node --check app.js`, `node --check test/battle-host-browser.mjs`, and `git diff --check` passed. No production room/provider call, deployment, or migration was run. Independent Sol verification and delegated acceptance remain pending on the combined published SHA.
+
+### 2026-10-07 — Player submission outcome on refresh (issue #84)
+
+Branch `codex/player-submission-state-84`, based on `main` at `1f6951836500c42b6b3f6916467652c0d3788c60`. Codex `gpt-6-luna` (logical high, effective max). The stopped prior claim was released through the lifecycle gate using the 2026-10-07 checkpoint evidence; #84 was then claimed with this run's native ID under Matthew's resumed Luna Max authorization.
+
+**Files:** `supabase/migrations/0045_player_battle_submission_state.sql` (new), `test/battle-privacy-contract.test.js`, `CHANGELOG.md`, this entry.
+
+**Built:** the existing player RPC now adds `entry.submissionStatus`, derived from `forfeited_at` and `submitted_at`; it retains its player credential check, battle phase guard, current-round/own-player lookup, null-entry behavior, prompt, attempts and own generations. Runtime coverage now observes a manual submit, a lock auto-submit, a forfeit, a repeated lock and fresh reads, plus invalid room/player credentials, null entries and current-round scoping. The first focused run exposed an old fixture assertion that assumed lock selected each player's first image; the fixture now checks the actual submitted image while keeping the existing privacy assertion.
+
+**Checks:** `ctx-wire run rtk proxy node --test test/battle-privacy-contract.test.js`: 13/13. `ctx-wire run rtk proxy node --test test/battle-generation-rpcs.test.js test/battle-submission-rpcs.test.js test/battle-privacy-contract.test.js`: 47/47. `ctx-wire run rtk proxy npm test`: 863/863, no skips. All SQL ran in the existing PGlite database fixture. No production migration, external service, or deployment was used.
+
+**Unproven:** migration `0045` has not been applied; live Supabase behavior and the dependent player UI are not covered here. Independent Sol verification of the published commit is pending.
