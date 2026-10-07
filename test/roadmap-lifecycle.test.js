@@ -897,6 +897,38 @@ test("claim records the effective effort separately and refuses a wrong effectiv
   assertNoWrites(b.transport);
 });
 
+test("claim accepts a justified native max override and records configured versus actual effort", async () => {
+  const world = readyWorld();
+  world.issues[3].labels = ["model:standard", "effort:medium"];
+  const { lifecycle, transport } = setup({ world });
+  const accepted = await lifecycle.claim(3, claimOpts({
+    model: "gpt-6-luna",
+    effort: "medium",
+    effectiveEffort: "max",
+    allowMismatch: "User explicitly authorized Luna Max for workflow repair",
+  }));
+
+  assert.equal(accepted.ok, true);
+  const [comment] = world.issues[3].comments;
+  assert.match(comment.body, /effort `medium` \(effective `max`\)/);
+  assert.match(comment.body, /User explicitly authorized Luna Max for workflow repair/);
+  assert.match(comment.body, /effective effort max differs from configured high \(effort:medium\)/);
+  assert.deepEqual(transport.mutationNames(), ["LifecycleAddComment", "LifecycleSetStatus"]);
+});
+
+test("claim requires a reason for max override and refuses unsupported effective-effort strings before touching GitHub", async () => {
+  for (const [extra, code] of [
+    [{ effectiveEffort: "max" }, "EFFECTIVE_EFFORT_MISMATCH"],
+    [{ effectiveEffort: "unlimited", allowMismatch: "reason" }, "EFFECTIVE_EFFORT_INVALID"],
+  ]) {
+    const { lifecycle, transport } = setup({ world: readyWorld() });
+    const result = await lifecycle.claim(3, claimOpts(extra));
+    assert.equal(result.code, code);
+    assert.deepEqual(transport.calls, [], `${code}: no request of any kind may be sent`);
+    assertNoWrites(transport);
+  }
+});
+
 test("partial write: claim comment posted but the status write failed; a re-run finishes the status and posts no second comment", async () => {
   const world = readyWorld({ statusFailures: [502] });
   const first = setup({ world });
