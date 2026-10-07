@@ -262,8 +262,15 @@ await run('host-vote-result', 'two matchups, including a three-way, recover thei
  assert.match(hostResult.text,/PRIVATE-CREATOR-ALPHA/);
  assert.match(hostResult.text,/vote/);
  assert.equal(hostResult.columns.trim().split(/\s+/).length,1,'host result is a single readable text column');
- assert.notEqual(hostResult.strong,hostResult.background,'creator text contrasts with the host result card');
- assert.notEqual(hostResult.votes,hostResult.background,'vote count contrasts with the host result card');
+ const resultContrast=await page.locator('.battle-result-row').evaluateAll(rows=>rows.map(row=>{
+  const parse=value=>value.match(/[0-9.]+/g).map(Number);
+  const composite=(front,back)=>{const alpha=front[3]??1;return [0,1,2].map(i=>front[i]*alpha+back[i]*(1-alpha))};
+  const luminance=values=>values.map(v=>{const n=v/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;}).reduce((sum,n,i)=>sum+n*[0.2126,0.7152,0.0722][i],0);
+  const ratio=element=>{const text=parse(getComputedStyle(element).color);const rowRgb=parse(getComputedStyle(row).backgroundColor);const parentRgb=parse(getComputedStyle(row.parentElement).backgroundColor);const background=(rowRgb[3]??1)<1?composite(rowRgb,parentRgb):rowRgb;const textLuminance=luminance(text);const backgroundLuminance=luminance(background);return (Math.max(textLuminance,backgroundLuminance)+0.05)/(Math.min(textLuminance,backgroundLuminance)+0.05)};
+  return {strong:ratio(row.querySelector('strong')),votes:ratio(row.querySelector('span'))};
+ }));
+ assert.ok(resultContrast.length>=1,'at least one host result row is rendered');
+ resultContrast.forEach((entry,index)=>{assert.ok(entry.strong>=4.5,`host result row ${index} creator text contrast ${entry.strong.toFixed(2)} must be at least 4.5:1`);assert.ok(entry.votes>=4.5,`host result row ${index} vote count contrast ${entry.votes.toFixed(2)} must be at least 4.5:1`)});
  await page.screenshot({path:path.join(evidence,'host-vote-result-first.png'),fullPage:true});
 
  const resultReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_live_room_state').length);
@@ -281,6 +288,24 @@ await run('host-vote-result', 'two matchups, including a three-way, recover thei
  await settle(page);
  assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_result','the actual refresh control preserves the resolved phase');
  assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'refreshing a result does not award it twice');
+ const failedResultReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length);
+ await page.evaluate(()=>{window.__fixture.mode='fail-refresh';window.__persistFixture();});
+ await page.reload();
+ await page.waitForFunction(count=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length>count,failedResultReads);
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.panel.stale),true,'a failed initial result read keeps the stored result marked stale');
+ const staleResultRefresh=page.locator('.host-actions [data-battle-refresh-pairing]').first();
+ await page.waitForFunction(()=>{const button=document.querySelector('.host-actions [data-battle-refresh-pairing]');return button&&!button.disabled;});
+ assert.equal(await staleResultRefresh.isDisabled(),false,'the actual result refresh control is enabled while the stored result is stale');
+ await page.evaluate(()=>{window.__fixture.mode='normal';window.__persistFixture();});
+ const recoveredResultReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length);
+ await staleResultRefresh.click();
+ await page.waitForFunction(count=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length>count,recoveredResultReads);
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.panel.stale),false,'a successful refresh clears the stale result state');
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_result','recovering a failed result read keeps the resolved phase');
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'recovering a failed result read does not resolve again');
+ assert.equal(await page.evaluate(()=>window.__fixture.scoreAwards),1,'recovering a failed result read does not award twice');
  const recovered=await page.evaluate(()=>({phase:window.__acceptance.state.phase,index:window.__acceptance.state.battleMatchupIndex,stale:window.__acceptance.panel.stale,matchups:window.__acceptance.panel.state?.matchups?.map(m=>({index:m.matchupIndex,viable:m.viableEntryIds,resolvedAt:m.resolvedAt}))}));
  assert.equal(await page.getByRole('button',{name:'Next matchup'}).count(),1,`the next viable matchup is available after reload: ${JSON.stringify(recovered)}`);
  await page.getByRole('button',{name:'Next matchup'}).click();
