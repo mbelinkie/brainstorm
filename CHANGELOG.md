@@ -5,6 +5,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 ## 2026-10-07
 
 - Fixed Prompt Battle load-error text on player holding cards: the failed-state red now takes precedence over the generic muted paragraph color, keeping the message readable on phones.
+- Added the Prompt Battle media purge schedule (#39): a daily 03:00 UTC Worker run removes expired battle objects through Supabase Storage, then finalizes only successful removals. Fake Worker and existing PGlite retention tests pass; the trigger has not been deployed or run against live Storage.
 
 - Added the Prompt Battle host review UI (#28): each submitted image is shown with its creator and matching player prompt; skipped matchups remain visible; veto and undo refresh authoritative host state. Hosts can start voting only when an entry is viable, beginning with the first viable matchup. Private review details stay out of player and Presentation state. Automated and offline browser tests pass; Producer acceptance and a real-room rehearsal remain unproven.
 - Fixed Prompt Battle scoring collisions when an authored ordinary question ID equals the readable battle label. Migration `0044` gives battle awards a matchup identity, keeps ordinary re-scoring from deleting battle events, and backfills existing events from resolved results and persisted ballots without changing award values. PGlite migration and runtime regressions pass; the migration has not been applied to production.
