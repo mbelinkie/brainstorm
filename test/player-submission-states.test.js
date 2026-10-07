@@ -69,7 +69,7 @@ test("sameSubmittedAnswer decides whether what the phone shows is what the serve
 });
 
 test("wiring: the player status bar is rebuilt from the recorded outcome, not from a sticky flag", () => {
-  const start = app.indexOf("function renderPlayer");
+  const start = app.indexOf("function renderPlayer() {");
   const end = app.indexOf("function render()");
   assert.ok(start > -1 && end > start, "expected renderPlayer to precede render()");
   const renderPlayer = app.slice(start, end);

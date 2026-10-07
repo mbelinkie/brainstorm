@@ -225,14 +225,14 @@ test("the config routing block mirrors docs/roadmap/routing.md", () => {
   for (const [logical, effective] of Object.entries(config.routing.effectiveEfforts)) {
     assert.ok(md.includes(`| \`${logical}\` | \`${effective}\` |`), `routing.md maps ${logical} -> ${effective}`);
   }
-  assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["controller", "coordinator", "economy", "standard"]);
+  assert.deepEqual(Object.keys(config.routing.profiles).sort(), ["claude", "controller", "coordinator", "economy", "standard"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.routing.profiles).map(([name, profile]) => [name, profile.model])),
-    { controller: "Luna controller (not implementation)", coordinator: "Sol coordinator (not implementation)", economy: "DeepSeek Flash", standard: "DeepSeek Pro" },
+    { claude: "Claude Code session (not implementation label)", controller: "Luna controller (not implementation)", coordinator: "Sol coordinator (not implementation)", economy: "DeepSeek Flash", standard: "DeepSeek Pro" },
   );
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.routing.profiles).map(([name, profile]) => [name, profile.modelId])),
-    { controller: "gpt-6-luna", coordinator: "gpt-6.1-sol", economy: "deepseek-flash", standard: "deepseek-v4-pro" },
+    { claude: "claude-opus-5-5", controller: "gpt-6-luna", coordinator: "gpt-6.1-sol", economy: "deepseek-flash", standard: "deepseek-v4-pro" },
   );
 });
 

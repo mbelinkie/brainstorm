@@ -24,8 +24,9 @@
 // through parseResponses -- see addendum section 2.3. This module never
 // calls fetch() or a binding's .run() itself.
 //
-// Adapter status: workers_ai and kaplan_proxy are implemented; openrouter and
-// vertex are not yet present.
+// Adapter status: workers_ai, kaplan_proxy and openrouter are implemented
+// (openrouter is not yet enabled in the Worker's allowlist); vertex is not
+// yet present.
 
 const WORKERS_AI_MAX_PROMPT = 2048;
 
@@ -73,6 +74,66 @@ const WORKERS_AI_DEFAULT_PROFILE = { stepsKey: "steps", steps: 4, encoding: "jso
 // built from that fixture.
 export function isWorkersAiSafetyRejection(_error) {
   return false;
+}
+
+// --- OpenRouter (issue #44) ---------------------------------------------
+//
+// POST https://openrouter.ai/api/v1/images, one request per variant: every
+// Gemini image model on OpenRouter accepts only n: 1. Behaviour below follows
+// OpenRouter's documentation as checked on 2026-10-05 (image generation,
+// authentication, usage accounting, errors); none of it has been confirmed
+// against the live API yet.
+export const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images";
+
+// Error codes that mean the model declined the prompt. Taken from
+// OpenRouter's general error documentation; its image page shows no refusal,
+// so the host test button has to confirm the real shape.
+//
+// Where the error body comes from: runBattleDescriptor() in
+// cloudflare-worker.js turns a non-2xx response into
+// { ok: false, status, error } with error.status set, but today it does not
+// read the response body. This adapter reads OpenRouter's
+// { error: { code, message } } envelope from result.error.body. The Worker
+// ticket that enables openrouter must attach the parsed error body as
+// error.body in runBattleDescriptor (and pass config.auth to buildRequests).
+// Until then every OpenRouter failure is refused as an unaccounted outcome,
+// which is the safe direction: an unknown charge is never assumed to be zero.
+const OPENROUTER_REFUSAL_CODES = new Set(["content_policy_violation", "refusal"]);
+
+// Base64 prefixes of the PNG, JPEG and WebP file signatures, used only when
+// OpenRouter omits media_type (its docs say it may).
+const OPENROUTER_BASE64_SIGNATURES = [
+  ["iVBORw0KGgo", "image/png"],
+  ["/9j/", "image/jpeg"],
+  ["UklGR", "image/webp"]
+];
+
+function openRouterUnaccounted(detail) {
+  return new Error(`Unaccounted OpenRouter outcome: ${detail}`);
+}
+
+function openRouterMimeType(entry) {
+  const declared = entry.media_type;
+  if (typeof declared === "string" && declared.trim() !== "") {
+    return declared.startsWith("image/") ? declared : null;
+  }
+  for (const [prefix, mimeType] of OPENROUTER_BASE64_SIGNATURES) {
+    if (entry.b64_json.startsWith(prefix)) return mimeType;
+  }
+  return null;
+}
+
+// A failed result is an unbilled OpenRouter error response only when it has
+// a real non-2xx HTTP status AND carries OpenRouter's { error: { ... } }
+// envelope at result.error.body (contract Decision 4). Anything else -- status
+// 0 or none (fetch never got a response, or a 2xx body would not parse), or a
+// non-2xx without that envelope (an edge timeout such as 524, or today's
+// Worker, which drops the body) -- is an unknown charge.
+function isOpenRouterErrorResponse(result) {
+  const status = result.status;
+  const isErrorStatus = Number.isInteger(status) && status >= 100 && status <= 599 && (status < 200 || status > 299);
+  const envelope = result.error?.body?.error;
+  return isErrorStatus && envelope !== null && typeof envelope === "object" && !Array.isArray(envelope);
 }
 
 export const ENGINES = {
@@ -265,6 +326,129 @@ export const ENGINES = {
         costUsd,
         blocked,
         blockReason,
+        partial: imageCount > 0 && imageCount < expectedVariants
+      };
+    }
+  },
+
+  openrouter: {
+    async resolveAuth(env) {
+      const key = env?.OPENROUTER_API_KEY;
+      if (typeof key !== "string" || key.trim() === "") {
+        throw new Error("OPENROUTER_API_KEY is not configured");
+      }
+      return {
+        url: OPENROUTER_IMAGES_URL,
+        headers: {
+          Authorization: `Bearer ${key.trim()}`
+        }
+      };
+    },
+
+    buildRequests(config) {
+      if (!Number.isInteger(config?.variants) || config.variants < 1 || config.variants > 4) {
+        throw new Error("openrouter.buildRequests requires variants to be an integer between 1 and 4");
+      }
+
+      const auth = config.auth;
+      if (!auth || typeof auth !== "object" || typeof auth.url !== "string" || !auth.headers || typeof auth.headers !== "object") {
+        throw new Error("openrouter.buildRequests requires the resolved auth object from resolveAuth");
+      }
+
+      // Seeds are deliberately not forwarded, nor any other optional field:
+      // the body is model, prompt and n: 1, plus resolution / output_format
+      // only when the round sets them. Built fresh per variant so a caller
+      // mutating one descriptor cannot reach the others.
+      const descriptors = [];
+      for (let index = 0; index < config.variants; index += 1) {
+        const body = { model: config.model, prompt: config.prompt, n: 1 };
+        if (config.resolution !== undefined && config.resolution !== null) {
+          body.resolution = config.resolution;
+        }
+        if (config.outputFormat !== undefined && config.outputFormat !== null) {
+          body.output_format = config.outputFormat;
+        }
+        descriptors.push({
+          kind: "http",
+          url: auth.url,
+          headers: {
+            "content-type": "application/json",
+            ...auth.headers
+          },
+          body
+        });
+      }
+      return descriptors;
+    },
+
+    parseResponses({ results, expectedVariants }) {
+      if (!Number.isInteger(expectedVariants) || expectedVariants < 1 || expectedVariants > 4) {
+        throw new Error("openrouter.parseResponses requires expectedVariants to be an integer between 1 and 4");
+      }
+
+      if (!Array.isArray(results) || results.length === 0) {
+        throw openRouterUnaccounted("no request results were returned");
+      }
+
+      let costUsd = 0;
+      const images = [];
+      let refusalMessage = null;
+      let sawRefusal = false;
+
+      for (const result of results) {
+        if (!result || typeof result !== "object") {
+          throw openRouterUnaccounted("a request result is missing");
+        }
+
+        if (result.ok !== true) {
+          // OpenRouter bills all-or-nothing: an error response is not
+          // charged and adds no images. Anything else is an unknown charge,
+          // which is never assumed to be zero.
+          if (!isOpenRouterErrorResponse(result)) {
+            throw openRouterUnaccounted("a request got no response or no OpenRouter error body, so its cost is unknown");
+          }
+          const providerError = result.error.body.error;
+          if (!sawRefusal && OPENROUTER_REFUSAL_CODES.has(providerError.code)) {
+            sawRefusal = true;
+            refusalMessage = typeof providerError.message === "string" && providerError.message.trim() !== ""
+              ? providerError.message
+              : "The image model declined that prompt.";
+          }
+          continue;
+        }
+
+        const body = result.body;
+        if (!body || typeof body !== "object") {
+          throw openRouterUnaccounted("a successful response has no parseable body");
+        }
+
+        const cost = body.usage?.cost;
+        if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) {
+          throw openRouterUnaccounted("a successful response has no valid usage.cost");
+        }
+        costUsd += cost;
+        if (!Number.isFinite(costUsd)) {
+          throw openRouterUnaccounted("the cost total is not finite");
+        }
+
+        const entries = Array.isArray(body.data) ? body.data : [];
+        for (const entry of entries) {
+          if (!entry || typeof entry !== "object") continue;
+          if (typeof entry.b64_json !== "string" || entry.b64_json.trim() === "") continue;
+          const mimeType = openRouterMimeType(entry);
+          if (mimeType === null) continue;
+          images.push({ mimeType, bytesBase64: entry.b64_json });
+        }
+      }
+
+      const imageCount = images.length;
+      const blocked = imageCount === 0 && sawRefusal;
+
+      return {
+        images,
+        costUsd,
+        blocked,
+        blockReason: blocked ? refusalMessage : null,
         partial: imageCount > 0 && imageCount < expectedVariants
       };
     }

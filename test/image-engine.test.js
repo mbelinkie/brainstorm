@@ -5,10 +5,10 @@
 // buildRequests/parseResponses contract makes that possible even for a
 // provider (Workers AI) that needs N calls for N variants.
 //
-// Only the workers_ai adapter exists this slice
+// This file covers the workers_ai adapter
 // (docs/superpowers/specs/2026-08-24-prompt-battle-free-engine-addendum.md,
-// section 4). openrouter, vertex, and the Kaplan proxy are deferred, so
-// there is no ENGINES.openrouter here to test against.
+// section 4). kaplan_proxy and openrouter have their own files,
+// image-engine-kaplan.test.js and image-engine-openrouter.test.js.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ENGINES, isWorkersAiSafetyRejection } from "../image-engine.js";

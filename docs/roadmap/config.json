@@ -81,7 +81,8 @@
       "economy": { "model": "DeepSeek Flash", "modelId": "deepseek-flash", "efforts": ["low", "medium", "high"] },
       "standard": { "model": "DeepSeek Pro", "modelId": "deepseek-v4-pro", "efforts": ["low", "medium", "high"] },
       "controller": { "model": "Luna controller (not implementation)", "modelId": "gpt-6-luna", "efforts": ["medium", "high"] },
-      "coordinator": { "model": "Sol coordinator (not implementation)", "modelId": "gpt-6.1-sol", "efforts": ["medium", "high"] }
+      "coordinator": { "model": "Sol coordinator (not implementation)", "modelId": "gpt-6.1-sol", "efforts": ["medium", "high"] },
+      "claude": { "model": "Claude Code session (not implementation label)", "modelId": "claude-opus-5-5", "efforts": ["medium", "high"] }
     },
     "efforts": ["low", "medium", "high"],
     "effectiveEfforts": { "low": "low", "medium": "high", "high": "high" },
