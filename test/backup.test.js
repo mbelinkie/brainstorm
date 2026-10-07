@@ -755,12 +755,12 @@ test('run-command uses hardcoded supabase, sanitized env, and accepts detached o
   calls.length = 0;
   const mediaResult = await run({
     step: 'media',
-    args: ['storage', 'cp', '--linked', `ss:///quiz-media/${mediaPath}`, mediaDest],
+    args: ['storage', 'cp', '--linked', '--experimental', `ss:///quiz-media/${mediaPath}`, mediaDest],
     cwd: repoRoot,
     output: mediaDest,
   });
   assert.equal(mediaResult.ok, true);
-  assert.deepEqual(calls[0].args, ['storage', 'cp', '--linked', `ss:///quiz-media/${mediaPath}`, mediaDest]);
+  assert.deepEqual(calls[0].args, ['storage', 'cp', '--linked', '--experimental', `ss:///quiz-media/${mediaPath}`, mediaDest]);
   assert.equal(calls[0].options.cwd, repoRoot);
 });
 
@@ -785,9 +785,10 @@ test('run-command refuses invalid shapes, uploads, traversal, and override keys 
     { step: 'schema', args: ['db', 'dump', '--linked', '--schema', 'public', '--file', path.join(backupDir, 'database', 'schema.sql')], cwd: repoRoot, shell: true },
     { step: 'schema', args: ['db', 'dump', '--linked', '--schema', 'public', '--file', path.join(backupDir, 'database', 'schema.sql')], cwd: repoRoot, command: 'gh' },
     { step: 'data', args: ['db', 'dump', '--linked', '--schema', 'public', '--data-only', '--use-copy', '--file', path.join(repoRoot, 'database', 'data.sql')], cwd: repoRoot, output: path.join(backupDir, 'database', 'data.sql') },
-    { step: 'media', args: ['storage', 'cp', '--linked', 'ss:///quiz-media/author/audio.wav', path.join(backupDir, 'media', 'author', 'audio.wav')], cwd: repoRoot, output: path.join(backupDir, 'different.sql') },
-    { step: 'media', args: ['storage', 'cp', '--linked', 'ss:///quiz-media/../escape.wav', path.join(backupDir, 'media', 'escape.wav')], cwd: repoRoot },
-    { step: 'media', args: ['storage', 'cp', '--linked', 'ss:///quiz-media/author/audio.wav', 'ss:///quiz-media/author/audio.wav'], cwd: repoRoot },
+    { step: 'media', args: ['storage', 'cp', '--linked', '--experimental', 'ss:///quiz-media/author/audio.wav', path.join(backupDir, 'media', 'author', 'audio.wav')], cwd: repoRoot, output: path.join(backupDir, 'different.sql') },
+    { step: 'media', args: ['storage', 'cp', '--linked', '--experimental', 'ss:///quiz-media/../escape.wav', path.join(backupDir, 'media', 'escape.wav')], cwd: repoRoot },
+    { step: 'media', args: ['storage', 'cp', '--linked', '--experimental', 'ss:///quiz-media/author/audio.wav', 'ss:///quiz-media/author/audio.wav'], cwd: repoRoot },
+    { step: 'media', args: ['storage', 'cp', '--linked', 'ss:///quiz-media/author/audio.wav', path.join(backupDir, 'media', 'author', 'audio.wav')], cwd: repoRoot },
   ];
 
   for (const request of invalidRequests) {
@@ -796,6 +797,45 @@ test('run-command refuses invalid shapes, uploads, traversal, and override keys 
     assert.equal(result.ok, false, JSON.stringify(request));
     assert.equal(spawnCount, before, 'spawn must not be called for invalid request');
   }
+});
+
+test('run-command requires --experimental for storage cp media copies', async (t) => {
+  const scratch = await mkdtemp('backup-run-command-experimental-');
+  t.after(() => fs.rm(scratch, { recursive: true, force: true }));
+
+  const repoRoot = path.join(scratch, 'repo');
+  const backupDir = path.join(scratch, 'backup');
+  const mediaPath = 'author/audio.wav';
+  const mediaDest = path.join(backupDir, 'media', mediaPath);
+
+  const calls = [];
+  const run = createRunner({
+    spawn: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  const approved = await run({
+    step: 'media',
+    args: ['storage', 'cp', '--linked', '--experimental', `ss:///quiz-media/${mediaPath}`, mediaDest],
+    cwd: repoRoot,
+    output: mediaDest,
+  });
+  assert.equal(approved.ok, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, ['storage', 'cp', '--linked', '--experimental', `ss:///quiz-media/${mediaPath}`, mediaDest]);
+
+  calls.length = 0;
+  const missing = await run({
+    step: 'media',
+    args: ['storage', 'cp', '--linked', `ss:///quiz-media/${mediaPath}`, mediaDest],
+    cwd: repoRoot,
+    output: mediaDest,
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, 'INVALID_ARGUMENTS');
+  assert.equal(calls.length, 0);
 });
 
 test('run-command fails safe for missing executable and nonzero output, redacting all token shapes', async (t) => {
@@ -913,12 +953,12 @@ function createSupabaseFake({ repoRoot, backupDir, dataSql, mediaContents = {}, 
     const dest = request.output;
     await fs.mkdir(path.dirname(dest), { recursive: true });
 
-    if (symlinkPath && request.args[3].slice('ss:///quiz-media/'.length) === symlinkPath) {
+    if (symlinkPath && request.args[4].slice('ss:///quiz-media/'.length) === symlinkPath) {
       const target = path.join(backupDir, 'outside-target');
       await fs.writeFile(target, 'outside');
       await fs.symlink(target, dest);
     } else {
-      const storagePath = request.args[3].slice('ss:///quiz-media/'.length);
+      const storagePath = request.args[4].slice('ss:///quiz-media/'.length);
       const content = mediaContents[storagePath] ?? 'default';
       const bytes = wrongSizePath === storagePath ? content + '-wrong' : content;
       await fs.writeFile(dest, bytes);
@@ -985,8 +1025,9 @@ test('collectSupabase uses exact CLI args and cwd, copies nonbattle rows, exclud
     assert.equal(call.args[0], 'storage');
     assert.equal(call.args[1], 'cp');
     assert.equal(call.args[2], '--linked');
-    assert.ok(call.args[3].startsWith('ss:///quiz-media/'));
-    assert.equal(call.args[4], path.join(backupDir, 'media', ...call.args[3].slice('ss:///quiz-media/'.length).split('/')));
+    assert.equal(call.args[3], '--experimental');
+    assert.ok(call.args[4].startsWith('ss:///quiz-media/'));
+    assert.equal(call.args[5], path.join(backupDir, 'media', ...call.args[4].slice('ss:///quiz-media/'.length).split('/')));
     assert.equal(call.cwd, repoRoot);
   }
   assert.equal(fake.calls.some((c) => c.args.includes('ls')), false);

@@ -161,21 +161,21 @@ function validateRequest(request) {
   }
 
   // step === 'media'
-  if (!Array.isArray(args) || args.length !== 5) {
+  if (!Array.isArray(args) || args.length !== 6) {
     return { ok: false, code: 'INVALID_ARGUMENTS' };
   }
-  if (args[0] !== 'storage' || args[1] !== 'cp' || args[2] !== '--linked') {
+  if (args[0] !== 'storage' || args[1] !== 'cp' || args[2] !== '--linked' || args[3] !== '--experimental') {
     return { ok: false, code: 'INVALID_ARGUMENTS' };
   }
   const prefix = 'ss:///quiz-media/';
-  if (typeof args[3] !== 'string' || !args[3].startsWith(prefix)) {
+  if (typeof args[4] !== 'string' || !args[4].startsWith(prefix)) {
     return { ok: false, code: 'INVALID_STORAGE_PATH' };
   }
-  const storagePath = args[3].slice(prefix.length);
+  const storagePath = args[4].slice(prefix.length);
   if (!isSafeStoragePath(storagePath)) {
     return { ok: false, code: 'INVALID_STORAGE_PATH' };
   }
-  const destination = args[4];
+  const destination = args[5];
   if (!isSafeAbsoluteLocalPath(destination) || !hasLocalSuffix(destination, 'media', storagePath)) {
     return { ok: false, code: 'INVALID_ARGUMENTS' };
   }

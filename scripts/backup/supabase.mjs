@@ -410,6 +410,7 @@ export async function collectSupabase({ dir, repoRoot, runner }) {
       'storage',
       'cp',
       '--linked',
+      '--experimental',
       `ss:///quiz-media/${row.storage_path}`,
       destination,
     ];
