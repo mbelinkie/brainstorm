@@ -20,10 +20,10 @@ function fixture() {
   ];
   const battle = {roundIndex:1,phase:'battle_prompt',revision:41,opened:true,sessionSpendUsd:1.25,maxSessionSpendUsd:9.5,matchups:[{matchupId:'m1',matchupIndex:0,promptText:privateValues[2],viableEntryIds:[privateValues[3]],skipped:false,entrants}]};
   const state = {phase:'battle_prompt',presentationScreen:'battle_prompt',questionId:'q1',question:{...question,round:2,roundTitle:'Fixture Battle'},battleRoundIndex:1,battleMatchupIndex:0,battleMatchupCount:1,players:[{id:'spectator',name:'Late Spectator',points:0}],presenterOverride:'Preserved credit',submitted:{}};
-  return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],mode:'normal',hold:false,failNextReviewRefresh:false };
+  return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],scoreAwards:0,mode:'normal',hold:false,failNextReviewRefresh:false };
 }
 const hook = `\nwindow.__acceptance = {
- get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, startVoting:()=>startBattleVoting(),
+ get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
  projection:()=>publicRoomState(), payload:()=>hostStatePayload(),
  seed:(value,privatePayload)=>{state={...state,...value}; if(privatePayload) battleRoundPanel={...battleRoundPanel,state:privatePayload}; render()},
  refresh:()=>refreshBattlePairing(), render:()=>render(),
@@ -44,7 +44,7 @@ const fakeModule = `export function createClient(){return {
   if(f.mode==='reject-lock')return {error:{message:'Fixture lock rejected',code:'P0001'}};
   f.saved.phase='battle_review';f.saved.revision=42;f.saved.state.phase='battle_review';f.saved.state.presentationScreen='battle_review';
   f.battle.phase='battle_review';f.battle.revision=42;
-  f.battle.matchups.forEach(m=>{m.viableEntryIds=m.entrants.filter(e=>e.submittedAssetId&&!e.vetoed&&!e.forfeited).map(e=>e.entryId);m.skipped=!m.entrants.some(e=>!e.vetoed&&!e.forfeited)});
+  f.battle.matchups.forEach(m=>{m.entrants.forEach(e=>e.viable=Boolean(e.submittedAssetId&&!e.vetoed&&!e.forfeited));m.viableEntryIds=m.entrants.filter(e=>e.viable).map(e=>e.entryId);m.skipped=!m.entrants.some(e=>!e.vetoed&&!e.forfeited)});
   window.__persistFixture?.();
   if(f.mode==='lost-lock')return {error:{message:'Fixture lost lock response',code:'P0001'}};
   return {data:{...structuredClone(f.battle),locked:true}};
@@ -54,6 +54,7 @@ const fakeModule = `export function createClient(){return {
   const entry=matchup?.entrants.find(e=>e.entryId===args.p_entry_id);
   if(!entry)return {error:{message:'Entry not found',code:'P0001'}};
   entry.vetoed=Boolean(args.p_veto);entry.vetoReason=args.p_veto?args.p_reason:null;
+  entry.viable=Boolean(entry.submittedAssetId&&!entry.vetoed&&!entry.forfeited);
   matchup.viableEntryIds=matchup.entrants.filter(e=>e.submittedAssetId&&!e.vetoed&&!e.forfeited).map(e=>e.entryId);
   matchup.skipped=!matchup.entrants.some(e=>!e.vetoed&&!e.forfeited);
   f.battle.revision++;f.saved.revision=f.battle.revision;
@@ -61,7 +62,19 @@ const fakeModule = `export function createClient(){return {
   window.__persistFixture?.();
   return {data:structuredClone(f.battle)};
  }
- if(name==='set_live_room_state'){ f.saved.phase=args.p_phase;f.saved.state=structuredClone(args.p_public_state);f.saved.revision++;window.__persistFixture?.();return {data:{revision:f.saved.revision}}; }
+ if(name==='resolve_battle_matchup'){
+  const matchup=f.battle.matchups.find(m=>m.matchupId===args.p_matchup_id);
+  if(!matchup)return {error:{message:'Matchup not found',code:'P0001'}};
+  if(matchup.storedResult)return {data:{...structuredClone(matchup.storedResult),revision:f.saved.revision,phase:'battle_result',created:false}};
+  const viable=matchup.entrants.filter(e=>e.viable&&e.submittedAssetId);
+  const entries=matchup.entrants.filter(e=>e.submittedAssetId).map((e,index)=>({entryId:e.entryId,playerId:e.playerId,playerName:e.playerName,logoKey:e.logoKey||null,assetId:e.submittedAssetId,votes:e.votes||0,viable:Boolean(e.viable),vetoed:Boolean(e.vetoed),forfeited:Boolean(e.forfeited),winner:viable[0]?.entryId===e.entryId,points:viable[0]?.entryId===e.entryId?5:0}));
+  matchup.resolvedAt=new Date().toISOString();matchup.votesCast=Number(matchup.votesCast)||0;
+  matchup.storedResult={matchupId:matchup.matchupId,roundIndex:1,matchupIndex:matchup.matchupIndex,promptText:matchup.promptText,resolvedAt:matchup.resolvedAt,outcome:viable.length===0?'skipped':viable.length===1?'default':'winner',winnerPoints:5,voterPoints:1,votesCast:matchup.votesCast,voterCount:matchup.votesCast,entries};
+  f.scoreAwards+=viable.length?1:0;f.saved.phase='battle_result';f.saved.state.phase='battle_result';f.battle.phase='battle_result';f.saved.revision++;f.battle.revision=f.saved.revision;
+  window.__persistFixture?.();
+  return {data:{...structuredClone(matchup.storedResult),revision:f.saved.revision,phase:'battle_result',created:true}};
+ }
+ if(name==='set_live_room_state'){ f.saved.phase=args.p_phase;f.saved.state=structuredClone(args.p_public_state);f.saved.revision++;f.battle.phase=args.p_phase;f.battle.revision=f.saved.revision;window.__persistFixture?.();return {data:{revision:f.saved.revision}}; }
  if(name==='get_live_leaderboard')return {data:structuredClone(f.saved.state.players)};if(name==='get_host_score_events')return {data:[]};
  return {data:[]};
  }} }`;
@@ -134,20 +147,20 @@ await run('host-review', 'host review shows every entry, veto and undo survive r
  await (await lockControl(page)).click();
  await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_review');
  await settle(page);
- assert.equal(await page.locator('.battle-review-entry').count(),2,'all submitted entries are in the review grid');
+ assert.equal(await page.locator('.battle-review-entry').count(),4,'all submitted entries across both matchups are in the review grid');
  assert.match(await body(page),/PRIVATE-CREATOR-ALPHA/);
  assert.match(await body(page),/PRIVATE-PROMPT-TEXT/);
  assert.match(await body(page),/Second Creator/);
  await page.screenshot({path:path.join(evidence,'host-review-grid.png'),fullPage:true});
  await page.waitForFunction(()=>[...document.querySelectorAll('[data-battle-review-image]')].every(image=>image.src.startsWith('blob:')));
- assert.equal(await page.locator('.battle-review-image img').count(),2);
+ assert.equal(await page.locator('.battle-review-image img').count(),4);
  await settle(presentation.page);
  assert.equal(await presentation.page.locator('.battle-review').count(),0,'Presentation never renders the host review grid');
  const publicPayload=await page.evaluate(()=>window.__fixture.broadcasts.filter(message=>message.event==='state').at(-1));
  for(const secret of privateValues)assert.ok(!JSON.stringify(publicPayload).includes(secret),'review entries and assets stay out of public state');
  assert.doesNotMatch(await body(presentation.page),/PRIVATE-CREATOR-ALPHA|PRIVATE-PROMPT-TEXT|PRIVATE-ASSET-ID/);
  const media=await page.evaluate(()=>fetch('/__media-requests').then(response=>response.json()));
- assert.ok(media.length>=2,'the host fetched both submitted images');
+ assert.ok(media.length>=4,'the host fetched every submitted image');
  assert.ok(media.every(request=>request.hostSecret&&request.room==='ACPT'&&!request.playerToken),'private image requests use the host secret');
  assert.ok(media.some(request=>request.assetId==='PRIVATE-ASSET-ID'));
 
@@ -183,13 +196,15 @@ await run('host-review', 'host review shows every entry, veto and undo survive r
 
  await page.getByRole('button',{name:'Undo veto'}).click();
  await settle(page);
- assert.equal(await page.getByRole('button',{name:'Veto entry'}).count(),2,'undo re-enables the entry after refresh');
+ assert.equal(await page.getByRole('button',{name:'Veto entry'}).count(),4,'undo re-enables entries across both matchups');
  page.once('dialog',dialog=>dialog.accept('Fixture veto reason'));
  await page.getByRole('button',{name:'Veto entry'}).first().click();
  await settle(page);
+ await page.getByRole('button',{name:'Undo veto'}).click();
+ await settle(page);
  await page.getByRole('button',{name:'Start voting'}).click();
  await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_vote');
- assert.equal(await page.evaluate(()=>window.__acceptance.state.battleMatchupIndex),1,'voting starts at the first matchup with a viable entry');
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleMatchupIndex),0,'voting starts at the first matchup with a viable entry');
  assert.match(await body(page),/Voting is open/);
  const roomStateReads=await page.evaluate(()=>window.__fixture.calls.filter(call=>call.name==='get_host_live_room_state').length);
  await page.reload();
@@ -202,9 +217,78 @@ await run('host-review', 'host review shows every entry, veto and undo survive r
  const first=f.battle.matchups[0];
  first.entrants=[first.entrants[0]];
  first.viableEntryIds=['e1'];
- const secondEntry={entryId:'e4',playerId:'p4',playerName:'Second Creator',submitted:true,submittedAssetId:'ASSET-SECOND',generations:[{attemptIndex:1,status:'complete',assetIds:['ASSET-SECOND'],playerPrompt:'Second entry prompt'}]};
- f.battle.matchups.push({matchupId:'m2',matchupIndex:1,promptText:'Second matchup prompt',viableEntryIds:['e4'],skipped:false,entrants:[secondEntry]});
+ const secondEntries=[
+  {entryId:'e4',playerId:'p4',playerName:'Second Creator',submitted:true,submittedAssetId:'ASSET-SECOND',viable:true,generations:[{attemptIndex:1,status:'complete',assetIds:['ASSET-SECOND'],playerPrompt:'Second entry prompt'}]},
+  {entryId:'e5',playerId:'p5',playerName:'Third Creator',submitted:true,submittedAssetId:'ASSET-THIRD',viable:true,generations:[{attemptIndex:1,status:'complete',assetIds:['ASSET-THIRD'],playerPrompt:'Third entry prompt'}]},
+  {entryId:'e6',playerId:'p6',playerName:'Fourth Creator',submitted:true,submittedAssetId:'ASSET-FOURTH',viable:true,generations:[{attemptIndex:1,status:'complete',assetIds:['ASSET-FOURTH'],playerPrompt:'Fourth entry prompt'}]}
+ ];
+ f.battle.matchups.push({matchupId:'m2',matchupIndex:1,promptText:'Second matchup prompt',viableEntryIds:['e4','e5','e6'],skipped:false,entrants:secondEntries});
  f.saved.state.battleMatchupCount=2;
+});
+await run('host-vote-result', 'two matchups, including a three-way, recover their pointer and reveal each result once', async ({page,errors}) => {
+ await page.waitForFunction(()=>window.__acceptance.panel.state?.matchups?.length===2);
+ await page.getByRole('button',{name:'Start voting'}).click();
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_vote');
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleMatchupIndex),0);
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleVote.entries.length),2,'the first matchup is a two-way ballot');
+
+ const reads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_live_room_state').length);
+ await page.reload();
+ await page.waitForFunction(count=>window.__fixture.calls.filter(c=>c.name==='get_host_live_room_state').length>count,reads);
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_vote');
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleMatchupIndex),0,'the current matchup pointer survives refresh');
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleVote.entries.length),2,'the anonymous ballot is rebuilt after refresh');
+
+ await page.evaluate(async()=>{
+  const current=window.__fixture.battle.matchups[0];current.votesCast=1;current.eligibleVoters=3;current.entrants[0].votes=1;
+  window.__persistFixture();await window.__acceptance.refresh();
+ });
+ await settle(page);
+ assert.match(await page.locator('[data-battle-vote-progress]').innerText(),/1 of 3 votes received/,'host progress refreshes from the private server counts');
+
+ await page.evaluate(()=>{document.querySelector('[data-battle-reveal]').click();document.querySelector('[data-battle-reveal]').click();});
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_result');
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'double Reveal issues only one resolver request');
+ assert.equal(await page.evaluate(()=>window.__fixture.scoreAwards),1,'the first matchup awards once');
+ assert.match(await body(page),/PRIVATE-CREATOR-ALPHA/);
+ await page.screenshot({path:path.join(evidence,'host-vote-result-first.png'),fullPage:true});
+
+ const resultReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_live_room_state').length);
+ await page.reload();
+ await page.waitForFunction(count=>window.__fixture.calls.filter(c=>c.name==='get_host_live_room_state').length>count,resultReads);
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_result','result phase and revealed outcome survive refresh');
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'reloading a stored result does not resolve or score twice');
+ const recovered=await page.evaluate(()=>({phase:window.__acceptance.state.phase,index:window.__acceptance.state.battleMatchupIndex,stale:window.__acceptance.panel.stale,matchups:window.__acceptance.panel.state?.matchups?.map(m=>({index:m.matchupIndex,viable:m.viableEntryIds,resolvedAt:m.resolvedAt}))}));
+ assert.equal(await page.getByRole('button',{name:'Next matchup'}).count(),1,`the next viable matchup is available after reload: ${JSON.stringify(recovered)}`);
+ await page.getByRole('button',{name:'Next matchup'}).click();
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_vote'&&window.__acceptance.state.battleMatchupIndex===1);
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleVote.entries.length),3,'the next matchup presents all three viable entries');
+ const publicVote=await page.evaluate(()=>JSON.stringify(window.__acceptance.projection()));
+ assert.doesNotMatch(publicVote,/Second Creator|Third Creator|Fourth Creator/,'creator details stay out of the public ballot');
+ await page.evaluate(async()=>{
+  const current=window.__fixture.battle.matchups[1];current.votesCast=2;current.eligibleVoters=3;current.entrants[0].votes=2;
+  window.__persistFixture();await window.__acceptance.refresh();
+ });
+ await settle(page);
+ assert.match(await page.locator('[data-battle-vote-progress]').innerText(),/2 of 3 votes received/);
+ await page.evaluate(()=>{document.querySelector('[data-battle-reveal]').click();document.querySelector('[data-battle-reveal]').click();});
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='battle_result'&&window.__acceptance.state.battleResult.matchupIndex===1);
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),2);
+ assert.equal(await page.evaluate(()=>window.__fixture.scoreAwards),2,'three-way result awards once too');
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.battleResult.entries.length),3);
+ await page.getByRole('button',{name:'Finish battle round'}).click();
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='complete');
+ assert.deepEqual(await page.evaluate(()=>({round:window.__acceptance.state.battleRoundIndex,index:window.__acceptance.state.battleMatchupIndex,count:window.__acceptance.state.battleMatchupCount,vote:window.__acceptance.state.battleVote,result:window.__acceptance.state.battleResult})),{round:null,index:null,count:null,vote:null,result:null},'finish clears matchup state before the finale');
+ assert.deepEqual(errors,[]);
+ await page.screenshot({path:path.join(evidence,'host-vote-result-finale.png'),fullPage:true});
+},f=>{
+ const submitted=(entryId,playerId,playerName,assetId)=>({entryId,playerId,playerName,submitted:true,submittedAssetId:assetId,viable:true,votes:0,generations:[{attemptIndex:1,status:'complete',assetIds:[assetId],playerPrompt:`${playerName} prompt`}]});
+ const first={matchupId:'m1',matchupIndex:0,promptText:'First matchup prompt',viableEntryIds:['e1','e2'],skipped:false,votesCast:0,eligibleVoters:3,entrants:[submitted('e1','p1','PRIVATE-CREATOR-ALPHA','ASSET-ONE'),submitted('e2','p2','Second Creator','ASSET-TWO')]};
+ const second={matchupId:'m2',matchupIndex:1,promptText:'Three-way matchup prompt',viableEntryIds:['e4','e5','e6'],skipped:false,votesCast:0,eligibleVoters:3,entrants:[submitted('e4','p4','Second Creator','ASSET-FOUR'),submitted('e5','p5','Third Creator','ASSET-FIVE'),submitted('e6','p6','Fourth Creator','ASSET-SIX')]};
+ f.battle={...f.battle,phase:'battle_review',revision:42,matchups:[first,second]};
+ f.saved.phase='battle_review';f.saved.revision=42;f.saved.state.phase='battle_review';f.saved.state.presentationScreen='battle_review';f.saved.state.battleMatchupCount=2;f.saved.state.battleMatchupIndex=0;f.saved.state.battleVote=null;f.saved.state.battleResult=null;
 });
 await run('stale-review', 'voting stays blocked after a veto cannot be confirmed and recovers only from a fresh viable roster', async ({page}) => {
  await (await lockControl(page)).click();
@@ -245,6 +329,14 @@ await run('stale-review', 'voting stays blocked after a veto cannot be confirmed
  assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),false,'voting becomes available only after fresh state confirms a viable entry');
  assert.equal(await page.evaluate(()=>window.__acceptance.panel.stale),false);
  assert.deepEqual(await page.evaluate(()=>window.__acceptance.panel.state.matchups[0].viableEntryIds),['e1']);
+ page.once('dialog',dialog=>dialog.accept('Skip the only viable matchup'));
+ await page.getByRole('button',{name:'Veto entry'}).click();
+ await settle(page);
+ assert.equal(await page.getByRole('button',{name:'Start voting'}).isDisabled(),true,'all-skipped review still blocks voting');
+ assert.equal(await page.getByRole('button',{name:'Finish battle round'}).isDisabled(),false,'a fresh all-skipped review can finish without resolving a matchup');
+ await page.getByRole('button',{name:'Finish battle round'}).click();
+ await page.waitForFunction(()=>window.__acceptance.state.phase==='complete');
+ assert.deepEqual(await page.evaluate(()=>[window.__acceptance.state.battleRoundIndex,window.__acceptance.state.battleMatchupIndex,window.__acceptance.state.battleMatchupCount]),[null,null,null],'the all-skipped finish clears the battle position');
 },f=>{
  f.battle.matchups[0].entrants=[f.battle.matchups[0].entrants[0]];
  f.battle.matchups[0].viableEntryIds=['e1'];

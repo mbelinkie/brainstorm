@@ -82,6 +82,22 @@ test("refresh publishes a recovered lock to Presentation without saving a guesse
   assert.equal(writes, 0);
 });
 
+test("a same-phase review refresh re-renders the host controls from confirmed roster state", async () => {
+  const h = host({ async getHostBattleState() {
+    return { ...battle("battle_review", 4), matchups: [{ viableEntryIds: [] }] };
+  } });
+  h.ctx.state.phase = "battle_review";
+  h.ctx.battleRoundPanel.state = battle("battle_review", 3);
+  h.ctx.battleRoundPanel.roundIndex = 0;
+  let renders = 0;
+  h.ctx.render = () => { renders++; };
+
+  await h.run("refreshBattlePairing()");
+
+  assert.equal(h.ctx.battleRoundPanel.stale, false);
+  assert.equal(renders, 1, "the all-skipped review can expose its state-dependent finish control");
+});
+
 test("a roster response for an older server round preserves confirmed state", async () => {
   const h = host({ async getHostBattleState() { return { ...battle("battle_review", 9), roundIndex: 2 }; } });
   h.ctx.battleRoundPanel.state = battle();
