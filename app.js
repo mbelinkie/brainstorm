@@ -561,6 +561,7 @@ async function selectBattleEngine(value) {
   render();
   try {
     await roomApi.setBattleEngine({ roomCode, hostSecret, provider: entry.provider, model: entry.value });
+    battleTestPanel.engineSelectionVersion = (battleTestPanel.engineSelectionVersion || 0) + 1;
     battleTestPanel.savedModel = entry.value;
   } catch (error) {
     battleTestPanel.model = previous;
@@ -579,14 +580,17 @@ async function loadSavedBattleEngine() {
   if (view !== "host" || !battleEngineMenuEntries().length) return;
   const hostSecret = getHostSecret();
   if (!hostSecret) return;
+  // Successful saves invalidate older reads, even after engineBusy clears.
+  const selectionVersion = battleTestPanel.engineSelectionVersion || 0;
   try {
     const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
     // A pick the host made while this read was in flight wins.
-    if (battleTestPanel.engineBusy) return;
+    if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
     const saved = result?.engine?.model || null;
     battleTestPanel.model = battleEngineSelection(battleEngineMenuEntries(), saved, hostQuizDefinition?.rounds);
     battleTestPanel.savedModel = saved && battleTestPanel.model === saved ? saved : null;
   } catch {
+    if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
     battleTestPanel.engineError = "Could not read the saved engine. The menu shows the round default.";
   } finally {
     render();
@@ -2448,8 +2452,9 @@ function battleTestStatusMarkup() {
   const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
   // costUsd is the whole call's reported cost, so the per-image figure is it
   // divided across the images that came back.
-  const cost = Number(result.costUsd) || 0;
-  const costLine = `<p class="battle-test-cost">Reported cost: ${cost ? `$${cost.toFixed(4)} (about $${(cost / images.length).toFixed(4)} per image)` : "$0 (Workers AI free tier)"}</p>`;
+  const cost = result?.costUsd;
+  const hasReportedCost = typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+  const costLine = `<p class="battle-test-cost">Reported cost: ${hasReportedCost ? `$${cost.toFixed(4)} (about $${(cost / images.length).toFixed(4)} per image)` : "unavailable"}</p>`;
   return `<div class="battle-test-state battle-test-state--success">${gallery}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}</div>`;
 }
 

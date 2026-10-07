@@ -225,6 +225,36 @@ test("after a refresh the saved engine is read back from session state and shown
   assert.match(lifted.battleTestImagePanel(), new RegExp(`<option value="${KLEIN_4B}" selected>`));
 });
 
+test("a saved-engine read started before a successful selection cannot overwrite it", async () => {
+  let resolveRead;
+  const read = new Promise((resolve) => { resolveRead = resolve; });
+  const { lifted, battleTestPanel } = build({ getHostBattleState: () => read });
+
+  const pendingRead = lifted.loadSavedBattleEngine();
+  await lifted.selectBattleEngine(KLEIN_4B);
+  resolveRead({ engine: { provider: "workers_ai", model: SCHNELL } });
+  await pendingRead;
+
+  assert.equal(battleTestPanel.model, KLEIN_4B);
+  assert.equal(battleTestPanel.savedModel, KLEIN_4B);
+  assert.equal(battleTestPanel.engineError, "");
+});
+
+test("a failed saved-engine read started before a successful selection cannot overwrite it", async () => {
+  let rejectRead;
+  const read = new Promise((_, reject) => { rejectRead = reject; });
+  const { lifted, battleTestPanel } = build({ getHostBattleState: () => read });
+
+  const pendingRead = lifted.loadSavedBattleEngine();
+  await lifted.selectBattleEngine(KLEIN_4B);
+  rejectRead(new Error("stale read failure"));
+  await pendingRead;
+
+  assert.equal(battleTestPanel.model, KLEIN_4B);
+  assert.equal(battleTestPanel.savedModel, KLEIN_4B);
+  assert.equal(battleTestPanel.engineError, "");
+});
+
 test("with nothing saved yet the round's default is shown and nothing is claimed as saved", async () => {
   const { lifted, battleTestPanel } = build({ rounds: [battleRound([SCHNELL, KLEIN_4B], KLEIN_4B)], panel: { model: SCHNELL }, savedEngine: { provider: null, model: null } });
   await lifted.loadSavedBattleEngine();
@@ -305,10 +335,24 @@ test("loading, failure and success render distinctly, and only success shows the
   assert.doesNotMatch(success, /role="alert"/);
 });
 
-test("a free-tier success reports $0, and a blocked or empty result is a failure that still carries the provider details", () => {
-  const free = build({ panel: { result: { images: [{ mimeType: "image/png", bytesBase64: "QQ==" }], costUsd: 0 } } }).lifted.battleTestImagePanel();
-  assert.match(free, /battle-test-state--success/);
-  assert.match(free, /Reported cost: \$0 /);
+test("a paid engine's reported zero cost is provider-neutral", () => {
+  const image = { mimeType: "image/png", bytesBase64: "QQ==" };
+  const paidZero = build({ rounds: [battleRound([LUCID])], panel: { model: LUCID, result: { images: [image], costUsd: 0 } } }).lifted.battleTestImagePanel();
+  assert.match(paidZero, /battle-test-state--success/);
+  assert.match(paidZero, /Reported cost: \$0\.0000/);
+  assert.doesNotMatch(paidZero, /free tier/i);
+});
+
+test("missing or invalid reported cost stays unavailable", () => {
+  const image = { mimeType: "image/png", bytesBase64: "QQ==" };
+  for (const cost of [undefined, "0", Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const result = { images: [image] };
+    if (cost !== undefined) result.costUsd = cost;
+    const markup = build({ panel: { model: LUCID, result } }).lifted.battleTestImagePanel();
+    assert.match(markup, /Reported cost: unavailable/);
+    assert.doesNotMatch(markup, /free tier/i);
+  }
+
   const blocked = build({ panel: { result: { images: [], blocked: true, blockReason: "Declined by the model.", costUsd: 0, providerErrors: [{ status: 502, message: "upstream" }] } } }).lifted.battleTestImagePanel();
   assert.match(blocked, /battle-test-state--failure/);
   assert.match(blocked, /Declined by the model\./);
