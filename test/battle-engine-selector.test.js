@@ -268,16 +268,17 @@ test("a saved engine the menu no longer offers is not selected", async () => {
   assert.equal(battleTestPanel.model, SCHNELL);
 });
 
-test("reading the saved engine does nothing without a battle round, outside the host view, or if it fails", async () => {
+test("saved-engine reads skip non-host and non-battle views; failure shows the authored default", async () => {
   const noBattle = build({ rounds: [quizRound] });
   await noBattle.lifted.loadSavedBattleEngine();
   assert.equal(noBattle.calls.getHostBattleState.length, 0);
   const player = build({ view: "player" });
   await player.lifted.loadSavedBattleEngine();
   assert.equal(player.calls.getHostBattleState.length, 0);
-  const failing = build({ getHostBattleState: async () => { throw new Error("offline"); } });
+  const failing = build({ rounds: [battleRound([SCHNELL, KLEIN_4B], KLEIN_4B)], panel: { model: SCHNELL }, getHostBattleState: async () => { throw new Error("offline"); } });
   await failing.lifted.loadSavedBattleEngine();
-  assert.equal(failing.battleTestPanel.model, SCHNELL);
+  assert.equal(failing.battleTestPanel.model, KLEIN_4B);
+  assert.equal(failing.battleTestPanel.savedModel, null);
   assert.match(failing.battleTestPanel.engineError, /saved engine/i);
 });
 

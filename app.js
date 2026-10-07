@@ -660,6 +660,8 @@ async function loadSavedBattleEngine() {
     battleTestPanel.savedModel = saved && battleTestPanel.model === saved ? saved : null;
   } catch {
     if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
+    battleTestPanel.model = battleEngineSelection(battleEngineMenuEntries(), null, hostQuizDefinition?.rounds);
+    battleTestPanel.savedModel = null;
     battleTestPanel.engineError = "Could not read the saved engine. The menu shows the round default.";
   } finally {
     render();
