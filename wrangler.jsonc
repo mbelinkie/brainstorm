@@ -23,5 +23,9 @@
   // section 7.
   "ai": {
     "binding": "AI"
+  },
+  // Drain expired Prompt Battle images daily at 03:00 UTC.
+  "triggers": {
+    "crons": ["0 3 * * *"]
   }
 }

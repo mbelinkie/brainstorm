@@ -214,6 +214,7 @@ const BATTLE_GENERATE_MAX_PROMPT_CHARS = 2048;
 const BATTLE_GENERATE_MAX_VARIANTS = 4;
 const BATTLE_GENERATE_MAX_IMAGE_BYTES = 26214400;
 const BATTLE_ASSET_EXPIRY_DAYS = 30;
+const BATTLE_PURGE_BATCH_SIZE = 1000; // ponytail: 1,000 objects/run; paginate if the backlog exceeds this.
 const BATTLE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // The only three types the private quiz-media bucket may hold.
 const BATTLE_IMAGE_EXTENSION_BY_MIME = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
@@ -222,6 +223,89 @@ const BATTLE_BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 // came back, and never invites a retry the player cannot afford.
 const BATTLE_UNCONFIRMED_ERROR = "Image generation failed. Refresh to check your attempt.";
 const BATTLE_UNAVAILABLE_ERROR = "Image generation is not available for this game.";
+
+function battlePurgeFailure(stage, upstreamStatus) {
+  console.error("Prompt Battle media purge failed", {
+    stage,
+    ...(upstreamStatus ? { upstreamStatus } : {})
+  });
+  return new Error(`Prompt Battle media purge ${stage} failed.`);
+}
+
+function isBattleStoragePath(storagePath) {
+  if (typeof storagePath !== "string" || !storagePath.startsWith("battle/")) return false;
+  const segments = storagePath.split("/");
+  return segments.length >= 3 && segments.every((segment) => segment && segment !== "." && segment !== "..");
+}
+
+async function purgeExpiredBattleMedia(env) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) throw battlePurgeFailure("configuration");
+
+  const baseUrl = env.SUPABASE_URL.replace(/\/+$/, "");
+  const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+  let listResponse;
+  try {
+    listResponse = await fetch(`${baseUrl}/rest/v1/rpc/purge_expired_battle_media`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_limit: BATTLE_PURGE_BATCH_SIZE })
+    });
+  } catch {
+    throw battlePurgeFailure("list");
+  }
+  if (!listResponse.ok) throw battlePurgeFailure("list", listResponse.status);
+
+  const assets = await listResponse.json().catch(() => null);
+  if (!Array.isArray(assets)) throw battlePurgeFailure("list response", listResponse.status);
+  if (assets.length === 0) return;
+
+  const validAssets = assets.filter((asset) =>
+    BATTLE_UUID_PATTERN.test(asset?.assetId || "") && isBattleStoragePath(asset?.storagePath)
+  );
+  let failedDeletes = assets.length - validAssets.length;
+  if (failedDeletes > 0) {
+    console.error("Prompt Battle media purge failed", { stage: "storage delete validation", count: failedDeletes });
+  }
+  if (validAssets.length === 0) {
+    if (failedDeletes > 0) throw new Error("Prompt Battle media purge left objects for retry.");
+    return;
+  }
+
+  let deleteResponse;
+  try {
+    deleteResponse = await fetch(`${baseUrl}/storage/v1/object/quiz-media`, {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify({ prefixes: validAssets.map((asset) => asset.storagePath) })
+    });
+  } catch {
+    throw battlePurgeFailure("storage delete");
+  }
+  if (!deleteResponse.ok) throw battlePurgeFailure("storage delete", deleteResponse.status);
+
+  let finalizeResponse;
+  try {
+    finalizeResponse = await fetch(`${baseUrl}/rest/v1/rpc/finalize_battle_media_purge`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_asset_ids: validAssets.map((asset) => asset.assetId) })
+    });
+  } catch {
+    throw battlePurgeFailure("finalize");
+  }
+  if (!finalizeResponse.ok) throw battlePurgeFailure("finalize", finalizeResponse.status);
+
+  const finalization = await finalizeResponse.json().catch(() => null);
+  if (!finalization || !Array.isArray(finalization.deleted) || !Array.isArray(finalization.keptObjectStillPresent)) {
+    throw battlePurgeFailure("finalize response", finalizeResponse.status);
+  }
+  if (finalization.keptObjectStillPresent.length > 0) {
+    failedDeletes += finalization.keptObjectStillPresent.length;
+    console.error("Prompt Battle media purge failed", { stage: "finalize objects still present", count: finalization.keptObjectStillPresent.length });
+  }
+
+  if (failedDeletes > 0) throw new Error("Prompt Battle media purge left objects for retry.");
+}
 
 function battleGenerateResponse(body, init = {}) {
   return Response.json(body, {
@@ -490,6 +574,9 @@ async function verifyQuizAuthor(env, token) {
 }
 
 export default {
+  async scheduled(_controller, env) {
+    await purgeExpiredBattleMedia(env);
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 if (request.method === "GET" && url.pathname === "/__version") {
