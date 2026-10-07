@@ -10,6 +10,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 - Fixed Prompt Battle scoring collisions when an authored ordinary question ID equals the readable battle label. Migration `0044` gives battle awards a matchup identity, keeps ordinary re-scoring from deleting battle events, and backfills existing events from resolved results and persisted ballots without changing award values. PGlite migration and runtime regressions pass; the migration has not been applied to production.
 - Fixed a Prompt Battle stale-roster race (#28 follow-up): after a veto or undo whose authoritative refresh fails, the host sees the last confirmed review state but cannot start voting until a fresh read confirms a viable matchup.
 - Added host-controlled Prompt Battle voting and results (#32): the host can start a viable matchup, follow live vote progress, reveal its result once, move to the next viable matchup, and finish the round through the normal round-end or finale flow. Matchup position and public vote/result projections survive refresh; skipped matchups are bypassed, and private review data stays host-only. Offline browser and automated coverage pass; no live room or provider was used.
+- Fixed two host-screen issues in Prompt Battle results (#32 follow-up): refresh buttons become clickable after the post-reload roster read, and result names/vote counts use a readable single-column style on the host's light card while phone styling stays unchanged.
 
 ## 2026-10-06
 

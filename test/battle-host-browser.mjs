@@ -240,10 +240,16 @@ await run('host-vote-result', 'two matchups, including a three-way, recover thei
  assert.equal(await page.evaluate(()=>window.__acceptance.state.battleMatchupIndex),0,'the current matchup pointer survives refresh');
  assert.equal(await page.evaluate(()=>window.__acceptance.state.battleVote.entries.length),2,'the anonymous ballot is rebuilt after refresh');
 
- await page.evaluate(async()=>{
+ const voteReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length);
+ await page.evaluate(()=>{
   const current=window.__fixture.battle.matchups[0];current.votesCast=1;current.eligibleVoters=3;current.entrants[0].votes=1;
-  window.__persistFixture();await window.__acceptance.refresh();
+  window.__persistFixture();
  });
+ const voteRefresh=page.locator('.host-actions [data-battle-refresh-pairing]').first();
+ await page.waitForFunction(()=>{const button=document.querySelector('.host-actions [data-battle-refresh-pairing]');return button&&!button.disabled;});
+ assert.equal(await voteRefresh.isDisabled(),false,'vote refresh control is enabled after its initial read settles');
+ await voteRefresh.click();
+ await page.waitForFunction(count=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length>count,voteReads);
  await settle(page);
  assert.match(await page.locator('[data-battle-vote-progress]').innerText(),/1 of 3 votes received/,'host progress refreshes from the private server counts');
 
@@ -252,6 +258,12 @@ await run('host-vote-result', 'two matchups, including a three-way, recover thei
  assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'double Reveal issues only one resolver request');
  assert.equal(await page.evaluate(()=>window.__fixture.scoreAwards),1,'the first matchup awards once');
  assert.match(await body(page),/PRIVATE-CREATOR-ALPHA/);
+ const hostResult=await page.locator('.battle-result-row').first().evaluate(row=>({columns:getComputedStyle(row).gridTemplateColumns,strong:getComputedStyle(row.querySelector('strong')).color,votes:getComputedStyle(row.querySelector('span')).color,background:getComputedStyle(row).backgroundColor,text:row.innerText}));
+ assert.match(hostResult.text,/PRIVATE-CREATOR-ALPHA/);
+ assert.match(hostResult.text,/vote/);
+ assert.equal(hostResult.columns.trim().split(/\s+/).length,1,'host result is a single readable text column');
+ assert.notEqual(hostResult.strong,hostResult.background,'creator text contrasts with the host result card');
+ assert.notEqual(hostResult.votes,hostResult.background,'vote count contrasts with the host result card');
  await page.screenshot({path:path.join(evidence,'host-vote-result-first.png'),fullPage:true});
 
  const resultReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_live_room_state').length);
@@ -260,6 +272,15 @@ await run('host-vote-result', 'two matchups, including a three-way, recover thei
  await settle(page);
  assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_result','result phase and revealed outcome survive refresh');
  assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'reloading a stored result does not resolve or score twice');
+ const resultStateReads=await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length);
+ const resultRefresh=page.locator('.host-actions [data-battle-refresh-pairing]').first();
+ await page.waitForFunction(()=>{const button=document.querySelector('.host-actions [data-battle-refresh-pairing]');return button&&!button.disabled;});
+ assert.equal(await resultRefresh.isDisabled(),false,'result refresh control is enabled after its initial read settles');
+ await resultRefresh.click();
+ await page.waitForFunction(count=>window.__fixture.calls.filter(c=>c.name==='get_host_battle_state').length>count,resultStateReads);
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__acceptance.state.phase),'battle_result','the actual refresh control preserves the resolved phase');
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(c=>c.name==='resolve_battle_matchup').length),1,'refreshing a result does not award it twice');
  const recovered=await page.evaluate(()=>({phase:window.__acceptance.state.phase,index:window.__acceptance.state.battleMatchupIndex,stale:window.__acceptance.panel.stale,matchups:window.__acceptance.panel.state?.matchups?.map(m=>({index:m.matchupIndex,viable:m.viableEntryIds,resolvedAt:m.resolvedAt}))}));
  assert.equal(await page.getByRole('button',{name:'Next matchup'}).count(),1,`the next viable matchup is available after reload: ${JSON.stringify(recovered)}`);
  await page.getByRole('button',{name:'Next matchup'}).click();

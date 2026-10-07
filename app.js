@@ -718,6 +718,7 @@ function patchBattlePairingPanel() {
   const mainRefresh = document.querySelector('.host-actions [data-battle-refresh-pairing]');
   if (mainRefresh) {
     const busy = battleRoundPanel.busy;
+    mainRefresh.disabled = busy;
     mainRefresh.setAttribute('aria-disabled', busy ? 'true' : 'false');
     mainRefresh.textContent = busy ? 'Refreshing…' : 'Refresh roster';
     if (busy) {
