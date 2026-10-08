@@ -352,6 +352,10 @@ h1, h2, h3 { margin: 0; font-family: var(--heading); font-weight: 300; }
 .presentation-card--battle .presentation-battle-prompt{color:var(--purple)}.presentation-card--battle p.presentation-battle-prompt{max-width:none;color:#4a4a4a;opacity:1}.presentation-card--battle-result .presentation-battle-tile figcaption{grid-template-columns:auto auto;align-items:center;justify-content:center;column-gap:12px}.presentation-card--battle-result .presentation-battle-letter{width:clamp(36px,3vw,52px);height:clamp(36px,3vw,52px);font-size:clamp(20px,1.8vw,30px)}.presentation-card--battle-result .presentation-battle-bar,.presentation-card--battle-result .presentation-battle-votes{grid-column:1/-1;justify-self:center}
 .presentation-card--battle-review,.presentation-card--battle-wait{align-content:center;min-height:min(60vh,640px)}.presentation-card--battle-review h2,.presentation-card--battle-wait h2{font-size:clamp(44px,5.4vw,96px)}
 
+@media (max-height: 800px) {
+  .presentation-card--battle-vote .presentation-battle-frame { width: min(100%, 36vh); }
+}
+
 .battle-review { display: grid; gap: 24px; margin-top: 24px; }
 .battle-review-matchup { border-top: 1px solid var(--line); padding-top: 20px; }
 .battle-review-matchup-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
