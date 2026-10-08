@@ -14,6 +14,7 @@ const KLEIN_4B = "@cf/black-forest-labs/flux-2-klein-4b";
 const LUCID = "@cf/leonardo/lucid-origin";
 const GROK = "x-ai/grok-imagine-image-quality";
 const GEMINI = "google/gemini-3.1-flash-image";
+const KAPLAN_GEMINI = "gemini-3.1-flash-image";
 const FLUX = "black-forest-labs/flux-3-image";
 
 const workersModels = [
@@ -26,7 +27,10 @@ const openRouterModels = [
   { provider: "openrouter", value: GEMINI, label: "Gemini 3.1 Flash Image (more expensive)", default: false },
   { provider: "openrouter", value: FLUX, label: "FLUX.3 Image (less expensive)", default: false }
 ];
-const catalogue = [...workersModels, ...openRouterModels];
+const kaplanModels = [
+  { provider: "kaplan_proxy", value: KAPLAN_GEMINI, label: "Gemini 3.1 Flash Image (Kaplan proxy)", default: false }
+];
+const catalogue = [...workersModels, ...openRouterModels, ...kaplanModels];
 const ids = openRouterModels.map((model) => model.value);
 
 const providerFor = (model) => model.startsWith("@cf/") ? "workers_ai" : model.startsWith("kaplan/") ? "kaplan_proxy" : "openrouter";
@@ -76,6 +80,16 @@ test("normal Workers AI and Kaplan catalogue entries remain selectable", () => {
     `workers_ai:${SCHNELL}`, "kaplan_proxy:kaplan/proxy-model"
   ]);
   assert.match(build({ rounds: [battleRound([SCHNELL])] }).lifted.battleTestImagePanel(), /Provider: Workers AI/);
+});
+
+test("the Kaplan Gemini model stays distinct from OpenRouter Gemini in the host selector", () => {
+  const round = battleRound([GEMINI, KAPLAN_GEMINI], KAPLAN_GEMINI, "kaplan_proxy");
+  const menu = battleEngineMenu(catalogue, [round]);
+  assert.deepEqual(menu.map((entry) => `${entry.provider}:${entry.value}`), [
+    `openrouter:${GEMINI}`,
+    `kaplan_proxy:${KAPLAN_GEMINI}`
+  ]);
+  assert.match(build({ rounds: [round] }).lifted.battleTestImagePanel(), /Provider: Kaplan proxy/);
 });
 
 test("test result status distinguishes idle, loading, failure and success", () => {

@@ -174,6 +174,9 @@ const BATTLE_MODEL_ALLOWLIST = {
   "black-forest-labs/flux-3-image": {
     provider: "openrouter", label: "FLUX.3 Image (less expensive)",
     endpointTag: "black-forest-labs", aspectRatio: "1:1", resolution: "1K"
+  },
+  "gemini-3.1-flash-image": {
+    provider: "kaplan_proxy", label: "Gemini 3.1 Flash Image (Kaplan proxy)"
   }
 };
 
@@ -538,11 +541,11 @@ async function battleGenerateFlow(env, roomCode, playerToken, playerPrompt) {
     const serverPrompt = typeof authorized.playerPrompt === "string" ? authorized.playerPrompt.trim() : "";
     const variantCount = authorized.variants;
     const deploymentProfile = BATTLE_MODEL_ALLOWLIST[serverModel];
-    // Worker AI and OpenRouter can only use an exact deployment allowlist
-    // entry. Kaplan retains its separate synthetic-model path, but cannot
-    // claim a known model that belongs to another provider.
+    // Worker AI and OpenRouter require exact deployment entries. Kaplan also
+    // keeps its existing synthetic-model path, and allowlisted models must
+    // still belong to the server-selected provider.
     const validModelProviderPair = serverProvider === "kaplan_proxy"
-      ? deploymentProfile === undefined
+      ? deploymentProfile === undefined || deploymentProfile.provider === serverProvider
       : deploymentProfile?.provider === serverProvider;
     const openRouterProfile = validModelProviderPair && serverProvider === "openrouter" ? deploymentProfile : null;
     const adapter = validModelProviderPair && (serverProvider === "workers_ai" || serverProvider === "kaplan_proxy" || serverProvider === "openrouter")
@@ -888,10 +891,13 @@ if (request.method === "GET" && url.pathname === "/__version") {
           return battleModelsResponse({ error: "Host authorization failed." }, { status: 403 });
         }
         const openRouterReady = typeof env.OPENROUTER_API_KEY === "string" && env.OPENROUTER_API_KEY.trim() !== "";
+        const kaplanProxyReady = await ENGINES.kaplan_proxy.resolveAuth(env).then(() => true, () => false);
         const models = Object.entries(BATTLE_MODEL_ALLOWLIST)
           .filter(([, profile]) => profile.provider === "workers_ai"
             ? Boolean(env.AI)
-            : profile.provider === "openrouter" && openRouterReady)
+            : profile.provider === "openrouter"
+              ? openRouterReady
+              : profile.provider === "kaplan_proxy" && kaplanProxyReady)
           .map(([id, profile]) => ({
             id,
             provider: profile.provider,

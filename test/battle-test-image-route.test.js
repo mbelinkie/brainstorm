@@ -69,6 +69,7 @@ async function callWorker(path, { method = "GET", headers = {}, body, ai, env = 
 const authorizedRoom = { "/rpc/get_host_live_room_state": { phase: "lobby" } };
 const rejectedRoom = { "/rpc/get_host_live_room_state": { error: "denied" } };
 const ALLOWED_MODEL = "@cf/black-forest-labs/flux-1-schnell";
+const KAPLAN_MODEL = "gemini-3.1-flash-image";
 const OPENROUTER_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const hostHeadersFor = (roomCode) => ({ "x-quiz-room": roomCode, "x-quiz-host-secret": "host-secret" });
 
@@ -271,12 +272,32 @@ test("/battle/models returns only available allowlisted models after host author
   assert.equal(keyless.response.status, 200);
   assert.equal(keyless.body.models.length, 4);
   assert.ok(keyless.body.models.every((model) => model.provider === "workers_ai"));
+  assert.ok(!keyless.body.models.some((model) => model.provider === "kaplan_proxy"));
+
+  for (const env of [
+    { KAPLAN_PROXY_URL: "https://proxy.example" },
+    { KAPLAN_PROXY_URL: "http://proxy.example", KAPLAN_PROXY_SECRET: "synthetic-kaplan-secret" }
+  ]) {
+    const unready = await callWorker("/battle/models", {
+      method: "GET",
+      headers: hostHeadersFor("catalog-kaplan-unready"),
+      routes: authorizedRoom,
+      env,
+      ai: fakeAiBinding([])
+    });
+    assert.equal(unready.response.status, 200);
+    assert.ok(!unready.body.models.some((model) => model.provider === "kaplan_proxy"));
+  }
 
   const { response, body, outbound } = await callWorker("/battle/models", {
     method: "GET",
     headers: hostHeadersFor("catalog-ready"),
     routes: authorizedRoom,
-    env: { OPENROUTER_API_KEY: "synthetic-openrouter-key" },
+    env: {
+      OPENROUTER_API_KEY: "synthetic-openrouter-key",
+      KAPLAN_PROXY_URL: "https://proxy.example",
+      KAPLAN_PROXY_SECRET: "synthetic-kaplan-secret"
+    },
     ai: fakeAiBinding([])
   });
   assert.equal(response.status, 200);
@@ -289,14 +310,73 @@ test("/battle/models returns only available allowlisted models after host author
   ]);
   assert.equal(openrouterModels[0].default, true);
   assert.ok(openrouterModels.slice(1).every((model) => model.default === false));
+  assert.deepEqual(body.models.filter((model) => model.provider === "kaplan_proxy"), [
+    { id: KAPLAN_MODEL, provider: "kaplan_proxy", label: "Gemini 3.1 Flash Image (Kaplan proxy)", default: false }
+  ]);
   assert.ok(body.models.every((model) => Object.keys(model).sort().join(",") === "default,id,label,provider"));
-  assert.ok(!JSON.stringify(body).includes("synthetic-openrouter-key"));
+  assert.doesNotMatch(JSON.stringify(body), /synthetic-openrouter-key|synthetic-kaplan-secret/);
   assert.ok(outbound[0].url.endsWith("/rpc/get_host_live_room_state"));
 
   const preflight = await callWorker("/battle/models", { method: "OPTIONS" });
   assert.equal(preflight.response.status, 204);
   assert.match(preflight.response.headers.get("access-control-allow-methods") || "", /GET/);
   assert.equal(preflight.response.headers.get("cache-control"), "no-store");
+});
+
+test("Kaplan host test stays unavailable until the proxy URL and secret are configured", async () => {
+  const { response, body, requested } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-kaplan-unconfigured"),
+    body: { model: KAPLAN_MODEL },
+    routes: authorizedRoom
+  });
+  assert.equal(response.status, 503);
+  assert.match(body.error, /not configured/i);
+  assert.equal(requested.some((url) => url.includes("/generate")), false);
+});
+
+test("Kaplan host test sends two variants through the bearer proxy and reports its cost", async () => {
+  const { response, body, requested, outbound } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-kaplan-test"),
+    body: { model: KAPLAN_MODEL, prompt: "A raccoon wearing a tiny crown" },
+    env: {
+      KAPLAN_PROXY_URL: "https://proxy.example",
+      KAPLAN_PROXY_SECRET: "synthetic-kaplan-secret"
+    },
+    routes: {
+      ...authorizedRoom,
+      "/generate": Response.json({
+        images: [
+          { mimeType: "image/png", bytesBase64: OPENROUTER_PNG },
+          { mimeType: "image/png", bytesBase64: OPENROUTER_PNG }
+        ],
+        costUsd: 0.09
+      })
+    }
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(body.model, KAPLAN_MODEL);
+  assert.equal(body.prompt, "A raccoon wearing a tiny crown");
+  assert.equal(body.images.length, 2);
+  assert.equal(body.costUsd, 0.09);
+  assert.equal(body.partial, false);
+  assert.equal(body.blocked, false);
+  assert.equal("providerErrors" in body, false);
+  assert.deepEqual(requested.filter((url) => url.includes("/generate")), ["https://proxy.example/generate"]);
+
+  const proxyCall = outbound.find((request) => request.url === "https://proxy.example/generate");
+  assert.ok(proxyCall);
+  assert.equal(proxyCall.method, "POST");
+  assert.equal(new Headers(proxyCall.headers).get("authorization"), "Bearer synthetic-kaplan-secret");
+  assert.deepEqual(JSON.parse(proxyCall.body), {
+    prompt: "A raccoon wearing a tiny crown",
+    model: KAPLAN_MODEL,
+    variants: 2
+  });
+  assert.doesNotMatch(proxyCall.body, /synthetic-kaplan-secret/);
+  assert.doesNotMatch(JSON.stringify(body), /synthetic-kaplan-secret/);
 });
 
 test("OpenRouter host test pins all approved models to their tested endpoint and fixed profile", async () => {
