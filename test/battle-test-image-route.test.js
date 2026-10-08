@@ -36,23 +36,31 @@ function fakeAiBinding(outcomes) {
 // Runs one request against the Worker with Supabase stubbed out, mirroring
 // callWorker() in host-recovery.test.js but extended for POST + JSON body +
 // an AI binding.
-async function callWorker(path, { method = "GET", headers = {}, body, ai, routes = {}, status = {} } = {}) {
+async function callWorker(path, { method = "GET", headers = {}, body, ai, env = {}, routes = {}, status = {} } = {}) {
   const requested = [];
+  const outbound = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init = {}) => {
     const target = String(url);
     requested.push(target);
+    outbound.push({ url: target, ...init });
     for (const [fragment, respBody] of Object.entries(routes)) {
-      if (target.includes(fragment)) return Response.json(respBody, { status: status[fragment] || 200 });
+      if (!target.includes(fragment)) continue;
+      if (typeof respBody === "function") {
+        const response = await respBody(target, init);
+        return response instanceof Response ? response.clone() : Response.json(response ?? {}, { status: status[fragment] || 200 });
+      }
+      if (respBody instanceof Response) return respBody.clone();
+      return Response.json(respBody, { status: status[fragment] || 200 });
     }
     throw new Error(`unstubbed upstream request: ${target}`);
   };
   try {
-    const env = { ...workerEnv, ...(ai ? { AI: ai } : {}) };
+    const fullEnv = { ...workerEnv, ...env, ...(ai ? { AI: ai } : {}) };
     const init = { method, headers };
     if (body !== undefined) init.body = JSON.stringify(body);
-    const response = await quizWorker.fetch(new Request(`https://worker.test${path}`, init), env);
-    return { response, body: await response.json().catch(() => null), requested };
+    const response = await quizWorker.fetch(new Request(`https://worker.test${path}`, init), fullEnv);
+    return { response, body: await response.json().catch(() => null), requested, outbound };
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -61,6 +69,7 @@ async function callWorker(path, { method = "GET", headers = {}, body, ai, routes
 const authorizedRoom = { "/rpc/get_host_live_room_state": { phase: "lobby" } };
 const rejectedRoom = { "/rpc/get_host_live_room_state": { error: "denied" } };
 const ALLOWED_MODEL = "@cf/black-forest-labs/flux-1-schnell";
+const OPENROUTER_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const hostHeadersFor = (roomCode) => ({ "x-quiz-room": roomCode, "x-quiz-host-secret": "host-secret" });
 
 test("/battle/test-image refuses a request without host credentials and never reaches Supabase or the AI binding", async () => {
@@ -235,4 +244,132 @@ test("/battle/test-image OPTIONS preflight allows the room/host-secret headers",
   assert.match(response.headers.get("access-control-allow-headers") || "", /x-quiz-room/);
   assert.match(response.headers.get("access-control-allow-headers") || "", /x-quiz-host-secret/);
   assert.match(response.headers.get("access-control-allow-methods") || "", /POST/);
+});
+
+test("/battle/models returns only available allowlisted models after host authorization", async () => {
+  const unauthorized = await callWorker("/battle/models", { method: "GET" });
+  assert.equal(unauthorized.response.status, 401);
+  assert.equal(unauthorized.requested.length, 0);
+
+  const rejected = await callWorker("/battle/models", {
+    method: "GET",
+    headers: hostHeadersFor("catalog-rejected"),
+    routes: rejectedRoom,
+    status: { "/rpc/get_host_live_room_state": 403 },
+    env: { OPENROUTER_API_KEY: "synthetic-openrouter-key" },
+    ai: fakeAiBinding([])
+  });
+  assert.equal(rejected.response.status, 403);
+  assert.equal("models" in rejected.body, false);
+
+  const keyless = await callWorker("/battle/models", {
+    method: "GET",
+    headers: hostHeadersFor("catalog-keyless"),
+    routes: authorizedRoom,
+    ai: fakeAiBinding([])
+  });
+  assert.equal(keyless.response.status, 200);
+  assert.equal(keyless.body.models.length, 4);
+  assert.ok(keyless.body.models.every((model) => model.provider === "workers_ai"));
+
+  const { response, body, outbound } = await callWorker("/battle/models", {
+    method: "GET",
+    headers: hostHeadersFor("catalog-ready"),
+    routes: authorizedRoom,
+    env: { OPENROUTER_API_KEY: "synthetic-openrouter-key" },
+    ai: fakeAiBinding([])
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const openrouterModels = body.models.filter((model) => model.provider === "openrouter");
+  assert.deepEqual(openrouterModels.map((model) => model.id), [
+    "x-ai/grok-imagine-image-quality",
+    "google/gemini-3.1-flash-image",
+    "black-forest-labs/flux-3-image"
+  ]);
+  assert.equal(openrouterModels[0].default, true);
+  assert.ok(openrouterModels.slice(1).every((model) => model.default === false));
+  assert.ok(body.models.every((model) => Object.keys(model).sort().join(",") === "default,id,label,provider"));
+  assert.ok(!JSON.stringify(body).includes("synthetic-openrouter-key"));
+  assert.ok(outbound[0].url.endsWith("/rpc/get_host_live_room_state"));
+
+  const preflight = await callWorker("/battle/models", { method: "OPTIONS" });
+  assert.equal(preflight.response.status, 204);
+  assert.match(preflight.response.headers.get("access-control-allow-methods") || "", /GET/);
+  assert.equal(preflight.response.headers.get("cache-control"), "no-store");
+});
+
+test("OpenRouter host test pins all approved models to their tested endpoint and fixed profile", async () => {
+  const profiles=[
+    ["x-ai/grok-imagine-image-quality","xai"],
+    ["google/gemini-3.1-flash-image","google-ai-studio"],
+    ["black-forest-labs/flux-3-image","black-forest-labs"]
+  ];
+  for (const [index,[model,endpointTag]] of profiles.entries()) {
+    const providerBody = { data: [{ b64_json: OPENROUTER_PNG, media_type: "image/png" }], usage: { cost: 0.05 } };
+    const { response, body, requested, outbound } = await callWorker("/battle/test-image", {
+      method: "POST",
+      headers: hostHeadersFor(`room-openrouter-test-${index}`),
+      body: { model, prompt: "A raccoon wearing a crown", resolution: "4K", aspectRatio: "16:9", outputFormat: "webp" },
+      env: { OPENROUTER_API_KEY: "synthetic-openrouter-key" },
+      routes: {
+        ...authorizedRoom,
+        "/api/v1/images": Response.json(providerBody)
+      }
+    });
+    assert.equal(response.status, 200, model);
+    assert.equal(body.model, model);
+    assert.equal(body.costUsd, 0.05);
+    assert.equal(body.images.length, 1);
+    assert.equal(body.partial, false);
+    const call = outbound.find((request) => request.url === "https://openrouter.ai/api/v1/images");
+    assert.ok(call, model);
+    assert.equal(call.method, "POST");
+    assert.equal(new Headers(call.headers).get("authorization"), "Bearer synthetic-openrouter-key");
+    assert.deepEqual(JSON.parse(call.body), {
+      model,
+      prompt: "A raccoon wearing a crown",
+      n: 1,
+      aspect_ratio: "1:1",
+      resolution: "1K",
+      provider: { only: [endpointTag], allow_fallbacks: false }
+    });
+    assert.equal(requested.filter((url) => url === "https://openrouter.ai/api/v1/images").length, 1);
+    assert.equal(JSON.stringify(body).includes("synthetic-openrouter-key"), false);
+  }
+});
+
+test("OpenRouter host test with missing Worker key fails before provider dispatch", async () => {
+  const { response, body, requested } = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers: hostHeadersFor("room-openrouter-no-key"),
+    body: { model: "x-ai/grok-imagine-image-quality" },
+    routes: authorizedRoom
+  });
+  assert.equal(response.status, 503);
+  assert.match(body.error, /not configured/i);
+  assert.equal(requested.some((url) => url.includes("openrouter.ai/api/v1/images")), false);
+});
+
+test("OpenRouter host test sanitizes confirmed errors and reports contradictory outcomes generically", async () => {
+  const model="google/gemini-3.1-flash-image";
+  const common={method:"POST",headers:hostHeadersFor("room-openrouter-errors"),body:{model},env:{OPENROUTER_API_KEY:"synthetic-openrouter-key"},routes:authorizedRoom};
+  const confirmed=await callWorker("/battle/test-image",{
+    ...common,
+    routes:{...authorizedRoom,"/api/v1/images":Response.json({error:{code:429,message:"raw-provider-diagnostic"}},{status:429})}
+  });
+  assert.equal(confirmed.response.status,200);
+  assert.deepEqual(confirmed.body.images,[]);
+  assert.equal(confirmed.body.costUsd,0);
+  assert.match(confirmed.body.providerErrors[0].message,/OpenRouter request failed/);
+  assert.doesNotMatch(JSON.stringify(confirmed.body),/raw-provider-diagnostic/);
+
+  const unknown=await callWorker("/battle/test-image",{
+    ...common,
+    headers:hostHeadersFor("room-openrouter-unknown"),
+    routes:{...authorizedRoom,"/api/v1/images":Response.json({error:{code:502,message:"private diagnostic"},usage:{cost:0.05}},{status:502})}
+  });
+  assert.equal(unknown.response.status,502);
+  assert.match(unknown.body.error,/could not be accounted/i);
+  assert.doesNotMatch(JSON.stringify(unknown.body),/private diagnostic|synthetic-openrouter-key/);
 });

@@ -10,19 +10,15 @@
 //   rejected (non-2xx)         -> { ok: false, status: <HTTP status>, error }
 //                                 where runBattleDescriptor threw
 //                                 Error("<url> returned <status>") with
-//                                 error.status set (and, once the Worker
-//                                 ticket that enables openrouter lands,
-//                                 error.body = the parsed error JSON)
+//                                 error.status and a bounded/sanitized
+//                                 error.body when its shape is recognized
 //   rejected (no response)     -> { ok: false, status: 0, error }
 //                                 (fetch threw, or a 2xx body was not JSON;
 //                                 entry.reason?.status ?? 0)
 //
-// Contract Decision 4: a failed request is unbilled only when it has a
-// non-2xx status AND OpenRouter's { error: { code, message } } envelope at
-// error.body. The current Worker discards the body of a non-2xx response, so
-// until the Worker ticket attaches it, every OpenRouter failure is refused as
-// "Unaccounted OpenRouter outcome" (see the comment on
-// OPENROUTER_REFUSAL_CODES in image-engine.js).
+// A non-2xx is confirmed unbilled only when a real status and a valid
+// OpenRouter error/code envelope carry no images and no positive or malformed
+// reported cost. Unknown outcomes are never treated as zero-cost.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ENGINES } from '../image-engine.js';
@@ -138,7 +134,7 @@ test('A1 three variants give three descriptors with bearer, JSON content type an
   assert.equal(descriptors[2].headers.extra, undefined);
 });
 
-test('A1 resolution and outputFormat go into every body as resolution and output_format, and nothing else does', () => {
+test('A1 supported profile fields go into every body, and unrelated configuration is omitted', () => {
   const descriptors = openrouter.buildRequests({
     model: MODEL,
     prompt: PROMPT,
@@ -159,6 +155,7 @@ test('A1 resolution and outputFormat go into every body as resolution and output
       model: MODEL,
       prompt: PROMPT,
       n: 1,
+      aspect_ratio: '1:1',
       resolution: '1K',
       output_format: 'png'
     });
@@ -178,6 +175,20 @@ test('A1 resolution and outputFormat go into every body as resolution and output
     model: MODEL, prompt: PROMPT, variants: 1, resolution: null, outputFormat: undefined, auth: FIXTURE_AUTH
   });
   assert.deepEqual(unset[0].body, { model: MODEL, prompt: PROMPT, n: 1 });
+});
+
+test('A1 endpoint tags pin requests to one provider without fallback', () => {
+  for (const endpointTag of ['xai', 'google-ai-studio', 'black-forest-labs']) {
+    const [descriptor] = openrouter.buildRequests({
+      model: MODEL, prompt: PROMPT, variants: 1, endpointTag, auth: FIXTURE_AUTH
+    });
+    assert.deepEqual(descriptor.body, {
+      model: MODEL,
+      prompt: PROMPT,
+      n: 1,
+      provider: { only: [endpointTag], allow_fallbacks: false }
+    });
+  }
 });
 
 test('buildRequests requires the resolved auth object', () => {
@@ -367,6 +378,25 @@ test('a non-2xx failed result without an OpenRouter error body throws Unaccounte
   }
 });
 
+test('non-2xx error envelopes with image evidence or contradictory usage are unknown charges', () => {
+  const error = { code: 502, message: 'Provider error' };
+  const bodies = [
+    { error, usage: { cost: 0.01 } },
+    { error, usage: { cost: 'unknown' } },
+    { error, usage: null },
+    { error, data: [{ b64_json: PNG_B64, media_type: 'image/png' }] },
+    { error, images: [{}] },
+    { error, data: {} },
+    { error: {}, usage: { cost: 0 } }
+  ];
+  for (const body of bodies) {
+    assert.throws(
+      () => openrouter.parseResponses({ results: [httpFailure(502, body)], expectedVariants: 1 }),
+      /Unaccounted OpenRouter outcome/
+    );
+  }
+});
+
 // --- A6: bad usage.cost ------------------------------------------------
 
 test('A6 a success with usage.cost missing, null, a string, negative, NaN or infinite throws Unaccounted OpenRouter outcome', () => {
@@ -407,7 +437,7 @@ test('a cost total that overflows to infinity throws Unaccounted OpenRouter outc
 
 // --- A7: safety refusals -----------------------------------------------
 
-test('A7 no images and a content_policy_violation or refusal error give blocked true with that message', () => {
+test('A7 no images and a recognized refusal code give blocked true with a generic reason', () => {
   for (const code of ['content_policy_violation', 'refusal']) {
     const parsed = openrouter.parseResponses({
       results: [
@@ -420,13 +450,13 @@ test('A7 no images and a content_policy_violation or refusal error give blocked 
       images: [],
       costUsd: 0,
       blocked: true,
-      blockReason: `Declined (${code}).`,
+      blockReason: 'The image model declined that prompt.',
       partial: false
     });
   }
 });
 
-test('A7 the first refusal message wins, and a refusal is not a block when any image came back', () => {
+test('A7 refusal messages are not exposed, and a refusal is not a block when any image came back', () => {
   const first = openrouter.parseResponses({
     results: [
       httpFailure(400, { error: { code: 'refusal', message: 'First reason.' } }),
@@ -435,9 +465,9 @@ test('A7 the first refusal message wins, and a refusal is not a block when any i
     expectedVariants: 2
   });
   assert.equal(first.blocked, true);
-  assert.equal(first.blockReason, 'First reason.');
+  assert.equal(first.blockReason, 'The image model declined that prompt.');
 
-  // A blank refusal message falls back to the workers_ai wording.
+  // A blank or absent provider message uses the same generic player wording.
   const blank = openrouter.parseResponses({
     results: [httpFailure(400, { error: { code: 'refusal', message: '   ' } })],
     expectedVariants: 1
@@ -462,7 +492,7 @@ test('A7 other error codes are not blocks', () => {
     results: [
       httpFailure(400, { error: { code: 400, message: 'Bad request' } }),
       httpFailure(403, { error: { code: 'moderation', message: 'Flagged' } }),
-      httpFailure(400, { error: { message: 'no code at all' } })
+      httpFailure(400, { error: { code: 'invalid_request', message: 'Bad input' } })
     ],
     expectedVariants: 3
   });
@@ -490,23 +520,32 @@ test('A8 a missing media_type is inferred for PNG, JPEG and WebP from the base64
   assert.equal(parsed.partial, false);
 });
 
-test('A8 an unknown or non-image type is dropped and its cost still counts', () => {
+test('A8 unknown or non-image raster payloads are unaccounted instead of stored or treated as free', () => {
+  for (const image of [
+    { b64_json: GIF_B64 },
+    { b64_json: PNG_B64, media_type: 'application/json' },
+    { b64_json: 'PHN2Zy8+', media_type: 'image/png' },
+    { b64_json: PNG_B64, media_type: 'image/jpeg' }
+  ]) {
+    assert.throws(
+      () => openrouter.parseResponses({ results: [success([image], 0)], expectedVariants: 1 }),
+      /Unaccounted OpenRouter outcome/,
+      JSON.stringify(image)
+    );
+  }
+
   const parsed = openrouter.parseResponses({
-    results: [
-      success([{ b64_json: GIF_B64 }], 0.045),
-      success([{ b64_json: PNG_B64, media_type: 'application/json' }], 0.045),
-      success([
-        { b64_json: '   ', media_type: 'image/png' },
-        { media_type: 'image/png' },
-        { url: 'https://example.invalid/x.png' },
-        null,
-        'iVBORw0KGgo'
-      ], 0.045)
-    ],
-    expectedVariants: 3
+    results: [success([
+      { b64_json: '   ', media_type: 'image/png' },
+      { media_type: 'image/png' },
+      { url: 'https://example.invalid/x.png' },
+      null,
+      'iVBORw0KGgo'
+    ], 0.045)],
+    expectedVariants: 1
   });
   assert.deepEqual(parsed.images, []);
-  assert.equal(parsed.costUsd, 0.045 + 0.045 + 0.045);
+  assert.equal(parsed.costUsd, 0.045);
   assert.equal(parsed.blocked, false);
   assert.equal(parsed.partial, false);
 
@@ -518,12 +557,19 @@ test('A8 an unknown or non-image type is dropped and its cost still counts', () 
   assert.equal(missingData.costUsd, 0.02);
 });
 
-test('A8 an explicit image/* media_type is kept as given', () => {
+test('A8 declared media_type must match the raster signature', () => {
   const parsed = openrouter.parseResponses({
-    results: [success([{ b64_json: PNG_B64, media_type: 'image/jpeg' }], 0.01)],
+    results: [success([{ b64_json: PNG_B64, media_type: 'image/png' }], 0.01)],
     expectedVariants: 1
   });
-  assert.deepEqual(parsed.images, [{ mimeType: 'image/jpeg', bytesBase64: PNG_B64 }]);
+  assert.deepEqual(parsed.images, [{ mimeType: 'image/png', bytesBase64: PNG_B64 }]);
+  assert.throws(
+    () => openrouter.parseResponses({
+      results: [success([{ b64_json: PNG_B64, media_type: 'image/jpeg' }], 0.01)],
+      expectedVariants: 1
+    }),
+    /raster signature/
+  );
 });
 
 // --- A11: purity -------------------------------------------------------
