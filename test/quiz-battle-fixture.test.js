@@ -19,12 +19,16 @@ test('quiz.battle.sample.json is a valid single-round Prompt Battle quiz', () =>
     assert.ok(prompt.text && prompt.text.trim().length > 0);
     assert.ok(prompt.text.length <= 2048);
   }
-  assert.equal(round.engine.defaultProvider, 'kaplan_proxy');
-  assert.equal(round.engine.defaultModel, 'gemini-3.1-flash-image');
-  assert.deepEqual(round.engine.permittedModels, ['gemini-3.1-flash-image']);
-  assert.equal(round.engine.variants, 2);
+  assert.equal(round.engine.defaultProvider, 'openrouter');
+  assert.equal(round.engine.defaultModel, 'x-ai/grok-imagine-image-quality');
+  assert.deepEqual(round.engine.permittedModels, [
+    'x-ai/grok-imagine-image-quality',
+    'google/gemini-3.1-flash-image',
+    'black-forest-labs/flux-3-image'
+  ]);
+  assert.equal(round.engine.variants, 1);
   assert.equal(round.engine.attemptBudget, 3);
-  assert.equal(round.engine.maxSessionSpendUsd, 20);
+  assert.equal(round.engine.maxSessionSpendUsd, null);
   assert.deepEqual(round.scoring, { winnerPoints: 100, voterPoints: 10 });
 });
 

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Battle submit offline fixture</title>
+  <link rel="stylesheet" href="../styles.css" />
+  <link rel="stylesheet" href="../kaplan-brand-layer.css" />
+  <script>
+    window.QUIZ_PLATFORM_CONFIG = { supabaseUrl: "https://fixture.invalid", supabasePublishableKey: "fixture-only", workerOrigin: location.origin };
+    const key = "battle-submit-offline-fixture";
+    const defaults = {
+      phase: "battle_prompt",
+      mode: "pending",
+      entry: {
+        promptText: "Draw a small rocket with a friendly face.",
+        attemptsRemaining: 1,
+        submissionStatus: "open",
+        generations: [{ attemptIndex: 1, status: "complete", assetIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222"
+        ] }]
+      },
+      calls: [],
+    };
+    window.__battleFixture = new URLSearchParams(location.search).has("reset") ? defaults : (JSON.parse(sessionStorage.getItem(key) || "null") || defaults);
+    window.__persistBattleFixture = () => sessionStorage.setItem(key, JSON.stringify(window.__battleFixture));
+    const fixtureChannel = new BroadcastChannel(`quiz-control:${new URLSearchParams(location.search).get("room") || "ACPT"}`);
+    function setFixturePhase(phase, submissionStatus) {
+      window.__battleFixture.phase = phase;
+      window.__battleFixture.entry.submissionStatus = submissionStatus;
+      window.__persistBattleFixture();
+      fixtureChannel.postMessage({ type: "state", state: {
+        phase, presentationScreen: phase, battleRoundIndex: 0,
+        battleMatchupIndex: null, battleMatchupCount: null, battleVote: null,
+        battleResult: null, players: []
+      } });
+    }
+  </script>
+  <script type="importmap">
+    { "imports": { "https://esm.sh/@supabase/supabase-js@2": "./battle-submit-fixture.js" } }
+  </script>
+  <style>
+    .fixture-tools { display: grid; gap: 8px; width: min(390px, 100%); margin: 0 auto; padding: 12px; background: #f3f0fc; color: #240f6e; font: 13px/1.4 system-ui, sans-serif; }
+    .fixture-tools p { margin: 0; font-weight: 700; }
+    .fixture-tools div { display: flex; gap: 6px; flex-wrap: wrap; }
+    .fixture-tools button { min-height: 38px; border: 1px solid #6b5ba8; border-radius: 8px; padding: 6px 9px; color: #240f6e; background: #fff; font: inherit; }
+  </style>
+</head>
+<body>
+  <div class="fixture-tools">
+    <p>Offline fixture controls — fake RPC only</p>
+    <div><button type="button" data-mode="pending">Next submit: pending</button><button type="button" data-mode="retryable">Next submit: retryable</button><button type="button" data-mode="rejected">Next submit: rejected</button></div>
+    <div><button type="button" data-lock-submitted>Host locks: submitted</button><button type="button" data-lock-forfeited>Host locks: forfeited</button></div>
+  </div>
+  <main id="app"></main>
+  <script>
+    document.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => {
+      window.__battleFixture.mode = button.dataset.mode;
+      window.__persistBattleFixture();
+    }));
+    document.querySelector("[data-lock-submitted]").addEventListener("click", () => setFixturePhase("battle_review", "submitted"));
+    document.querySelector("[data-lock-forfeited]").addEventListener("click", () => setFixturePhase("battle_review", "forfeited"));
+  </script>
+  <script type="module" src="../app.js?fixture=submit-state-v1"></script>
+</body>
+</html>

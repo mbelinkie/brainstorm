@@ -1,11 +1,11 @@
-import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, resolveBattleMatchupWithStandings, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, playerBattleSubmissionStatus, randomRoomSecret, resolveBattleMatchupWithStandings, roomApi, submitBattleEntryAndConfirm, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { autoLockDecision, battleEngineMenu, battleEngineSelection, battleTestStatus, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { battleRosterRows, battleSpendView, publicBattleProgress } from "./battle-roster.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 import { presentationBattleMarkup, presentationBattleScene } from "./battle-presentation.js";
 import { battleVoteMarkup, battleVoteRenderKey, battleVoteView, classifyVoteError, publicBattleResult, publicBattleVote, sanitizePublicBattleResult, sanitizePublicBattleVote } from "./battle-vote.js";
-import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
+import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, confirmedVariants, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
 import { battleReviewMarkup, firstViableBattleMatchupIndex, vetoBattleEntryAndRefresh } from "./battle-review.js";
 
 const params = new URLSearchParams(location.search);
@@ -80,23 +80,19 @@ let hostStateSaveRequest = 0;
 let hostStateSaveFailure = null;
 let hostStateSaveRetrying = false;
 const quizWorkerOrigin = config.workerOrigin || location.origin;
-// Prompt Battle host model test panel (title screen only). Deliberately
+// Prompt Battle host model test panel. Deliberately
 // local UI state, not part of `state`: it never syncs to another tab, is
 // never broadcast, and is never sent to saveHostState, because publicRoomState()
 // is the only allowlisted path to a player or presentation client and this
 // data -- generated image bytes -- must never reach one. See
 // docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 7.5.
-const BATTLE_TEST_MODELS = [
-  { value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" },
-  { value: "@cf/black-forest-labs/flux-2-klein-4b", label: "Flux 2 Klein 4B (Workers AI, free)" },
-  { value: "@cf/black-forest-labs/flux-2-klein-9b", label: "Flux 2 Klein 9B (Workers AI, free)" },
-  { value: "@cf/leonardo/lucid-origin", label: "Lucid Origin (Workers AI, paid)" }
-];
 // Mirrors the Worker's own default (cloudflare-worker.js, BATTLE_TEST_IMAGE_PROMPT)
 // only as a starting point the host can freely edit -- unlike the model
 // menu, the prompt is host-typed free text, sent to the Worker as-is.
 const BATTLE_TEST_DEFAULT_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
-let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null };
+// The model list comes from the host-authenticated Worker catalogue. The one
+// selected model is shared by the existing room RPC and Test request.
+let battleTestPanel = { model: "", models: [], modelsStatus: "idle", modelsError: "", prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null, engineBusy: false, engineError: "", engineReadFailed: false, unavailableModel: "", unavailableSource: "", savedModel: null };
 // Prompt Battle pairing panel (host only). Local UI state for the same reason
 // battleTestPanel above is: the pairing maps player names to matchups, which is
 // exactly what a player must not hold during battle_prompt, so it must never be
@@ -117,6 +113,12 @@ let battleLockInFlightToken = 0;
 // (mistakes.md #15); render() does not revoke these.
 let battlePlayer = initialBattlePlayer();
 let battlePlayerRenderedKey = "";
+let battlePlayerLoadedPhase = "";
+let battlePlayerEntryPhase = "";
+let battlePlayerLoadingPhase = "";
+let battlePlayerFailedPhase = "";
+let battlePlayerLoadRequestId = 0;
+let battlePlayerSubmitRequest = { status: "idle", assetId: "", message: "" };
 const battleImageUrls = new Map();
 // This phone's vote on the current matchup (issue #31). A confirmed vote is
 // remembered per matchup for the tab, so a refresh shows "Vote counted"
@@ -525,7 +527,7 @@ function enterBattleRound(roundIndex) {
 // through set_live_room_state keeps both copies identical instead of letting
 // the next host save silently overwrite the server's (slice 2 review, finding 2).
 async function openBattleRoundFromHost() {
-  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || state.phase === "battle_prompt" || battleRoundPanel.busy) return;
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || state.phase === "battle_prompt" || battleRoundPanel.busy || battleTestPanel.engineBusy) return;
   if (hostStateSaveFailure) { battleRoundPanel.error = "The room is not saved on the server yet. Wait for it to reconnect, then open the round."; render(); return; }
   const hostSecret = getHostSecret();
   if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
@@ -596,6 +598,142 @@ async function endBattleRound() {
   battleLockOperationId++;
   if (next) await startRoundEnd(next.roundIndex);
   else await startFinale();
+}
+
+// Host-only. The selected model comes from the host-authenticated catalogue;
+// both provider and model are saved together through the existing room RPC.
+async function loadBattleModelCatalogue() {
+  if (view !== "host" || !(hostQuizDefinition?.rounds || []).some(isBattleRound)) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) {
+    battleTestPanel.modelsStatus = "failure";
+    battleTestPanel.modelsError = "Host authorization is required.";
+    render();
+    return;
+  }
+  battleTestPanel.modelsStatus = "loading";
+  battleTestPanel.modelsError = "";
+  battleTestPanel.models = [];
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/battle/models`, {
+      method: "GET",
+      cache: "no-store",
+      headers: { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || `Could not load image models (${response.status}).`);
+    if (!Array.isArray(body?.models) || body.models.some((model) =>
+      !model || typeof model.id !== "string" || !model.id.trim() ||
+      typeof model.provider !== "string" || !model.provider.trim() ||
+      typeof model.label !== "string" || !model.label.trim() ||
+      typeof model.default !== "boolean"
+    )) throw new Error("The image model catalogue response was invalid.");
+    battleTestPanel.models = body.models.map((model) => ({ provider: model.provider, value: model.id, label: model.label, default: model.default }));
+    battleTestPanel.modelsStatus = "ready";
+    await loadSavedBattleEngine();
+  } catch (error) {
+    battleTestPanel.models = [];
+    battleTestPanel.modelsStatus = "failure";
+    battleTestPanel.modelsError = error?.message || "Could not load image models.";
+    render();
+  }
+}
+
+function authoredBattleEngineRound() {
+  const rounds = hostQuizDefinition?.rounds || [];
+  const startIndex = state.presentationScreen === "title"
+    ? 0
+    : Number.isInteger(state.battleRoundIndex)
+      ? state.battleRoundIndex
+      : Number.isInteger(state.targetRoundIndex)
+        ? state.targetRoundIndex
+        : Math.max(0, Number(state.question?.round || 1) - 1);
+  return rounds.find((round, index) => index >= startIndex && isBattleRound(round)) || null;
+}
+
+function authoredBattleEngineEntry() {
+  const round = authoredBattleEngineRound();
+  return battleEngineMenuEntries().find((entry) => entry.value === round?.engine?.defaultModel && entry.provider === round?.engine?.defaultProvider) || null;
+}
+
+async function selectBattleEngine(value) {
+  if (view !== "host" || battleTestPanel.engineBusy || battleTestPanel.busy || battleTestPanel.modelsStatus !== "ready" || ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
+  const entry = battleEngineMenuEntries().find((candidate) => candidate.value === value);
+  if (!entry) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleTestPanel.engineError = "Host authorization is required."; render(); return; }
+  const previous = effectiveBattleModel();
+  battleTestPanel.model = entry.value;
+  battleTestPanel.engineBusy = true;
+  battleTestPanel.engineError = "";
+  // The old result and error belonged to the previous engine.
+  battleTestPanel.result = null;
+  battleTestPanel.error = "";
+  render();
+  try {
+    await roomApi.setBattleEngine({ roomCode, hostSecret, provider: entry.provider, model: entry.value });
+    battleTestPanel.engineSelectionVersion = (battleTestPanel.engineSelectionVersion || 0) + 1;
+    battleTestPanel.savedModel = entry.value;
+    battleTestPanel.engineReadFailed = false;
+    battleTestPanel.unavailableModel = "";
+    battleTestPanel.unavailableSource = "";
+  } catch (error) {
+    battleTestPanel.model = previous;
+    battleTestPanel.engineError = error?.message || "Could not save the engine.";
+  } finally {
+    battleTestPanel.engineBusy = false;
+    render();
+  }
+}
+
+// Host-only. After a refresh, reads the saved effective engine back from the
+// session (get_host_battle_state returns it from any phase) so the menu shows
+// the host's earlier choice. Nothing saved yet leaves the round's default
+// selected and savedModel null.
+async function loadSavedBattleEngine() {
+  if (view !== "host" || battleTestPanel.modelsStatus !== "ready") return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) return;
+  // Successful saves invalidate older reads, even after engineBusy clears.
+  const selectionVersion = battleTestPanel.engineSelectionVersion || 0;
+  try {
+    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
+    // A pick the host made while this read was in flight wins.
+    if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
+    const saved = result?.engine?.model || null;
+    const savedProvider = result?.engine?.provider || null;
+    const menu = battleEngineMenuEntries();
+    if (saved) {
+      battleTestPanel.savedModel = saved;
+      const savedEntry = menu.find((entry) => entry.value === saved && entry.provider === savedProvider);
+      battleTestPanel.model = savedEntry?.value || "";
+      battleTestPanel.unavailableModel = savedEntry ? "" : saved;
+      battleTestPanel.unavailableSource = savedEntry ? "" : "saved";
+    } else {
+      const defaultEntry = authoredBattleEngineEntry();
+      const defaultModel = authoredBattleEngineRound()?.engine?.defaultModel || "";
+      battleTestPanel.model = defaultEntry?.value || "";
+      battleTestPanel.savedModel = null;
+      battleTestPanel.unavailableModel = defaultEntry ? "" : defaultModel;
+      battleTestPanel.unavailableSource = defaultEntry ? "" : "round default";
+    }
+    battleTestPanel.engineReadFailed = false;
+    battleTestPanel.engineError = "";
+  } catch {
+    if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
+    const defaultEntry = authoredBattleEngineEntry();
+    const defaultModel = authoredBattleEngineRound()?.engine?.defaultModel || "";
+    battleTestPanel.model = defaultEntry?.value || "";
+    battleTestPanel.savedModel = null;
+    battleTestPanel.unavailableModel = defaultEntry ? "" : defaultModel;
+    battleTestPanel.unavailableSource = defaultEntry ? "" : "round default";
+    battleTestPanel.engineReadFailed = true;
+    battleTestPanel.engineError = defaultEntry
+      ? `Could not read the saved engine. The round default, ${defaultEntry.label}, is shown but not confirmed. Choose and save a model before testing.`
+      : `Could not read the saved engine, and the round default ${defaultModel || "(missing)"} is not available. Choose and save an available model before testing.`;
+  } finally {
+    render();
+  }
 }
 
 async function revealBattleMatchup({ recovery = false } = {}) {
@@ -1744,6 +1882,9 @@ async function connectHostedRoom() {
           await persistHostState();
         }
         if (view === "host" && ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) refreshBattlePairing();
+        // Un-awaited: the catalogue and saved choice load after the host
+        // screen paints; neither read blocks normal room controls.
+        if (view === "host") loadBattleModelCatalogue();
         emit();
         render();
         // Un-awaited on purpose: the host screen must paint immediately, and
@@ -2876,16 +3017,17 @@ function renderHostBattle() {
   const voteProgress = voting ? `<p class="battle-round-note" data-battle-vote-progress role="status">${votesCast} of ${eligibleVoters} votes received.</p>` : "";
   const actionError = `<p class="battle-round-note battle-round-note--error" data-battle-action-error role="alert" ${battleRoundPanel.error ? "" : "hidden"}>${escapeHtml(battleRoundPanel.error)}</p>`;
   const endNote = review ? firstViableBattleMatchupIndex(battleRoundPanel.state) === null && battleRoundPanel.state ? '<p class="battle-round-note">Every matchup is skipped. Finish the round when you are ready.</p>' : '<p class="battle-round-note">Veto any entry, then start voting when a matchup has a viable entry.</p>' : voting ? '<p class="battle-round-note">Reveal resolves this matchup once and shows the result.</p>' : resultPhase ? '<p class="battle-round-note">Continue to the next matchup with a viable entry, or finish the round.</p>' : opened ? '<p class="battle-round-note">Locking closes submissions and moves the room to review.</p>' : "";
+  const enginePanel = !opened && isHostedRoom ? battleTestImagePanel() : "";
   if (state.phase === "battle_prompt" || voting) syncBattleRosterPolling(); else stopBattleRosterPolling();
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}${voteProgress}${resultMarkup}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${lockControl}${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${actionError}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}${voteProgress}${resultMarkup}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${lockControl}${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${enginePanel}${endNote}${actionError}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostDoors() {
   const picked = (state.doorPicks || []).length;
   const targetRound = hostQuizDefinition?.rounds?.[state.targetRoundIndex];
   const revealed = state.phase === "door_reveal";
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow" data-host-doors-eyebrow>${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-doors-count>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow" data-host-doors-eyebrow>${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-doors-count>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${isHostedRoom ? battleTestImagePanel() : ""}${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostFinale() {
@@ -2905,29 +3047,87 @@ function renderHostFinale() {
   app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Finale</span><h1>${title}</h1><p>${copy}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">Finale control</p><h2>${finalStage === "final_suspense" ? "And the winner is…" : finalStage === "final_podium" ? "Celebrate the podium." : "Thanks for playing."}</h2>${audio}${leaderboard()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions">${isHostedRoom ? `<a class="btn btn-secondary" href="${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}" target="_blank" rel="noopener">Open presentation view</a>` : ""}${action}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}</aside></div></main>${shortcutGuide()}`);
 }
 
-// Host-only, title-screen-only: lets the host generate a couple of sample
-// images from the effective model before a Prompt Battle round starts, and
-// see the reported cost, without spending a player's generation budget.
-// Model choice is always a menu built from BATTLE_TEST_MODELS, never a
-// free-text field -- a client-typed model string is exactly what the
-// Worker's deployment allowlist exists to refuse.
+// Host-only and between rounds: the Worker catalogue is the only source of
+// model options, and the player RPC and Test button share its confirmed choice.
 function battleTestImagePanel() {
+  // No battle round: there is no engine to choose, so no panel at all.
+  if (!(hostQuizDefinition?.rounds || []).some(isBattleRound)) return "";
+  const heading = "<h3>Prompt Battle — image engine</h3>";
+  if (battleTestPanel.modelsStatus === "loading" || battleTestPanel.modelsStatus === "idle") return `<div class="battle-test-panel">${heading}<p class="battle-test-note" role="status">Loading available image models…</p></div>`;
+  if (battleTestPanel.modelsStatus === "failure") return `<div class="battle-test-panel">${heading}<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.modelsError || "Could not load image models.")}</p></div>`;
+  const menu = battleEngineMenuEntries();
+  const authoredDefault = authoredBattleEngineEntry();
+  const unavailableModel = battleTestPanel.savedModel
+    ? battleTestPanel.unavailableModel
+    : authoredDefault ? "" : authoredBattleEngineRound()?.engine?.defaultModel || battleTestPanel.unavailableModel;
+  const unavailableSource = battleTestPanel.savedModel ? "saved" : "round default";
+  if (!menu.length) {
+    const unavailable = unavailableModel
+      ? ` The ${escapeHtml(unavailableSource)} model ${escapeHtml(unavailableModel)} is not enabled.`
+      : "";
+    return `<div class="battle-test-panel">${heading}<p class="battle-test-note battle-test-note--blocked" role="alert">No permitted image model is currently available for this quiz's battle rounds.${unavailable}</p></div>`;
+  }
   const busy = battleTestPanel.busy;
-  const modelOptions = BATTLE_TEST_MODELS.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === battleTestPanel.model ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("");
+  const activeBattle = ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase);
+  const locked = busy || battleTestPanel.engineBusy || activeBattle;
+  const selected = effectiveBattleModel();
+  const selectedProvider = menu.find((entry) => entry.value === selected)?.provider;
+  const providerName = { workers_ai: "Workers AI", openrouter: "OpenRouter", kaplan_proxy: "Kaplan proxy" }[selectedProvider] || selectedProvider;
+  const providerStatus = providerName ? `<p class="battle-test-note" role="status">Provider: ${escapeHtml(providerName)}</p>` : "";
+  const modelOptions = `${selected ? "" : '<option value="" selected disabled>Choose an available model</option>'}${menu.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("")}`;
+  const engineStatus = battleTestPanel.engineBusy
+    ? `<p class="battle-test-note" role="status">Saving engine…</p>`
+    : battleTestPanel.engineError
+      ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.engineError)}</p>`
+      : unavailableModel
+        ? `<p class="battle-test-note battle-test-note--blocked" role="alert">The ${escapeHtml(unavailableSource)} model ${escapeHtml(unavailableModel)} is unavailable. Choose and save an available model before testing.</p>`
+      : battleTestPanel.savedModel && battleTestPanel.savedModel === selected
+        ? `<p class="battle-test-note" role="status">Saved for this room.</p>`
+        : `<p class="battle-test-note" role="status">Round default — not saved yet. Pick an engine to save it.</p>`;
+  return `<div class="battle-test-panel">${heading}<div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy || activeBattle ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Engine</label><select data-battle-test-model ${locked ? "disabled" : ""}>${modelOptions}</select></div>${providerStatus}${engineStatus}<button class="btn btn-secondary" data-battle-test-generate ${locked || !selected ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${battleTestStatusMarkup()}</div>`;
+}
+
+// The host's engine menu: the Worker catalogue intersected with the
+// battle rounds' permittedModels. effectiveBattleModel() is the single
+// selection both the menu and the Test button use.
+function battleEngineMenuEntries() {
+  return battleEngineMenu(battleTestPanel.models, hostQuizDefinition?.rounds);
+}
+
+function effectiveBattleModel() {
+  if (battleTestPanel.modelsStatus !== "ready" || battleTestPanel.engineReadFailed) return "";
+  const selected = battleTestPanel.savedModel ? battleTestPanel.model : authoredBattleEngineEntry()?.value || "";
+  if (battleTestPanel.savedModel && battleTestPanel.unavailableModel) return "";
+  return battleEngineMenuEntries().some((entry) => entry.value === selected) ? selected : "";
+}
+
+// Loading, failure and success each get their own element and class, so a
+// host can tell them apart at a glance. Only success shows images and cost.
+function battleTestStatusMarkup() {
+  const status = battleTestStatus(battleTestPanel);
+  if (status === "idle") return "";
+  if (status === "loading") return `<p class="battle-test-state battle-test-state--loading" role="status">Generating test images…</p>`;
   const result = battleTestPanel.result;
   const images = result?.images || [];
-  const gallery = images.length ? `<div class="battle-test-gallery">${images.map((image) => `<img class="battle-test-image" src="data:${escapeHtml(image.mimeType)};base64,${image.bytesBase64}" alt="Test generation from ${escapeHtml(battleTestPanel.model)}" />`).join("")}</div>` : "";
-  const partialNotice = result?.partial ? `<p class="battle-test-note" role="status">Only ${images.length} of the requested variants came back — the attempt still counted.</p>` : "";
-  const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
-  const costLine = result ? `<p class="battle-test-cost">Reported cost: ${result.costUsd ? `$${Number(result.costUsd).toFixed(4)}` : "$0 (Workers AI free tier)"}</p>` : "";
-  const errorLine = battleTestPanel.error ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.error)}</p>` : "";
   // Diagnostic only: raw per-call failure reasons from the provider, so a
   // zero-image response is legible without opening devtools. Host-only, by
   // construction -- this whole panel only renders for the host.
   const providerErrorsNotice = result?.providerErrors?.length
     ? `<details class="battle-test-note battle-test-note--blocked" open><summary>${images.length === 0 ? "No images came back" : "Some calls failed"} — provider details</summary>${result.providerErrors.map((entry) => `<p>${entry.status ? `[${escapeHtml(String(entry.status))}] ` : ""}${escapeHtml(entry.message)}</p>`).join("")}</details>`
     : "";
-  return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
+  if (status === "failure") {
+    const reason = battleTestPanel.error || (result?.blocked ? (result.blockReason || "The image model declined that prompt.") : "No image came back.");
+    return `<div class="battle-test-state battle-test-state--failure"><p class="battle-test-note battle-test-note--blocked" role="alert">Test failed: ${escapeHtml(reason)}</p>${providerErrorsNotice}</div>`;
+  }
+  const gallery = `<div class="battle-test-gallery">${images.map((image) => `<img class="battle-test-image" src="data:${escapeHtml(image.mimeType)};base64,${image.bytesBase64}" alt="Test generation from ${escapeHtml(effectiveBattleModel())}" />`).join("")}</div>`;
+  const partialNotice = result?.partial ? `<p class="battle-test-note" role="status">Only ${images.length} of the requested variants came back — the attempt still counted.</p>` : "";
+  const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
+  // costUsd is the whole call's reported cost, so the per-image figure is it
+  // divided across the images that came back.
+  const cost = result?.costUsd;
+  const hasReportedCost = typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+  const costLine = `<p class="battle-test-cost">Reported cost: ${hasReportedCost ? `$${cost.toFixed(4)} (about $${(cost / images.length).toFixed(4)} per image)` : "unavailable"}</p>`;
+  return `<div class="battle-test-state battle-test-state--success">${gallery}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}</div>`;
 }
 
 // Host-only Prompt Battle panel. Its private review grid is backed only by
@@ -2944,7 +3144,7 @@ function battlePairingPanel() {
     return `<div class="battle-round-panel"><h3>Prompt Battle — ${action}</h3><p class="battle-round-title">Matchup ${Number(state.battleMatchupIndex) + 1} of ${Number(state.battleMatchupCount) || 0}.</p>${counts}<div class="host-actions"><button class="btn btn-secondary" data-battle-refresh-pairing ${battleRoundPanel.busy ? "disabled" : ""}>${refresh}</button></div></div>`;
   }
   const busy = battleRoundPanel.busy;
-  const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
+  const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || battleTestPanel.engineBusy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
   const viableMatchup = firstViableBattleMatchupIndex(battleRoundPanel.state);
   const startVoting = state.phase === "battle_review" ? `<button class="btn btn-primary" data-battle-start-voting ${viableMatchup === null || busy || battleRoundPanel.stale || battleRoundPanel.reviewAction || hostStateSaveFailure ? "disabled" : ""}>${battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting"}</button>` : "";
   const refreshText = busy ? "Refreshing…" : "Refresh roster";
@@ -2962,6 +3162,7 @@ function renderHost() {
   const openingTitle = hostQuizDefinition?.titlePage;
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
   const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>${battleTestImagePanel()}` : "";
+  const hostedIntermission = isHostedRoom && ["round_end", "round_scoreboard"].includes(state.presentationScreen) ? battleTestImagePanel() : "";
   const intermissionAction = state.presentationScreen === "round_end"
     ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_scoreboard"
@@ -2970,7 +3171,7 @@ function renderHost() {
     ? '<p class="host-auto-advance" role="status">Opening the first question…</p>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}${hostedIntermission}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -3312,8 +3513,14 @@ function battleFavouriteStorageKey() {
 function resetBattlePlayer(key) {
   battleImageUrls.forEach((entry) => entry.then((url) => url && URL.revokeObjectURL(url)));
   battleImageUrls.clear();
+  battlePlayerLoadRequestId += 1;
   battlePlayer = initialBattlePlayer(key);
   battlePlayerRenderedKey = "";
+  battlePlayerLoadedPhase = "";
+  battlePlayerEntryPhase = "";
+  battlePlayerLoadingPhase = "";
+  battlePlayerFailedPhase = "";
+  battlePlayerSubmitRequest = { status: "idle", assetId: "", message: "" };
   try { battlePlayer.favouriteAssetId = sessionStorage.getItem(battleFavouriteStorageKey()) || ""; } catch { /* storage unavailable: favourite is per-tab only */ }
 }
 
@@ -3321,27 +3528,162 @@ function resetBattlePlayer(key) {
 // returning fetch with identical data leaves focus and typing alone.
 function redrawBattlePlayer() {
   if (view !== "player" || state.phase !== "battle_prompt") return;
-  if (battlePlayerRenderKey(battlePlayerViewForState()) !== battlePlayerRenderedKey) render();
+  if (battlePlayerRenderStateKey() !== battlePlayerRenderedKey) render();
+}
+
+function ensureBattlePlayerState() {
+  if (!["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
+  if (battlePlayerLoadedPhase === state.phase || battlePlayerLoadingPhase === state.phase || battlePlayerFailedPhase === state.phase) return;
+  battlePlayer.loadError = "";
+  void loadBattlePlayerState();
 }
 
 async function loadBattlePlayerState({ redraw = true } = {}) {
   const key = battlePlayer.key;
+  const requestedPhase = state.phase;
+  const requestId = ++battlePlayerLoadRequestId;
   battlePlayer.loading = true;
+  battlePlayerLoadedPhase = "";
+  battlePlayerEntryPhase = "";
+  battlePlayerLoadingPhase = requestedPhase;
   try {
     const result = await roomApi.getPlayerBattleState({ roomCode, playerToken: playerId });
-    if (battlePlayer.key !== key) return;
+    if (battlePlayer.key !== key || requestId !== battlePlayerLoadRequestId) return;
     battlePlayer.entry = result?.entry ?? null;
+    battlePlayerLoadedPhase = requestedPhase;
+    battlePlayerEntryPhase = typeof result?.phase === "string" ? result.phase : requestedPhase;
+    battlePlayerFailedPhase = "";
     battlePlayer.loadError = "";
   } catch (error) {
-    if (battlePlayer.key !== key) return;
+    if (battlePlayer.key !== key || requestId !== battlePlayerLoadRequestId) return;
     recordDiagnostic("battle-player-state", error, { roomCode });
     battlePlayer.loadError = "Could not load your prompt. Check your connection and try again.";
+    battlePlayerFailedPhase = requestedPhase;
   } finally {
-    if (battlePlayer.key === key) {
+    if (battlePlayer.key === key && requestId === battlePlayerLoadRequestId) {
       battlePlayer.loading = false;
+      battlePlayerLoadingPhase = "";
       if (redraw) { redrawBattlePlayer(); redrawBattleVote(); }
     }
   }
+}
+
+function battlePlayerRenderStateKey(view = battlePlayerViewForState()) {
+  return JSON.stringify({
+    screen: battlePlayerRenderKey(view),
+    phase: state.phase,
+    loadedPhase: battlePlayerLoadedPhase,
+    entryPhase: battlePlayerEntryPhase,
+    submissionStatus: playerBattleSubmissionStatus(battlePlayer.entry),
+    submitRequest: battlePlayerSubmitRequest,
+  });
+}
+
+function battleVoteRenderStateKey(view) {
+  return JSON.stringify({
+    vote: battleVoteRenderKey(view),
+    submission: state.phase === "battle_review" ? {
+      loadedPhase: battlePlayerLoadedPhase,
+      entryPhase: battlePlayerEntryPhase,
+      status: playerBattleSubmissionStatus(battlePlayer.entry),
+      loadError: battlePlayer.loadError,
+    } : null,
+  });
+}
+
+function retryBattlePlayerState() {
+  battlePlayer.loadError = "";
+  battlePlayerFailedPhase = "";
+  battlePlayerLoadedPhase = "";
+  battlePlayerEntryPhase = "";
+  battlePlayerSubmitRequest = { status: "idle", assetId: "", message: "" };
+  const request = loadBattlePlayerState();
+  render();
+  void request;
+}
+
+function battleSubmissionMarkup() {
+  if (!["battle_prompt", "battle_review"].includes(state.phase)) return "";
+  const currentEntry = battlePlayerLoadedPhase === state.phase && battlePlayerEntryPhase === state.phase;
+  if (!currentEntry) {
+    if (state.phase === "battle_prompt") return "";
+    if (battlePlayerFailedPhase === state.phase) {
+      return `<section class="battle-submission"><p class="battle-submission-status battle-submission-status--failed" role="alert">Could not check your entry. Check your connection and try again.</p><button type="button" class="btn btn-primary battle-submit-reload" data-battle-submit-reload>Check again</button></section>`;
+    }
+    return `<section class="battle-submission"><p class="battle-submission-status" role="status">Checking your entry status…</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section>`;
+  }
+
+  const entry = battlePlayer.entry;
+  if (!entry) {
+    return state.phase === "battle_review"
+      ? `<section class="battle-submission"><p class="battle-submission-status" role="status">This battle started before you joined. Wait for the host to open voting.</p></section>`
+      : "";
+  }
+
+  const submissionStatus = playerBattleSubmissionStatus(entry);
+  if (state.phase === "battle_review") {
+    const message = submissionStatus === "submitted"
+      ? "Time’s up. Your entry is on file. If you did not submit a choice, your latest finished image was submitted automatically. Waiting for the host to open voting."
+      : submissionStatus === "forfeited"
+        ? "Time’s up. You had no completed image to submit, so your entry was forfeited. Waiting for the host to open voting."
+        : "Time’s up. Your entry status could not be confirmed. Waiting for the host to open voting.";
+    return `<section class="battle-submission"><p class="battle-submission-status" role="status">${message}</p></section>`;
+  }
+
+  const variants = confirmedVariants(entry);
+  const selectedIndex = variants.findIndex((variant) => variant.assetId === battlePlayer.favouriteAssetId);
+  const selectedAssetId = selectedIndex < 0 ? "" : variants[selectedIndex].assetId;
+  const request = battlePlayerSubmitRequest.assetId === selectedAssetId || battlePlayerSubmitRequest.status === "pending" ? battlePlayerSubmitRequest : { status: "idle", message: "" };
+  const requestMessages = {
+    pending: "Submitting your image…",
+    confirmed: "Your image is submitted. You can change it until the host locks submissions.",
+    rejected: "The server did not accept that image. Refresh to check that submissions are still open.",
+    retryable: "We could not confirm your submission. Check your connection, then try again.",
+    unconfirmed: "We could not verify that choice. Refresh to check your entry before trying again.",
+  };
+  const message = requestMessages[request.status]
+    || (submissionStatus === "unknown" ? "We could not verify your submission status. Refresh your entry before submitting." : submissionStatus === "submitted" ? "Your entry is on file. You can change your choice until the host locks submissions." : "Choose one of your finished images, then submit it.");
+  const failed = ["rejected", "retryable", "unconfirmed"].includes(request.status) || submissionStatus === "unknown";
+  const requiresStatusRefresh = submissionStatus === "unknown" || ["rejected", "unconfirmed"].includes(request.status);
+  const canSubmit = ["open", "submitted"].includes(submissionStatus) && Boolean(selectedAssetId) && !["pending", "rejected", "unconfirmed"].includes(request.status);
+  const buttonLabel = request.status === "retryable" ? "Try again" : submissionStatus === "submitted" ? "Update submission" : "Submit chosen image";
+  const selection = selectedIndex < 0
+    ? `<p class="battle-submission-selection">Choose a finished image above to submit it.</p>`
+    : `<p class="battle-submission-selection" role="status">Selected image: Image ${selectedIndex + 1}</p>`;
+  const submitButton = requiresStatusRefresh
+    ? `<button type="button" class="btn btn-primary battle-submit-reload" data-battle-submit-reload>Refresh entry status</button>`
+    : `<button type="button" class="btn btn-primary battle-submit-action" data-battle-submit ${canSubmit ? "" : "disabled"}>${buttonLabel}</button>`;
+  return `<section class="battle-submission"><p class="battle-submission-status${failed ? " battle-submission-status--failed" : ""}" role="${failed ? "alert" : "status"}">${message}</p>${selection}<p class="battle-submission-note">The image marked as your favourite is the one you can submit. You may change your submission until the host locks the round.</p><div class="battle-submission-actions">${submitButton}</div></section>`;
+}
+
+async function submitBattlePlayerEntry() {
+  const phase = state.phase;
+  const key = battlePlayer.key;
+  const assetId = battlePlayer.favouriteAssetId;
+  const ownAssetIds = new Set(confirmedVariants(battlePlayer.entry).map((variant) => variant.assetId));
+  if (view !== "player" || phase !== "battle_prompt" || battlePlayerLoadedPhase !== phase || battlePlayerEntryPhase !== phase) return;
+  if (!["open", "submitted"].includes(playerBattleSubmissionStatus(battlePlayer.entry))) return;
+  if (!assetId || !ownAssetIds.has(assetId) || battlePlayerSubmitRequest.status === "pending") return;
+
+  battlePlayerSubmitRequest = { status: "pending", assetId, message: "" };
+  render();
+  const result = await submitBattleEntryAndConfirm({ roomCode, playerToken: playerId, assetId });
+  if (battlePlayer.key !== key || state.phase !== phase) return;
+  if (result.status === "retryable") recordDiagnostic("battle-submit", result.error, { roomCode });
+  if (result.status === "confirmed") battlePlayer.entry.submissionStatus = "submitted";
+  const messages = {
+    confirmed: "Your image is submitted. You can change it until the host locks submissions.",
+    rejected: "The server did not accept that image. Refresh to check that submissions are still open.",
+    retryable: "We could not confirm your submission. Check your connection, then try again.",
+    unconfirmed: "We could not verify that choice. Refresh to check your entry before trying again.",
+  };
+  battlePlayerSubmitRequest = { status: result.status, assetId, message: messages[result.status] || "" };
+  render();
+}
+
+function attachBattleSubmissionEvents() {
+  document.querySelector("[data-battle-submit]")?.addEventListener("click", () => submitBattlePlayerEntry());
+  document.querySelectorAll("[data-battle-submit-reload]").forEach((button) => button.addEventListener("click", retryBattlePlayerState));
 }
 
 async function generateBattleImages() {
@@ -3453,15 +3795,15 @@ document.addEventListener("keydown", (event) => {
 function renderPlayerBattle() {
   const key = battlePlayerKey(state);
   if (battlePlayer.key !== key) resetBattlePlayer(key);
-  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  ensureBattlePlayerState();
   const battleView = battlePlayerViewForState();
   // A redraw for any other reason (a score or roster broadcast) must not drop
   // the player's caret mid-sentence.
   const input = document.querySelector("[data-battle-prompt-input]");
   const focus = input && document.activeElement === input ? { start: input.selectionStart, end: input.selectionEnd } : null;
   const heading = battleView.kind === "compose" ? "Your matchup" : "Get ready";
-  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${battleView.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battlePlayerMarkup(battleView, escapeHtml)}</section></main>`, true);
-  battlePlayerRenderedKey = battlePlayerRenderKey(battleView);
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${battleView.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battlePlayerMarkup(battleView, escapeHtml)}${battleSubmissionMarkup()}</section></main>`, true);
+  battlePlayerRenderedKey = battlePlayerRenderStateKey(battleView);
   const nextInput = document.querySelector("[data-battle-prompt-input]");
   if (focus && nextInput && !nextInput.disabled) {
     nextInput.focus();
@@ -3480,9 +3822,9 @@ function attachBattlePlayerEvents() {
   });
   document.querySelector("[data-battle-generate]")?.addEventListener("click", () => generateBattleImages());
   document.querySelector("[data-battle-reload]")?.addEventListener("click", () => {
-    battlePlayer.loadError = "";
-    render();
+    retryBattlePlayerState();
   });
+  attachBattleSubmissionEvents();
   attachBattleLightboxEvents("variants", battlePlayer.key);
   document.querySelectorAll("[data-battle-favourite]").forEach((button) => button.addEventListener("click", () => {
     battlePlayer.favouriteAssetId = button.dataset.battleFavourite;
@@ -3494,26 +3836,46 @@ function attachBattlePlayerEvents() {
 // --- Prompt Battle voting and result, phone side (issue #31) -------------
 
 function battleVoteStorageKey(matchupId) {
-  return `quiz-battle-vote:${roomCode}:${matchupId}`;
+  return `quiz-battle-vote:${roomCode}:${playerId}:${matchupId}`;
+}
+
+function persistBattleVote(vote) {
+  if (!vote?.matchupId) return;
+  const key = battleVoteStorageKey(vote.matchupId);
+  try {
+    if (vote.status === "rejected") sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, JSON.stringify(vote));
+  } catch { /* per-tab only */ }
 }
 
 function currentBattleVote(matchupId) {
   if (!matchupId) return null;
-  if (battleVote?.matchupId === matchupId) return battleVote;
+  if (battleVote?.matchupId === matchupId && battleVote.playerId === playerId) return battleVote;
   try {
-    const entryId = sessionStorage.getItem(battleVoteStorageKey(matchupId));
-    if (entryId) battleVote = { matchupId, entryId, status: "confirmed", message: "" };
-  } catch { /* storage unavailable: the server still refuses a second vote */ }
-  return battleVote?.matchupId === matchupId ? battleVote : null;
+    const saved = sessionStorage.getItem(battleVoteStorageKey(matchupId));
+    if (saved) {
+      const vote = JSON.parse(saved);
+      if (vote.matchupId === matchupId && vote.playerId === playerId && typeof vote.entryId === "string" && ["pending", "retryable", "confirmed"].includes(vote.status)) {
+        battleVote = vote.status === "pending"
+          ? { ...vote, status: "retryable", message: "Your vote may have gone through. Retry the same image to confirm." }
+          : vote;
+        return battleVote;
+      }
+    }
+  } catch { /* storage unavailable or from an older format */ }
+  return null;
 }
 
 function battleVoteViewForState() {
   const key = battlePlayerKey(state);
   if (battlePlayer.key !== key) resetBattlePlayer(key);
-  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  ensureBattlePlayerState();
   // Until this phone knows its own images it cannot tell a ballot from its
   // own matchup, so it waits rather than offering a vote it would lose.
-  if (state.phase === "battle_vote" && battlePlayer.entry === undefined && !battlePlayer.loadError) return { kind: "vote-wait" };
+  if (state.phase === "battle_vote" && battlePlayer.entry === undefined) {
+    if (battlePlayer.loadError) return { kind: "eligibility-error", message: battlePlayer.loadError };
+    return { kind: "vote-wait" };
+  }
   const ownAssetIds = new Set((battlePlayer.entry?.generations || []).flatMap((generation) => generation.assetIds || []));
   return battleVoteView({
     phase: state.phase,
@@ -3528,25 +3890,27 @@ function battleVoteViewForState() {
 
 function renderPlayerBattleVote() {
   const voteView = battleVoteViewForState();
-  const heading = { "review-wait": "Judging time", "vote-wait": "Get ready", "on-stage": "On stage", vote: "Vote now", "result-wait": "Counting", result: "Results" }[voteView.kind] || "Prompt Battle";
+  const heading = { "review-wait": "Judging time", "vote-wait": "Get ready", "eligibility-error": "Reconnect", "on-stage": "On stage", vote: "Vote now", "result-wait": "Counting", result: "Results" }[voteView.kind] || "Prompt Battle";
   const matchupLabel = Number.isInteger(state.battleMatchupIndex) && Number(state.battleMatchupCount) > 0 && state.phase !== "battle_review"
     ? ` · Matchup ${state.battleMatchupIndex + 1} of ${state.battleMatchupCount}` : "";
-  const calm = ["review-wait", "vote-wait", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
-  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}</section></main>`, true);
-  battleVoteRenderedKey = battleVoteRenderKey(voteView);
+  const calm = ["review-wait", "vote-wait", "eligibility-error", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}${battleSubmissionMarkup()}</section></main>`, true);
+  battleVoteRenderedKey = battleVoteRenderStateKey(voteView);
   loadBattleScreenImages();
 }
 
 function redrawBattleVote() {
   if (view !== "player" || !["battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
-  if (battleVoteRenderKey(battleVoteViewForState()) !== battleVoteRenderedKey) render();
+  if (battleVoteRenderStateKey(battleVoteViewForState()) !== battleVoteRenderedKey) render();
 }
 
 async function castBattleVoteFromPhone(entryId) {
   const matchupId = state.battleVote?.matchupId;
   const existing = currentBattleVote(matchupId);
-  if (!matchupId || (existing && !["idle", "retryable"].includes(existing.status))) return;
-  battleVote = { matchupId, entryId, status: "pending", message: "" };
+  if (!matchupId || (existing && !["idle", "retryable"].includes(existing.status)) || (existing?.status === "retryable" && existing.entryId !== entryId)) return;
+  const voterId = playerId;
+  battleVote = { matchupId, playerId: voterId, entryId, status: "pending", message: "Your vote may have gone through. Retry the same image to confirm." };
+  persistBattleVote(battleVote);
   battleLightbox = null;
   render();
   let next;
@@ -3557,15 +3921,17 @@ async function castBattleVoteFromPhone(entryId) {
     next = classifyVoteError(error);
     if (next.status === "retryable") recordDiagnostic("battle-vote", error, { roomCode });
   }
-  if (battleVote?.matchupId !== matchupId) return;
-  battleVote = { matchupId, entryId, ...next };
-  if (next.status === "confirmed") {
-    try { sessionStorage.setItem(battleVoteStorageKey(matchupId), entryId); } catch { /* per-tab only */ }
-  }
+  if (playerId !== voterId || battleVote?.matchupId !== matchupId || battleVote.playerId !== voterId) return;
+  battleVote = { matchupId, playerId: voterId, entryId, ...next };
+  persistBattleVote(battleVote);
   render();
 }
 
 function attachBattleVoteEvents() {
+  document.querySelector("[data-battle-vote-retry]")?.addEventListener("click", () => {
+    battlePlayer.loadError = "";
+    return loadBattlePlayerState();
+  });
   document.querySelectorAll("[data-battle-vote]").forEach((button) => button.addEventListener("click", () => castBattleVoteFromPhone(button.dataset.battleVote)));
   attachBattleLightboxEvents("vote", state.battleVote?.matchupId);
 }
@@ -3823,7 +4189,7 @@ function attachEvents() {
     try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand("copy"); }
   });
   document.querySelector("[data-battle-test-model]")?.addEventListener("change", (event) => {
-    battleTestPanel.model = event.currentTarget.value;
+    selectBattleEngine(event.currentTarget.value);
   });
   // "input", not "change", and no render() call: render() replaces the
   // whole panel's innerHTML, which would drop focus and cursor position on
@@ -3834,17 +4200,19 @@ function attachEvents() {
     battleTestPanel.prompt = event.currentTarget.value;
   });
   document.querySelector("[data-battle-test-generate]")?.addEventListener("click", async () => {
-    if (battleTestPanel.busy) return;
+    const model = effectiveBattleModel();
+    if (battleTestPanel.busy || !model || ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
     const hostSecret = getHostSecret();
     if (!hostSecret) { battleTestPanel.error = "Host authorization is required."; render(); return; }
     battleTestPanel.busy = true;
     battleTestPanel.error = "";
+    battleTestPanel.result = null;
     render();
     try {
       const response = await fetch(`${quizWorkerOrigin}/battle/test-image`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret },
-        body: JSON.stringify({ model: battleTestPanel.model, prompt: battleTestPanel.prompt })
+        body: JSON.stringify({ model, prompt: battleTestPanel.prompt })
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {
@@ -3876,6 +4244,7 @@ function attachEvents() {
     loadBattleReviewImages();
   }
   if (view === "player" && state.phase === "battle_prompt") attachBattlePlayerEvents();
+  if (view === "player" && state.phase === "battle_review") attachBattleSubmissionEvents();
   if (view === "player" && state.phase === "battle_vote") attachBattleVoteEvents();
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;

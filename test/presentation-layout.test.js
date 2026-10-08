@@ -48,6 +48,13 @@ test("presentation cards expose question-type and side-media layout hooks", () =
   assert.match(styles, /presentation-card--with-side-image/);
 });
 
+test("Prompt Battle vote images shrink in short presentation windows so the phone CTA stays visible", () => {
+  const shortWindowRule = styles.match(/@media \(max-height: 800px\)\s*\{([\s\S]*?)\}/)?.[1] || "";
+  assert.match(shortWindowRule, /\.presentation-card--battle-vote \.presentation-battle-frame\s*\{\s*width:\s*min\(100%,\s*36vh\)/);
+  assert.match(styles, /\.presentation-battle-frame\{[^}]*width:min\(100%,42vh\)/);
+  assert.match(styles, /\.presentation-card--battle-result \.presentation-battle-frame,[^}]*width:min\(100%,30vh\)/);
+});
+
 test("presenter images fill their pane without duplicate captions", () => {
   const imageRenderers = app.slice(app.indexOf("function revealImage"), app.indexOf("function answerReady"));
   assert.match(imageRenderers, /if \(!presenter/);

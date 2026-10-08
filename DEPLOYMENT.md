@@ -40,6 +40,16 @@ The Worker reads `SUPABASE_URL` from the existing deploy environment. Configure 
 wrangler secret put SUPABASE_URL
 ```
 
+## Optional OpenRouter image provider
+
+To enable the Worker’s approved OpenRouter image profiles, configure the Worker secret `OPENROUTER_API_KEY` through the hosting provider’s secret manager. With Wrangler, the secret name is:
+
+```sh
+wrangler secret put OPENROUTER_API_KEY
+```
+
+The value is entered through Wrangler’s secret prompt and must remain server-side. Do not add it to `wrangler.jsonc`, browser configuration, `.env.local`, or source control. This is configuration guidance only; no key was provisioned and no deployment was performed for the integration.
+
 The provider should set `PORT`; the server listens on it automatically. Use `/healthz` for a health check.
 
 ## Container deployment
