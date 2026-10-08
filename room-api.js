@@ -115,6 +115,11 @@ export const roomApi = {
     return call("get_player_battle_state", { p_room_code: roomCode, p_player_token: playerToken });
   },
 
+  // Player submission of one of their own complete generated images (0039).
+  submitBattleEntry({ roomCode, playerToken, assetId }) {
+    return call("submit_battle_entry", { p_room_code: roomCode, p_player_token: playerToken, p_asset_id: assetId });
+  },
+
   // Player vote (0041). One vote per player per matchup; a repeat is refused
   // with "You have already voted in this matchup".
   castBattleVote({ roomCode, playerToken, matchupId, entryId }) {
@@ -225,6 +230,29 @@ export function isTransientSaveError(error) {
   if (error instanceof TypeError) return true;
   const code = error?.code ? String(error.code) : "";
   return !code || TRANSIENT_SAVE_CODES.test(code);
+}
+
+// Accept only the three statuses added to get_player_battle_state() by 0045.
+// An older projection or malformed response is unknown, never evidence that
+// an entry is open or was submitted.
+export function playerBattleSubmissionStatus(entry) {
+  const status = entry?.submissionStatus;
+  return ["open", "submitted", "forfeited"].includes(status) ? status : "unknown";
+}
+
+// The RPC reply is the immediate source of truth after a tap. A 2xx alone is
+// not enough: it must identify the exact asset the player chose. A network
+// failure can be retried; a database rejection must be checked by reloading.
+export async function submitBattleEntryAndConfirm({ roomCode, playerToken, assetId, client = roomApi }) {
+  try {
+    const result = await client.submitBattleEntry({ roomCode, playerToken, assetId });
+    if (typeof assetId !== "string" || !assetId || result?.submittedAssetId !== assetId) {
+      return { status: "unconfirmed" };
+    }
+    return { status: "confirmed", result };
+  } catch (error) {
+    return isTransientSaveError(error) ? { status: "retryable", error } : { status: "rejected", error };
+  }
 }
 
 // submit_live_answer() checks the revision before the question ID, so a

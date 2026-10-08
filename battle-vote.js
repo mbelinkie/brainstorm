@@ -73,15 +73,15 @@ export function sanitizePublicBattleResult(value) {
   return publicBattleResult({ ...value, entries: value.entries.map((entry) => ({ ...entry, viable: true })) });
 }
 
-// cast_battle_vote outcomes. A repeat vote means the first one counted.
+// A repeat confirms a vote exists but does not reveal which entry counted.
 export function classifyVoteError(error) {
   const message = String(error?.message || "");
-  if (/already voted/i.test(message)) return { status: "confirmed", message: "" };
+  if (/already voted/i.test(message)) return { status: "confirmed", entryId: "", message: "A vote is already recorded, but this phone could not confirm which image." };
   if (/not open|not the current matchup/i.test(message)) return { status: "rejected", message: "Voting on this matchup has closed." };
   if (/cannot vote in their own matchup/i.test(message)) return { status: "rejected", message: "You are in this matchup, so you cannot vote on it." };
   if (/forfeited|vetoed|no submitted image|not a valid/i.test(message)) return { status: "rejected", message: "That image can no longer be voted for." };
   if (/left this room|credentials/i.test(message)) return { status: "rejected", message: "This phone is no longer in the room." };
-  return { status: "retryable", message: "Your vote did not go through. Try again." };
+  return { status: "retryable", message: "Your vote may have gone through. Retry the same image to confirm." };
 }
 
 // vote: { matchupId, entryId, status: idle|pending|confirmed|rejected|retryable, message }
@@ -127,28 +127,40 @@ export function battleVoteMarkup(view, escapeHtml) {
   if (view.kind === "review-wait") return wait("The host is checking the entries. Voting starts in a moment.");
   if (view.kind === "vote-wait") return wait("Get ready: the next matchup is on its way.");
   if (view.kind === "result-wait") return wait("Counting the votes…");
+  if (view.kind === "eligibility-error") return `<section class="player-question battle-vote"><p class="battle-vote-status battle-vote-status--rejected" role="alert">${escapeHtml(view.message)}</p><button type="button" class="btn" data-battle-vote-retry>Retry</button></section>`;
   if (view.kind === "on-stage") return `<section class="player-question battle-vote battle-vote--stage"><p class="battle-vote-stage-mark" aria-hidden="true">★</p><p class="battle-vote-lede">You are on stage!</p><p>Everyone else is voting on your matchup right now. Look up at the big screen.</p></section>`;
 
   if (view.kind === "vote") {
     const statusLine = {
       idle: "",
       pending: `<p class="battle-vote-status" role="status">Sending your vote…</p>`,
-      confirmed: `<p class="battle-vote-status battle-vote-status--confirmed" role="status">Vote counted. Watch the big screen for the result.</p>`,
+      confirmed: `<p class="battle-vote-status battle-vote-status--confirmed" role="status">${escapeHtml(view.message || "Vote counted. Watch the big screen for the result.")}</p>`,
       rejected: `<p class="battle-vote-status battle-vote-status--rejected" role="alert">${escapeHtml(view.message)}</p>`,
       retryable: `<p class="battle-vote-status battle-vote-status--rejected" role="alert">${escapeHtml(view.message)}</p>`,
     }[view.status] || "";
     // The image expands; the button under it votes. Tapping a picture never
     // casts a vote by accident.
     const tiles = view.entries.map((entry, index) => {
-      const chosen = entry.entryId === view.chosenEntryId && view.status !== "retryable";
-      return `<div class="battle-vote-option${chosen ? " is-chosen" : ""}"><button type="button" class="battle-expand" data-battle-expand="${index}" aria-label="See image ${entry.letter} full screen"><img data-battle-vote-image="${escapeHtml(entry.assetId)}" alt="" /><span class="battle-vote-letter">${entry.letter}</span><span class="battle-expand-hint" aria-hidden="true">⤢</span></button><button type="button" class="battle-vote-button" data-battle-vote="${escapeHtml(entry.entryId)}" ${view.canVote ? "" : "disabled"} aria-pressed="${chosen ? "true" : "false"}">${chosen ? "✓ Your vote" : `Vote for ${entry.letter}`}</button></div>`;
+      const chosen = entry.entryId === view.chosenEntryId;
+      const canVoteForEntry = view.canVote && (view.status !== "retryable" || chosen);
+      const label = chosen && view.status === "confirmed" ? "✓ Your vote"
+        : chosen && view.status === "retryable" ? `Retry vote for ${entry.letter}`
+          : chosen && view.status === "pending" ? "Sending…" : `Vote for ${entry.letter}`;
+      return `<div class="battle-vote-option${chosen ? " is-chosen" : ""}"><button type="button" class="battle-expand" data-battle-expand="${index}" aria-label="See image ${entry.letter} full screen"><img data-battle-vote-image="${escapeHtml(entry.assetId)}" alt="" /><span class="battle-vote-letter">${entry.letter}</span><span class="battle-expand-hint" aria-hidden="true">⤢</span></button><button type="button" class="battle-vote-button" data-battle-vote="${escapeHtml(entry.entryId)}" ${canVoteForEntry ? "" : "disabled"} aria-pressed="${chosen ? "true" : "false"}">${label}</button></div>`;
     }).join("");
-    const prompt = view.canVote ? "Tap an image to see it full screen, then vote." : view.status === "pending" ? "Sending…" : "Thanks for voting.";
+    const prompt = view.status === "retryable" ? "Retry the same image to confirm your vote." : view.canVote ? "Tap an image to see it full screen, then vote." : view.status === "pending" ? "Sending…" : "Thanks for voting.";
     const lightbox = Number.isInteger(view.expandedIndex) && view.entries[view.expandedIndex]
       ? battleLightboxMarkup({
         images: view.entries.map((entry) => ({ assetId: entry.assetId, label: `Image ${entry.letter}` })),
         index: view.expandedIndex,
-        action: { attr: "data-battle-vote", value: view.entries[view.expandedIndex].entryId, label: view.entries[view.expandedIndex].entryId === view.chosenEntryId && view.status !== "retryable" ? "✓ Your vote" : `Vote for ${view.entries[view.expandedIndex].letter}`, disabled: !view.canVote },
+        action: {
+          attr: "data-battle-vote",
+          value: view.entries[view.expandedIndex].entryId,
+          label: view.entries[view.expandedIndex].entryId === view.chosenEntryId && view.status === "confirmed" ? "✓ Your vote"
+            : view.entries[view.expandedIndex].entryId === view.chosenEntryId && view.status === "retryable" ? `Retry vote for ${view.entries[view.expandedIndex].letter}`
+              : `Vote for ${view.entries[view.expandedIndex].letter}`,
+          disabled: !view.canVote || (view.status === "retryable" && view.entries[view.expandedIndex].entryId !== view.chosenEntryId),
+        },
       }, escapeHtml)
       : "";
     return `<section class="player-question battle-vote"><p class="battle-vote-lede">${prompt}</p><div class="battle-vote-grid battle-vote-grid--${view.entries.length}">${tiles}</div>${statusLine}</section>${lightbox}`;

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import vm from "node:vm";
 import {
   BATTLE_PROMPT_MAX_CHARS,
   battlePlayerKey,
@@ -166,6 +167,42 @@ const appSource = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8")
 const withoutLineComments = (source) => source.split("\n").filter((line) => !line.trimStart().startsWith("//")).join("\n");
 const renderPlayerSource = withoutLineComments(appSource.slice(appSource.indexOf("function renderPlayer() {"), appSource.indexOf("\nfunction render() {")));
 const battleBlock = appSource.slice(appSource.indexOf("// --- Prompt Battle player screen (issue #23)"), appSource.indexOf("function renderPlayer() {"));
+const submissionMarkupSource = battleBlock.slice(battleBlock.indexOf("function battleSubmissionMarkup()"), battleBlock.indexOf("async function submitBattlePlayerEntry()"));
+const submitFlowSource = battleBlock.slice(battleBlock.indexOf("async function submitBattlePlayerEntry()"), battleBlock.indexOf("function attachBattleSubmissionEvents()"));
+
+function createSubmissionHarness({ requestStatus = "idle", requestAssetId = "", favouriteAssetId = A1, resultStatus = "confirmed" } = {}) {
+  const rpcCalls = [];
+  const renderedMarkup = [];
+  let ctx;
+  ctx = vm.createContext({
+    state: { phase: "battle_prompt" },
+    battlePlayerLoadedPhase: "battle_prompt",
+    battlePlayerEntryPhase: "battle_prompt",
+    battlePlayerFailedPhase: "",
+    battlePlayer: {
+      key: "round-1",
+      entry: { submissionStatus: "open", generations: [{ status: "complete", attemptIndex: 1, assetIds: [A1, A2] }] },
+      favouriteAssetId,
+    },
+    battlePlayerSubmitRequest: { status: requestStatus, assetId: requestAssetId, message: "" },
+    playerBattleSubmissionStatus: (entry) => entry?.submissionStatus ?? "unknown",
+    confirmedVariants: (entry) => entry.generations.flatMap((generation) => generation.assetIds.map((assetId) => ({ assetId }))),
+    view: "player",
+    roomCode: "TEST",
+    playerId: "fake",
+    async submitBattleEntryAndConfirm({ assetId }) { rpcCalls.push(assetId); return { status: resultStatus }; },
+    render() { renderedMarkup.push(vm.runInContext("battleSubmissionMarkup()", ctx)); },
+    recordDiagnostic() {},
+  });
+  vm.runInContext(`${submissionMarkupSource}\n${submitFlowSource}`, ctx);
+  return {
+    ctx,
+    rpcCalls,
+    renderedMarkup,
+    markup: () => vm.runInContext("battleSubmissionMarkup()", ctx),
+    submit: () => vm.runInContext("submitBattlePlayerEntry()", ctx),
+  };
+}
 
 test("the battle check precedes any state.question rendering on the phone", () => {
   const battleBranch = renderPlayerSource.indexOf('if (state.phase === "battle_prompt") {');
@@ -186,6 +223,70 @@ test("the phone battle code reads only the player's own state and never host dat
 test("room-api exposes the player battle read and deploy ships the module", () => {
   const roomApiSource = fs.readFileSync(new URL("../room-api.js", import.meta.url), "utf8");
   assert.match(roomApiSource, /getPlayerBattleState\(\{ roomCode, playerToken \}\) \{\s*return call\("get_player_battle_state", \{ p_room_code: roomCode, p_player_token: playerToken \}\);/);
+  assert.match(roomApiSource, /submitBattleEntry\(\{ roomCode, playerToken, assetId \}\) \{\s*return call\("submit_battle_entry", \{ p_room_code: roomCode, p_player_token: playerToken, p_asset_id: assetId \}\);/);
   const deploySource = fs.readFileSync(new URL("../prepare-deploy.mjs", import.meta.url), "utf8");
   assert.match(deploySource, /"battle-player\.js"/);
+});
+
+test("submission UI is driven by the player's server status across prompt and review", () => {
+  const submissionMarkup = battleBlock.slice(battleBlock.indexOf("function battleSubmissionMarkup"), battleBlock.indexOf("async function submitBattlePlayerEntry"));
+  assert.ok(submissionMarkup.length > 0, "submission status markup is implemented in the player flow");
+  assert.match(submissionMarkup, /playerBattleSubmissionStatus\(entry\)/);
+  assert.match(submissionMarkup, /submissionStatus === "submitted"/);
+  assert.match(submissionMarkup, /submissionStatus === "forfeited"/);
+  assert.match(submissionMarkup, /Time.s up/i);
+  assert.match(submissionMarkup, /Waiting for the host/);
+  assert.match(submissionMarkup, /data-battle-submit-reload/);
+  assert.doesNotMatch(submissionMarkup, /sessionStorage/);
+
+  const submitFlow = battleBlock.slice(battleBlock.indexOf("async function submitBattlePlayerEntry"), battleBlock.indexOf("function battleVariantImageUrl"));
+  assert.match(submitFlow, /status: "pending"/);
+  assert.match(submitFlow, /submitBattleEntryAndConfirm/);
+  assert.match(submitFlow, /status === "confirmed"/);
+  for (const status of ["pending", "confirmed", "rejected", "retryable", "unconfirmed"]) {
+    assert.match(submissionMarkup, new RegExp(`${status}:`), `${status} has visible feedback`);
+  }
+  assert.match(submitFlow, /status === "retryable"/);
+  assert.match(submitFlow, /favouriteAssetId/);
+});
+
+test("changing the favourite while a different image is submitting keeps the request pending and blocks a no-op submit", async () => {
+  const harness = createSubmissionHarness({ requestStatus: "pending", requestAssetId: A1, favouriteAssetId: A2 });
+  const markup = harness.markup();
+  assert.match(markup, /Submitting your image…/);
+  assert.match(markup, /Selected image: Image 2/);
+  assert.match(markup, /data-battle-submit\s+disabled/);
+
+  await harness.submit();
+  assert.deepEqual(harness.rpcCalls, [], "the in-flight request prevents a second RPC for the newly selected image");
+});
+
+test("the same pending image cannot be submitted twice", async () => {
+  const harness = createSubmissionHarness({ requestStatus: "pending", requestAssetId: A1, favouriteAssetId: A1 });
+  assert.match(harness.markup(), /Submitting your image…/);
+  assert.match(harness.markup(), /data-battle-submit\s+disabled/);
+  await harness.submit();
+  assert.deepEqual(harness.rpcCalls, []);
+});
+
+test("an idle open entry still enables submission and only server confirmation marks it submitted", async () => {
+  const harness = createSubmissionHarness({ favouriteAssetId: A2 });
+  assert.doesNotMatch(harness.markup(), /data-battle-submit\s+disabled/);
+  await harness.submit();
+  assert.deepEqual(harness.rpcCalls, [A2]);
+  assert.equal(harness.ctx.battlePlayer.entry.submissionStatus, "submitted");
+
+  const unconfirmed = createSubmissionHarness({ favouriteAssetId: A2, resultStatus: "unconfirmed" });
+  await unconfirmed.submit();
+  assert.equal(unconfirmed.ctx.battlePlayer.entry.submissionStatus, "open");
+  assert.match(unconfirmed.markup(), /We could not verify that choice/);
+});
+
+test("refresh and phase changes reload the server-owned battle entry before submission feedback", () => {
+  assert.match(battleBlock, /battlePlayerLoadedPhase === state\.phase \|\| battlePlayerLoadingPhase === state\.phase/);
+  assert.match(battleBlock, /battlePlayer\.entry = result\?\.entry \?\? null/);
+  assert.match(battleBlock, /battlePlayerRenderStateKey/);
+  assert.match(battleBlock, /battleSubmissionMarkup\(\)/);
+  assert.match(battleBlock, /\["battle_review", "battle_vote", "battle_result"\]/);
+  assert.doesNotMatch(battleBlock, /sessionStorage\.getItem\([^\n]*submission/i);
 });
