@@ -52,6 +52,18 @@ The value is entered through Wrangler’s secret prompt and must remain server-s
 
 The provider should set `PORT`; the server listens on it automatically. Use `/healthz` for a health check.
 
+## Kaplan Gemini proxy
+
+The approved internal Kaplan route uses the separate `kaplan-image-proxy/`
+container. Follow [the CrowdStrike build and deployment handoff](docs/KAPLAN_CROWDSTRIKE_HANDOFF.md)
+for the sensor patch, private Gen 2 deployment and SecOps verification before
+an administrator enables public invocation. Issues #94 and #19 retain their
+work-machine and live acceptance steps; neither has deployment evidence yet.
+
+The live `VERTEX_LOCATION` (`global`, `us`, or `eu`) and service URL remain
+unconfirmed. The `us-central1` registry location does not select the Vertex
+endpoint. The application shared secret stays outside source control.
+
 ## Container deployment
 
 The included `Dockerfile` works on any Docker-compatible service. Build and run locally with your chosen container workflow, then open the public URL on the host display and phones.
