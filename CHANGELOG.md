@@ -4,6 +4,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-10-07
 
+- Fixed Prompt Battle editor recovery for malformed saved permitted-model values without rewriting the saved draft; the shared validator remains visible until an explicit correction. Question-type filters now hide ordinary rounds with no matching questions while keeping Prompt Battle rounds discoverable.
 - Enabled the three owner-approved OpenRouter image profiles in the Worker, with fixed one-image square 1K requests, Worker-only key resolution, host-authenticated available-model catalogue, and bounded charge-safe error parsing. Player generations continue through the existing reservation, partial-storage, cost-recording, refusal-refund, and unknown-pending flow; Workers AI and Kaplan behavior remains compatible. No UI, quiz sample, migration, key provisioning, or deployment changed.
 - Connected the Host's Prompt Battle engine selector to that catalogue, showing the provider, filtering models across all battle rounds, and keeping the saved room choice aligned with Test and player generation through refresh. The sample now defaults to Grok with the approved OpenRouter shortlist, one image per attempt, three attempts and no dollar cap; focused, full-suite and offline browser checks pass.
 - Added and ran the local OpenRouter model comparison for #90: ten models, three fixed prompts, 27 verified originals and three rate-limit failure cells, with durable request receipts and an HTML grid of costs/timing/dimensions. The $5-key run spent $2.152507 across 36 requests; the grid is ordered by average image cost. Matthew's revised selection is Grok as default, then Gemini Flash (more expensive) and FLUX (less expensive).
@@ -28,6 +29,10 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 - Prepared Prompt Battle submission and host locking: players can replace their chosen image before lock; locking preserves explicit choices, selects the final image of the latest completed attempt, or records a forfeit. Host state includes private submission and spend details. The migration passed real PostgreSQL acceptance checks; production application and UI remain separate work.
 
 - Added the Prompt Battle player generation endpoint: it reserves an attempt, uses the server-selected image engine, saves private variants and returns their asset IDs. Unbilled failures restore the attempt only after a confirmed refund; uncertain paid outcomes require a refresh. This server slice has automated coverage; deployment and the player interface remain separate work.
+
+## 2026-10-01
+
+- Added Prompt Battle round authoring: create, edit, reorder, duplicate, and delete battle rounds and their prompts, engine settings, and scoring in the question-bank editor. Existing battle rounds now remain editable through import, raw JSON, and browser draft recovery.
 
 ## 2026-09-23
 

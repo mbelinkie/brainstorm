@@ -1,6 +1,7 @@
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { cropRect, panCrop } from "./image-crop.js";
-import { validateQuiz, editorUnsupportedRounds } from "./quiz-validation.js";
+import { validateQuiz } from "./quiz-validation.js";
+import { addPromptToBattleRound, createPromptBattleRound, duplicatePromptBattleRound, formatPermittedModelsForDisplay, isRestorableAuthorDraft, promptBattleErrorsByField, removePromptFromBattleRound, restoredAuthorSelection, setPromptBattleField } from "./prompt-battle-editor.js";
 import { parseAss, parseSrt } from "./subtitle-core.js";
 import { MAX_VIDEO_BYTES, audioSourceFileError, resolveAudioClipProcessing, clampManualAudioVolumePercent, DEFAULT_MANUAL_AUDIO_VOLUME_PERCENT } from "./video-utils.js";
 
@@ -126,10 +127,8 @@ function restoredDraft() {
     // An in-progress draft is allowed to be temporarily invalid (for example,
     // while its prompt or answer list is being rewritten). Publication still
     // validates strictly, but refresh must never discard editable work.
-    if (!draft?.bank || !Array.isArray(draft.bank.rounds) || !draft.bank.rounds.length || draft.bank.rounds.some((round) => !Array.isArray(round?.questions) || !round.questions.length)) return null;
-    const roundIndex = Math.min(Math.max(0, Number(draft.selection?.roundIndex) || 0), draft.bank.rounds.length - 1);
-    const questionIndex = Math.min(Math.max(0, Number(draft.selection?.questionIndex) || 0), draft.bank.rounds[roundIndex].questions.length - 1);
-    return { bank: draft.bank, selection: { roundIndex, questionIndex } };
+    if (!isRestorableAuthorDraft(draft)) return null;
+    return { bank: draft.bank, selection: restoredAuthorSelection(draft) };
   } catch { return null; }
 }
 
@@ -169,13 +168,17 @@ function renderNav() {
   const needle = navSearch.trim().toLowerCase();
   const visibleRounds = bank.rounds.map((round, roundIndex) => {
     const roundMatches = round.title.toLowerCase().includes(needle);
-    const visibleQuestions = round.questions.map((item, questionIndex) => ({ item, questionIndex })).filter(({ item }) => (!needle || roundMatches || `${item.prompt} ${item.type}`.toLowerCase().includes(needle)) && (!navTypeFilter || item.type === navTypeFilter));
-    return { round, roundIndex, visibleQuestions };
-  }).filter(({ visibleQuestions }) => visibleQuestions.length);
-  $("#round-nav").innerHTML = visibleRounds.length ? visibleRounds.map(({ round, roundIndex, visibleQuestions }) => `
-    <section class="round-group"><span class="round-label">${escapeHtml(round.title)} <b>${round.questions.length}</b></span>
+    const isBattle = round.type === "prompt_battle";
+    const visibleQuestions = (round.questions || []).map((item, questionIndex) => ({ item, questionIndex })).filter(({ item }) => (!needle || roundMatches || `${item.prompt} ${item.type}`.toLowerCase().includes(needle)) && (!navTypeFilter || item.type === navTypeFilter));
+    const battleMatches = isBattle && Array.isArray(round.prompts) && round.prompts.some((prompt) => `${prompt?.id} ${prompt?.text}`.toLowerCase().includes(needle));
+    return { round, roundIndex, visibleQuestions, roundMatches, battleMatches };
+  }).filter(({ round, visibleQuestions, roundMatches, battleMatches }) => visibleQuestions.length || (round.type === "prompt_battle" && (roundMatches || battleMatches)));
+  $("#round-nav").innerHTML = `${visibleRounds.length ? visibleRounds.map(({ round, roundIndex, visibleQuestions }) => `
+    <section class="round-group"><button class="round-label ${selection.roundIndex === roundIndex ? "is-active" : ""}" data-select-round="${roundIndex}">${escapeHtml(round.title)} <b>${round.type === "prompt_battle" ? `${round.prompts?.length || 0} prompts` : (round.questions || []).length}</b></button>
       ${visibleQuestions.map(({ item, questionIndex }) => `<button class="nav-question ${selection.roundIndex === roundIndex && selection.questionIndex === questionIndex ? "is-active" : ""}" data-select="${roundIndex}:${questionIndex}"><small>${escapeHtml(typeLabel(item.type))}</small>${escapeHtml(item.prompt || "Untitled question")}</button>`).join("")}
-    </section>`).join("") : `<p class="nav-empty">No questions match “${escapeHtml(navSearch)}”.</p>`;
+    </section>`).join("") : `<p class="nav-empty">No rounds match “${escapeHtml(navSearch)}”.</p>`}<button class="button button-quiet" id="add-battle-round" type="button">+ Add Prompt Battle round</button>`;
+  $("#add-battle-round").addEventListener("click", addPromptBattleRound);
+  document.querySelectorAll("[data-select-round]").forEach((button) => button.addEventListener("click", () => { selection = { roundIndex: Number(button.dataset.selectRound), questionIndex: 0 }; render(); }));
   document.querySelectorAll("[data-select]").forEach((button) => button.addEventListener("click", () => {
     const [roundIndex, questionIndex] = button.dataset.select.split(":").map(Number);
     selection = { roundIndex, questionIndex }; render();
@@ -322,9 +325,38 @@ function finaleEditor() {
   return `<section class="section finale-editor"><div class="section-head"><div><span class="section-label">Finale audio</span><p class="audio-editor-help">The finale is host-cued: suspense, podium, then final standings. These optional clips play only in the shared Presentation tab.</p></div><span class="asset-status">Host controlled</span></div><div class="between-round-sound-grid">${slots.map(([key, label, help]) => { const audio = finale.audio?.[key] || {}; return `<article class="between-round-sound"><strong>${label}</strong><p>${help}</p>${audio.mediaAssetId ? privateAudioPreview(audio.mediaAssetId, `${label} preview`, `finale:${key}`) : ""}<label class="button button-quiet option-upload">Trim and upload clip<input data-upload-finale-audio="${key}" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/wav,audio/x-wav" hidden /></label><label class="field"><span>Reuse private audio</span><select data-existing-finale-audio="${key}"><option value="">No sound</option>${mediaAssets.filter((asset) => asset.kind === "audio").map((asset) => `<option value="${asset.id}" ${asset.id === audio.mediaAssetId ? "selected" : ""}>${escapeHtml(asset.display_name || asset.source_title || asset.id.slice(0, 8))} · ${formatBytes(asset.byte_size)}</option>`).join("")}</select></label></article>`; }).join("")}</div></section>`;
 }
 
+function battleField(label, path, value, errors, options = {}) {
+  const control = options.textarea
+    ? `<textarea data-battle-field="${path}" aria-label="${label}" ${options.maxlength ? `maxlength="${options.maxlength}"` : ""}>${escapeHtml(value)}</textarea>`
+    : `<input data-battle-field="${path}" aria-label="${label}" type="${options.type || "text"}" value="${escapeHtml(value)}" />`;
+  return `<div class="field"><label>${label}</label>${control}${`<small class="health-warning" role="status" data-battle-error="${path}"${errors[path] ? "" : " hidden"}>${errors[path] ? escapeHtml(errors[path]) : ""}</small>`}</div>`;
+}
+
+function renderPromptBattleEditor(round) {
+  const errors = promptBattleErrorsByField(round, selection.roundIndex);
+  const prompts = (Array.isArray(round.prompts) ? round.prompts : []).map((prompt, index) => `<article class="battle-prompt-row"><div class="field-grid">${battleField(`Prompt ${index + 1} ID`, `prompts.${index}.id`, prompt?.id || "", errors)}<button class="button button-danger" data-remove-battle-prompt="${index}" type="button">Delete prompt</button></div>${battleField("Prompt text", `prompts.${index}.text`, prompt?.text || "", errors, { textarea: true, maxlength: 2048 })}</article>`).join("");
+  const engine = round.engine && typeof round.engine === "object" && !Array.isArray(round.engine) ? round.engine : {};
+  const scoring = round.scoring && typeof round.scoring === "object" && !Array.isArray(round.scoring) ? round.scoring : {};
+  return `<section class="section"><span class="section-label">Round details</span>${battleField("Round title", "title", round.title || "", errors)}</section>
+    <section class="section"><div class="section-head"><span class="section-label">Battle prompts</span><button class="button button-quiet" data-add-battle-prompt type="button">+ Add prompt</button></div>${`<small class="health-warning" role="status" data-battle-error="prompts"${errors.prompts ? "" : " hidden"}>${errors.prompts ? escapeHtml(errors.prompts) : ""}</small>`}${prompts}</section>
+    <section class="section"><span class="section-label">Image engine</span>${`<small class="health-warning" role="status" data-battle-error="engine"${errors.engine ? "" : " hidden"}>${errors.engine ? escapeHtml(errors.engine) : ""}</small>`}<div class="field-grid">${battleField("Default provider", "engine.defaultProvider", engine.defaultProvider || "", errors)}${battleField("Default model", "engine.defaultModel", engine.defaultModel || "", errors)}${battleField("Permitted models (one per line)", "engine.permittedModels", formatPermittedModelsForDisplay(engine.permittedModels), errors, { textarea: true })}${battleField("Variants", "engine.variants", engine.variants ?? "", errors, { type: "number" })}${battleField("Attempt budget", "engine.attemptBudget", engine.attemptBudget ?? "", errors, { type: "number" })}${battleField("Steps (optional)", "engine.steps", engine.steps ?? "", errors, { type: "number" })}${battleField("Resolution (optional)", "engine.resolution", engine.resolution || "", errors)}${battleField("Output format (optional)", "engine.outputFormat", engine.outputFormat || "", errors)}${battleField("Spend cap USD (optional)", "engine.maxSessionSpendUsd", engine.maxSessionSpendUsd ?? "", errors, { type: "number" })}${battleField("Generation cap (optional)", "engine.maxSessionGenerations", engine.maxSessionGenerations ?? "", errors, { type: "number" })}</div></section>
+    <section class="section"><span class="section-label">Scoring</span>${`<small class="health-warning" role="status" data-battle-error="scoring"${errors.scoring ? "" : " hidden"}>${errors.scoring ? escapeHtml(errors.scoring) : ""}</small>`}<div class="field-grid">${battleField("Winner points", "scoring.winnerPoints", scoring.winnerPoints ?? "", errors, { type: "number" })}${battleField("Voter points", "scoring.voterPoints", scoring.voterPoints ?? "", errors, { type: "number" })}</div></section>`;
+}
+
 function renderEditor() {
   const item = question();
   const round = selectedRound();
+  const battle = round?.type === "prompt_battle";
+  const questionActions = ["move-question-up", "move-question-down", "duplicate-question", "delete-question"];
+  questionActions.forEach((id) => { $(`#${id}`).hidden = battle; });
+  ['add-question','add-question-template'].forEach(id => document.getElementById(id).hidden = battle);
+  if (battle) {
+    $("#question-location").textContent = `${round.title} · Prompt Battle`;
+    $("#editor-title").textContent = "Prompt Battle round";
+    $("#form-editor").innerHTML = renderPromptBattleEditor(round);
+    bindEditorEvents();
+    return;
+  }
   if (!item) { $("#form-editor").innerHTML = $("#empty-state").innerHTML; return; }
   $("#question-location").textContent = `${round.title} · Question ${selection.questionIndex + 1}`;
   $("#editor-title").textContent = item.id || "Question editor";
@@ -339,6 +371,11 @@ function renderEditor() {
 }
 
 function renderPreview() {
+  const round = selectedRound();
+  if (round?.type === "prompt_battle") {
+    $("#preview").innerHTML = `<span class="preview-type">Prompt Battle</span><h2>${escapeHtml(round.title)}</h2><div class="preview-answer">${round.prompts?.length || 0} battle prompt${round.prompts?.length === 1 ? "" : "s"} · ${round.engine?.variants || 0} variants per attempt</div>`;
+    return;
+  }
   const item = question();
   if (!item) { $("#preview").innerHTML = ""; return; }
   const correct = new Set(item.correctOptionIds || []);
@@ -363,6 +400,27 @@ function updateField(key, value) {
 }
 
 function bindEditorEvents() {
+  if (selectedRound()?.type === "prompt_battle") {
+    document.querySelectorAll("[data-battle-field]").forEach((input) => {
+      const commit = () => {
+        setPromptBattleField(selectedRound(), input.dataset.battleField, input.value);
+        markChanged();
+        renderNav();
+        renderQuizHealth();
+        renderPreview();
+        const errors = promptBattleErrorsByField(selectedRound(), selection.roundIndex);
+        document.querySelectorAll('[data-battle-error]').forEach(marker => {
+          const message = errors[marker.dataset.battleError] || "";
+          marker.textContent = message;
+          marker.hidden = !message;
+        });
+      };
+      input.addEventListener("input", commit);
+    });
+    document.querySelectorAll("[data-add-battle-prompt]").forEach((button) => button.addEventListener("click", () => { addPromptToBattleRound(selectedRound(), `prompt-${crypto.randomUUID().slice(0, 8)}`); markChanged(); render(); }));
+    document.querySelectorAll("[data-remove-battle-prompt]").forEach((button) => button.addEventListener("click", () => { removePromptFromBattleRound(selectedRound(), Number(button.dataset.removeBattlePrompt)); markChanged(); render(); }));
+    return;
+  }
   $("[data-bonus-enabled]")?.addEventListener("change", (event) => { bonusConfig().enabled = event.target.checked; markChanged(); renderEditor(); });
   document.querySelectorAll("[data-bonus-door-name]").forEach((input) => input.addEventListener("input", () => { bonusConfig().doors[Number(input.dataset.bonusDoorName)].name = input.value; markChanged(); }));
   document.querySelectorAll("[data-bonus-door-icon]").forEach((select) => select.addEventListener("change", () => { bonusConfig().doors[Number(select.dataset.bonusDoorIcon)].icon = select.value; markChanged(); renderEditor(); }));
@@ -484,6 +542,7 @@ function addQuestion() {
 
 function addQuestionTemplate(type) {
   const round = selectedRound();
+  if (!Array.isArray(round?.questions)) return;
   const item = newQuestion();
   if (type && type !== "single_choice") {
     const base = { id: item.id, type, prompt: "New question", points: 1, hostReveal: "Add the answer reveal note." };
@@ -534,7 +593,7 @@ function duplicateQuestion() {
 function moveQuestion(offset) {
   const round = selectedRound();
   const destination = selection.questionIndex + offset;
-  if (!round || destination < 0 || destination >= round.questions.length) return;
+  if (!Array.isArray(round?.questions) || destination < 0 || destination >= round.questions.length) return;
   [round.questions[selection.questionIndex], round.questions[destination]] = [round.questions[destination], round.questions[selection.questionIndex]];
   selection.questionIndex = destination;
   markChanged();
@@ -543,7 +602,7 @@ function moveQuestion(offset) {
 
 function selectQuestion(offset) {
   const round = selectedRound();
-  if (!round) return;
+  if (!Array.isArray(round?.questions)) return;
   const next = selection.questionIndex + offset;
   if (next < 0 || next >= round.questions.length) return;
   selection.questionIndex = next;
@@ -1293,12 +1352,28 @@ function addRound() {
   render();
 }
 
+function addPromptBattleRound() {
+  const round = createPromptBattleRound(`round-${crypto.randomUUID().slice(0, 8)}`, `Prompt Battle ${bank.rounds.length + 1}`);
+  bank.rounds.splice(selection.roundIndex + 1, 0, round);
+  selection = { roundIndex: selection.roundIndex + 1, questionIndex: 0 };
+  markChanged();
+  render();
+}
+
 function duplicateRound() {
   const source = selectedRound();
   if (!source) return;
   const copy = clone(source);
   copy.id = `round-${crypto.randomUUID().slice(0, 8)}`;
   copy.title = `${source.title || "Untitled round"} (copy)`;
+  if (copy.type === "prompt_battle") {
+    const duplicated = duplicatePromptBattleRound(source, `round-${crypto.randomUUID().slice(0, 8)}`, () => `prompt-${crypto.randomUUID().slice(0, 8)}`);
+    bank.rounds.splice(selection.roundIndex + 1, 0, duplicated);
+    selection = { roundIndex: selection.roundIndex + 1, questionIndex: 0 };
+    markChanged();
+    render();
+    return;
+  }
   copy.questions.forEach((item) => { item.id = `question-${crypto.randomUUID().slice(0, 8)}`; });
   bank.rounds.splice(selection.roundIndex + 1, 0, copy);
   selection = { roundIndex: selection.roundIndex + 1, questionIndex: 0 };
@@ -1309,7 +1384,7 @@ function duplicateRound() {
 function deleteRound() {
   if (bank.rounds.length <= 1) return;
   const round = selectedRound();
-  if (!confirm(`Delete ${round.title || "this round"} and all of its questions? This cannot be undone in the editor.`)) return;
+  if (!confirm(`Delete ${round.title || "this round"} and all of its content? This cannot be undone in the editor.`)) return;
   bank.rounds.splice(selection.roundIndex, 1);
   selection = { roundIndex: Math.max(0, selection.roundIndex - 1), questionIndex: 0 };
   markChanged();
@@ -1492,9 +1567,9 @@ $("#move-round-up").addEventListener("click", () => moveRound(-1));
 $("#move-round-down").addEventListener("click", () => moveRound(1));
 $("#duplicate-round").addEventListener("click", duplicateRound);
 $("#delete-round").addEventListener("click", deleteRound);
-$("#delete-question").addEventListener("click", () => { const round = selectedRound(); if (round.questions.length <= 1 || !confirm("Delete this question? This cannot be undone in the editor.")) return; round.questions.splice(selection.questionIndex, 1); selection.questionIndex = Math.max(0, selection.questionIndex - 1); markChanged(); render(); });
-$("#apply-raw").addEventListener("click", () => { try { const candidate = JSON.parse($("#raw-json").value); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); const unsupported = editorUnsupportedRounds(candidate); if (unsupported.length) throw new Error(unsupported[0]); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; $("#raw-status").textContent = "Applied and validated."; markChanged(); render(); } catch (error) { $("#raw-status").textContent = `Not applied: ${error.message}`; } });
-$("#import-file").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const candidate = JSON.parse(await file.text()); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); const unsupported = editorUnsupportedRounds(candidate); if (unsupported.length) throw new Error(unsupported[0]); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; markChanged(); $("#save-state").textContent = `Imported and validated ${file.name} — saved in this browser`; render(); } catch (error) { alert(`Could not import this JSON: ${error.message}`); } finally { event.target.value = ""; } });
+$("#delete-question").addEventListener("click", () => { const round = selectedRound(); if (!Array.isArray(round?.questions) || round.questions.length <= 1 || !confirm("Delete this question? This cannot be undone in the editor.")) return; round.questions.splice(selection.questionIndex, 1); selection.questionIndex = Math.max(0, selection.questionIndex - 1); markChanged(); render(); });
+$("#apply-raw").addEventListener("click", () => { try { const candidate = JSON.parse($("#raw-json").value); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; $("#raw-status").textContent = "Applied and validated."; markChanged(); render(); } catch (error) { $("#raw-status").textContent = `Not applied: ${error.message}`; } });
+$("#import-file").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const candidate = JSON.parse(await file.text()); const errors = validateQuiz(candidate); if (errors.length) throw new Error(validationSummary(candidate)); bank = candidate; selection = { roundIndex: 0, questionIndex: 0 }; markChanged(); $("#save-state").textContent = `Imported and validated ${file.name} — saved in this browser`; render(); } catch (error) { alert(`Could not import this JSON: ${error.message}`); } finally { event.target.value = ""; } });
 
 window.addEventListener("keydown", (event) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
