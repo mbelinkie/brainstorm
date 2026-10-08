@@ -1,5 +1,5 @@
 import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, battleEngineMenu, battleEngineSelection, battleTestStatus, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { autoLockDecision, battleEngineMenu, battleTestStatus, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
 import { resolveBattleMatchupWithStandings } from "./room-api.js";
 import { battleRosterRows, battleSpendView, publicBattleProgress } from "./battle-roster.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
@@ -81,32 +81,19 @@ let hostStateSaveRequest = 0;
 let hostStateSaveFailure = null;
 let hostStateSaveRetrying = false;
 const quizWorkerOrigin = config.workerOrigin || location.origin;
-// Prompt Battle host model test panel (title screen only). Deliberately
+// Prompt Battle host model test panel. Deliberately
 // local UI state, not part of `state`: it never syncs to another tab, is
 // never broadcast, and is never sent to saveHostState, because publicRoomState()
 // is the only allowlisted path to a player or presentation client and this
 // data -- generated image bytes -- must never reach one. See
 // docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 7.5.
-// Each entry carries its provider because set_battle_engine takes provider and
-// model together and the host never types either. The host's engine menu is
-// this list intersected with the battle rounds' permittedModels
-// (battleEngineMenu in quiz-core.js), so a new entry here appears in the menu
-// as soon as a round permits it.
-const BATTLE_TEST_MODELS = [
-  { provider: "workers_ai", value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" },
-  { provider: "workers_ai", value: "@cf/black-forest-labs/flux-2-klein-4b", label: "Flux 2 Klein 4B (Workers AI, free)" },
-  { provider: "workers_ai", value: "@cf/black-forest-labs/flux-2-klein-9b", label: "Flux 2 Klein 9B (Workers AI, free)" },
-  { provider: "workers_ai", value: "@cf/leonardo/lucid-origin", label: "Lucid Origin (Workers AI, paid)" }
-];
 // Mirrors the Worker's own default (cloudflare-worker.js, BATTLE_TEST_IMAGE_PROMPT)
 // only as a starting point the host can freely edit -- unlike the model
 // menu, the prompt is host-typed free text, sent to the Worker as-is.
 const BATTLE_TEST_DEFAULT_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
-// model is the one engine selection: the menu writes it (after set_battle_engine
-// accepts it) and the Test button reads it. savedModel is what the server last
-// confirmed (null until the host has saved one), engineBusy/engineError cover
-// the set_battle_engine call.
-let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null, engineBusy: false, engineError: "", savedModel: null };
+// The model list comes from the host-authenticated Worker catalogue. The one
+// selected model is shared by the existing room RPC and Test request.
+let battleTestPanel = { model: "", models: [], modelsStatus: "idle", modelsError: "", prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null, engineBusy: false, engineError: "", engineReadFailed: false, unavailableModel: "", unavailableSource: "", savedModel: null };
 // Prompt Battle pairing panel (host only). Local UI state for the same reason
 // battleTestPanel above is: the pairing maps player names to matchups, which is
 // exactly what a player must not hold during battle_prompt, so it must never be
@@ -535,7 +522,7 @@ function enterBattleRound(roundIndex) {
 // through set_live_room_state keeps both copies identical instead of letting
 // the next host save silently overwrite the server's (slice 2 review, finding 2).
 async function openBattleRoundFromHost() {
-  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || state.phase === "battle_prompt" || battleRoundPanel.busy) return;
+  if (view !== "host" || !Number.isInteger(state.battleRoundIndex) || state.phase === "battle_prompt" || battleRoundPanel.busy || battleTestPanel.engineBusy) return;
   if (hostStateSaveFailure) { battleRoundPanel.error = "The room is not saved on the server yet. Wait for it to reconnect, then open the round."; render(); return; }
   const hostSecret = getHostSecret();
   if (!hostSecret) { battleRoundPanel.error = "Host authorization is required."; render(); return; }
@@ -608,14 +595,64 @@ async function endBattleRound() {
   else await startFinale();
 }
 
-// Host-only. Saves the host's menu choice as the session's effective engine
-// through set_battle_engine. Provider and model both come from the allowlist
-// entry the host picked; a value that is not on the menu is ignored, so a
-// typed or stale model string can never reach the RPC. The menu only moves to
-// the new engine once the server accepts it, so it never shows an engine the
-// room is not using.
+// Host-only. The selected model comes from the host-authenticated catalogue;
+// both provider and model are saved together through the existing room RPC.
+async function loadBattleModelCatalogue() {
+  if (view !== "host" || !(hostQuizDefinition?.rounds || []).some(isBattleRound)) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) {
+    battleTestPanel.modelsStatus = "failure";
+    battleTestPanel.modelsError = "Host authorization is required.";
+    render();
+    return;
+  }
+  battleTestPanel.modelsStatus = "loading";
+  battleTestPanel.modelsError = "";
+  battleTestPanel.models = [];
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/battle/models`, {
+      method: "GET",
+      cache: "no-store",
+      headers: { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || `Could not load image models (${response.status}).`);
+    if (!Array.isArray(body?.models) || body.models.some((model) =>
+      !model || typeof model.id !== "string" || !model.id.trim() ||
+      typeof model.provider !== "string" || !model.provider.trim() ||
+      typeof model.label !== "string" || !model.label.trim() ||
+      typeof model.default !== "boolean"
+    )) throw new Error("The image model catalogue response was invalid.");
+    battleTestPanel.models = body.models.map((model) => ({ provider: model.provider, value: model.id, label: model.label, default: model.default }));
+    battleTestPanel.modelsStatus = "ready";
+    await loadSavedBattleEngine();
+  } catch (error) {
+    battleTestPanel.models = [];
+    battleTestPanel.modelsStatus = "failure";
+    battleTestPanel.modelsError = error?.message || "Could not load image models.";
+    render();
+  }
+}
+
+function authoredBattleEngineRound() {
+  const rounds = hostQuizDefinition?.rounds || [];
+  const startIndex = state.presentationScreen === "title"
+    ? 0
+    : Number.isInteger(state.battleRoundIndex)
+      ? state.battleRoundIndex
+      : Number.isInteger(state.targetRoundIndex)
+        ? state.targetRoundIndex
+        : Math.max(0, Number(state.question?.round || 1) - 1);
+  return rounds.find((round, index) => index >= startIndex && isBattleRound(round)) || null;
+}
+
+function authoredBattleEngineEntry() {
+  const round = authoredBattleEngineRound();
+  return battleEngineMenuEntries().find((entry) => entry.value === round?.engine?.defaultModel && entry.provider === round?.engine?.defaultProvider) || null;
+}
+
 async function selectBattleEngine(value) {
-  if (view !== "host" || battleTestPanel.engineBusy || battleTestPanel.busy) return;
+  if (view !== "host" || battleTestPanel.engineBusy || battleTestPanel.busy || battleTestPanel.modelsStatus !== "ready" || ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
   const entry = battleEngineMenuEntries().find((candidate) => candidate.value === value);
   if (!entry) return;
   const hostSecret = getHostSecret();
@@ -632,6 +669,9 @@ async function selectBattleEngine(value) {
     await roomApi.setBattleEngine({ roomCode, hostSecret, provider: entry.provider, model: entry.value });
     battleTestPanel.engineSelectionVersion = (battleTestPanel.engineSelectionVersion || 0) + 1;
     battleTestPanel.savedModel = entry.value;
+    battleTestPanel.engineReadFailed = false;
+    battleTestPanel.unavailableModel = "";
+    battleTestPanel.unavailableSource = "";
   } catch (error) {
     battleTestPanel.model = previous;
     battleTestPanel.engineError = error?.message || "Could not save the engine.";
@@ -646,7 +686,7 @@ async function selectBattleEngine(value) {
 // the host's earlier choice. Nothing saved yet leaves the round's default
 // selected and savedModel null.
 async function loadSavedBattleEngine() {
-  if (view !== "host" || !battleEngineMenuEntries().length) return;
+  if (view !== "host" || battleTestPanel.modelsStatus !== "ready") return;
   const hostSecret = getHostSecret();
   if (!hostSecret) return;
   // Successful saves invalidate older reads, even after engineBusy clears.
@@ -656,13 +696,36 @@ async function loadSavedBattleEngine() {
     // A pick the host made while this read was in flight wins.
     if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
     const saved = result?.engine?.model || null;
-    battleTestPanel.model = battleEngineSelection(battleEngineMenuEntries(), saved, hostQuizDefinition?.rounds);
-    battleTestPanel.savedModel = saved && battleTestPanel.model === saved ? saved : null;
+    const savedProvider = result?.engine?.provider || null;
+    const menu = battleEngineMenuEntries();
+    if (saved) {
+      battleTestPanel.savedModel = saved;
+      const savedEntry = menu.find((entry) => entry.value === saved && entry.provider === savedProvider);
+      battleTestPanel.model = savedEntry?.value || "";
+      battleTestPanel.unavailableModel = savedEntry ? "" : saved;
+      battleTestPanel.unavailableSource = savedEntry ? "" : "saved";
+    } else {
+      const defaultEntry = authoredBattleEngineEntry();
+      const defaultModel = authoredBattleEngineRound()?.engine?.defaultModel || "";
+      battleTestPanel.model = defaultEntry?.value || "";
+      battleTestPanel.savedModel = null;
+      battleTestPanel.unavailableModel = defaultEntry ? "" : defaultModel;
+      battleTestPanel.unavailableSource = defaultEntry ? "" : "round default";
+    }
+    battleTestPanel.engineReadFailed = false;
+    battleTestPanel.engineError = "";
   } catch {
     if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
-    battleTestPanel.model = battleEngineSelection(battleEngineMenuEntries(), null, hostQuizDefinition?.rounds);
+    const defaultEntry = authoredBattleEngineEntry();
+    const defaultModel = authoredBattleEngineRound()?.engine?.defaultModel || "";
+    battleTestPanel.model = defaultEntry?.value || "";
     battleTestPanel.savedModel = null;
-    battleTestPanel.engineError = "Could not read the saved engine. The menu shows the round default.";
+    battleTestPanel.unavailableModel = defaultEntry ? "" : defaultModel;
+    battleTestPanel.unavailableSource = defaultEntry ? "" : "round default";
+    battleTestPanel.engineReadFailed = true;
+    battleTestPanel.engineError = defaultEntry
+      ? `Could not read the saved engine. The round default, ${defaultEntry.label}, is shown but not confirmed. Choose and save a model before testing.`
+      : `Could not read the saved engine, and the round default ${defaultModel || "(missing)"} is not available. Choose and save an available model before testing.`;
   } finally {
     render();
   }
@@ -1814,9 +1877,9 @@ async function connectHostedRoom() {
           await persistHostState();
         }
         if (view === "host" && ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) refreshBattlePairing();
-        // Un-awaited: the engine menu shows the round default until the saved
-        // choice arrives, and a failed read must not block the host screen.
-        if (view === "host") loadSavedBattleEngine();
+        // Un-awaited: the catalogue and saved choice load after the host
+        // screen paints; neither read blocks normal room controls.
+        if (view === "host") loadBattleModelCatalogue();
         emit();
         render();
         // Un-awaited on purpose: the host screen must paint immediately, and
@@ -2949,16 +3012,17 @@ function renderHostBattle() {
   const voteProgress = voting ? `<p class="battle-round-note" data-battle-vote-progress role="status">${votesCast} of ${eligibleVoters} votes received.</p>` : "";
   const actionError = `<p class="battle-round-note battle-round-note--error" data-battle-action-error role="alert" ${battleRoundPanel.error ? "" : "hidden"}>${escapeHtml(battleRoundPanel.error)}</p>`;
   const endNote = review ? firstViableBattleMatchupIndex(battleRoundPanel.state) === null && battleRoundPanel.state ? '<p class="battle-round-note">Every matchup is skipped. Finish the round when you are ready.</p>' : '<p class="battle-round-note">Veto any entry, then start voting when a matchup has a viable entry.</p>' : voting ? '<p class="battle-round-note">Reveal resolves this matchup once and shows the result.</p>' : resultPhase ? '<p class="battle-round-note">Continue to the next matchup with a viable entry, or finish the round.</p>' : opened ? '<p class="battle-round-note">Locking closes submissions and moves the room to review.</p>' : "";
+  const enginePanel = !opened && isHostedRoom ? battleTestImagePanel() : "";
   if (state.phase === "battle_prompt" || voting) syncBattleRosterPolling(); else stopBattleRosterPolling();
   const presentationUrl = `${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}`;
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}${voteProgress}${resultMarkup}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${lockControl}${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${endNote}${actionError}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Round ${Number(state.battleRoundIndex) + 1} of ${hostQuizDefinition?.rounds?.length || 1}</span><h1>${escapeHtml(round?.title || "Prompt Battle")}</h1><p>${summary}</p></section><div class="game-grid"><section class="question-card">${battlePairingPanel()}${voteProgress}${resultMarkup}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions"><a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>${lockControl}${endControl}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${enginePanel}${endNote}${actionError}${hostUtilityControls()}${manualScoreControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostDoors() {
   const picked = (state.doorPicks || []).length;
   const targetRound = hostQuizDefinition?.rounds?.[state.targetRoundIndex];
   const revealed = state.phase === "door_reveal";
-  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow" data-host-doors-eyebrow>${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-doors-count>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
+  app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout host-layout--doors"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · Room ${escapeHtml(roomCode)}</span><span>Round ${Number(state.targetRoundIndex) + 1} next</span></div><section class="round-panel"><span class="round-number">Between rounds</span><h1>${revealed ? "The doors are open." : "Choose your door."}</h1><p>${revealed ? `Rewards apply throughout ${escapeHtml(targetRound?.title || "the next round")}.` : `Players are choosing a multiplier for ${escapeHtml(targetRound?.title || "the next round")}.`}</p></section><div class="game-grid game-grid--doors"><section class="question-card door-host-board"><p class="eyebrow" data-host-doors-eyebrow>${revealed ? "Rewards revealed" : `${picked} of ${state.players.length} picked`}</p>${doorChoiceCards({ compact: true })}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-doors-count>${picked}<span> / ${state.players.length}</span></strong><span>doors chosen</span></div><div class="host-actions">${revealed ? '<button class="btn btn-primary" data-next>Continue to next round <span class="keyhint">N / →</span></button>' : '<button class="btn btn-primary" data-reveal-doors>Reveal rewards <span class="keyhint">R</span></button>'}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${isHostedRoom ? battleTestImagePanel() : ""}${hostUtilityControls()}${leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function renderHostFinale() {
@@ -2978,40 +3042,58 @@ function renderHostFinale() {
   app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${escapeHtml(hostQuizDefinition?.title || "Quiz night")}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div><section class="round-panel"><span class="round-number">Finale</span><h1>${title}</h1><p>${copy}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">Finale control</p><h2>${finalStage === "final_suspense" ? "And the winner is…" : finalStage === "final_podium" ? "Celebrate the podium." : "Thanks for playing."}</h2>${audio}${leaderboard()}</section><aside class="host-panel"><h3>Session control</h3><div class="host-actions">${isHostedRoom ? `<a class="btn btn-secondary" href="${location.origin}${location.pathname}?view=presenter&room=${encodeURIComponent(roomCode)}" target="_blank" rel="noopener">Open presentation view</a>` : ""}${action}<button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}</aside></div></main>${shortcutGuide()}`);
 }
 
-// Host-only, title-screen-only: lets the host generate a couple of sample
-// images from the effective model before a Prompt Battle round starts, and
-// see the reported cost, without spending a player's generation budget.
-// Model choice is always a menu built from BATTLE_TEST_MODELS, never a
-// free-text field -- a client-typed model string is exactly what the
-// Worker's deployment allowlist exists to refuse.
+// Host-only and between rounds: the Worker catalogue is the only source of
+// model options, and the player RPC and Test button share its confirmed choice.
 function battleTestImagePanel() {
   // No battle round: there is no engine to choose, so no panel at all.
   if (!(hostQuizDefinition?.rounds || []).some(isBattleRound)) return "";
+  const heading = "<h3>Prompt Battle — image engine</h3>";
+  if (battleTestPanel.modelsStatus === "loading" || battleTestPanel.modelsStatus === "idle") return `<div class="battle-test-panel">${heading}<p class="battle-test-note" role="status">Loading available image models…</p></div>`;
+  if (battleTestPanel.modelsStatus === "failure") return `<div class="battle-test-panel">${heading}<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.modelsError || "Could not load image models.")}</p></div>`;
   const menu = battleEngineMenuEntries();
-  if (!menu.length) return `<div class="battle-test-panel"><h3>Prompt Battle — image engine</h3><p class="battle-test-note battle-test-note--blocked" role="alert">No permitted engine is available for this quiz's battle round.</p></div>`;
+  const authoredDefault = authoredBattleEngineEntry();
+  const unavailableModel = battleTestPanel.savedModel
+    ? battleTestPanel.unavailableModel
+    : authoredDefault ? "" : authoredBattleEngineRound()?.engine?.defaultModel || battleTestPanel.unavailableModel;
+  const unavailableSource = battleTestPanel.savedModel ? "saved" : "round default";
+  if (!menu.length) {
+    const unavailable = unavailableModel
+      ? ` The ${escapeHtml(unavailableSource)} model ${escapeHtml(unavailableModel)} is not enabled.`
+      : "";
+    return `<div class="battle-test-panel">${heading}<p class="battle-test-note battle-test-note--blocked" role="alert">No permitted image model is currently available for this quiz's battle rounds.${unavailable}</p></div>`;
+  }
   const busy = battleTestPanel.busy;
-  const locked = busy || battleTestPanel.engineBusy;
+  const activeBattle = ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase);
+  const locked = busy || battleTestPanel.engineBusy || activeBattle;
   const selected = effectiveBattleModel();
-  const modelOptions = menu.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("");
+  const selectedProvider = menu.find((entry) => entry.value === selected)?.provider;
+  const providerName = { workers_ai: "Workers AI", openrouter: "OpenRouter", kaplan_proxy: "Kaplan proxy" }[selectedProvider] || selectedProvider;
+  const providerStatus = providerName ? `<p class="battle-test-note" role="status">Provider: ${escapeHtml(providerName)}</p>` : "";
+  const modelOptions = `${selected ? "" : '<option value="" selected disabled>Choose an available model</option>'}${menu.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("")}`;
   const engineStatus = battleTestPanel.engineBusy
     ? `<p class="battle-test-note" role="status">Saving engine…</p>`
     : battleTestPanel.engineError
       ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.engineError)}</p>`
+      : unavailableModel
+        ? `<p class="battle-test-note battle-test-note--blocked" role="alert">The ${escapeHtml(unavailableSource)} model ${escapeHtml(unavailableModel)} is unavailable. Choose and save an available model before testing.</p>`
       : battleTestPanel.savedModel && battleTestPanel.savedModel === selected
         ? `<p class="battle-test-note" role="status">Saved for this room.</p>`
         : `<p class="battle-test-note" role="status">Round default — not saved yet. Pick an engine to save it.</p>`;
-  return `<div class="battle-test-panel"><h3>Prompt Battle — image engine</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Engine</label><select data-battle-test-model ${locked ? "disabled" : ""}>${modelOptions}</select></div>${engineStatus}<button class="btn btn-secondary" data-battle-test-generate ${locked ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${battleTestStatusMarkup()}</div>`;
+  return `<div class="battle-test-panel">${heading}<div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy || activeBattle ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Engine</label><select data-battle-test-model ${locked ? "disabled" : ""}>${modelOptions}</select></div>${providerStatus}${engineStatus}<button class="btn btn-secondary" data-battle-test-generate ${locked || !selected ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${battleTestStatusMarkup()}</div>`;
 }
 
-// The host's engine menu: the deployment allowlist intersected with the
+// The host's engine menu: the Worker catalogue intersected with the
 // battle rounds' permittedModels. effectiveBattleModel() is the single
 // selection both the menu and the Test button use.
 function battleEngineMenuEntries() {
-  return battleEngineMenu(BATTLE_TEST_MODELS, hostQuizDefinition?.rounds);
+  return battleEngineMenu(battleTestPanel.models, hostQuizDefinition?.rounds);
 }
 
 function effectiveBattleModel() {
-  return battleEngineSelection(battleEngineMenuEntries(), battleTestPanel.model, hostQuizDefinition?.rounds);
+  if (battleTestPanel.modelsStatus !== "ready" || battleTestPanel.engineReadFailed) return "";
+  const selected = battleTestPanel.savedModel ? battleTestPanel.model : authoredBattleEngineEntry()?.value || "";
+  if (battleTestPanel.savedModel && battleTestPanel.unavailableModel) return "";
+  return battleEngineMenuEntries().some((entry) => entry.value === selected) ? selected : "";
 }
 
 // Loading, failure and success each get their own element and class, so a
@@ -3057,7 +3139,7 @@ function battlePairingPanel() {
     return `<div class="battle-round-panel"><h3>Prompt Battle — ${action}</h3><p class="battle-round-title">Matchup ${Number(state.battleMatchupIndex) + 1} of ${Number(state.battleMatchupCount) || 0}.</p>${counts}<div class="host-actions"><button class="btn btn-secondary" data-battle-refresh-pairing ${battleRoundPanel.busy ? "disabled" : ""}>${refresh}</button></div></div>`;
   }
   const busy = battleRoundPanel.busy;
-  const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
+  const openButton = state.phase === "battle_prompt" || state.phase === "battle_review" ? "" : `<button class="btn btn-primary" data-battle-open-round ${busy || battleTestPanel.engineBusy || hostStateSaveFailure ? "disabled" : ""}>${busy ? "Working…" : "Open battle round <span class=\"keyhint\">N</span>"}</button>`;
   const viableMatchup = firstViableBattleMatchupIndex(battleRoundPanel.state);
   const startVoting = state.phase === "battle_review" ? `<button class="btn btn-primary" data-battle-start-voting ${viableMatchup === null || busy || battleRoundPanel.stale || battleRoundPanel.reviewAction || hostStateSaveFailure ? "disabled" : ""}>${battleRoundPanel.reviewAction === "start-voting" ? "Starting voting…" : "Start voting"}</button>` : "";
   const refreshText = busy ? "Refreshing…" : "Refresh roster";
@@ -3075,6 +3157,7 @@ function renderHost() {
   const openingTitle = hostQuizDefinition?.titlePage;
   const openingAudio = state.presentationScreen === "title" ? audioPanel(openingTitle?.audio, { opening: true }) : "";
   const hostedLobby = isHostedRoom && state.presentationScreen === "title" ? `<div class="preview-note"><strong>Share the presentation tab in Google Meet. App-hosted clips can play there; for an external prepared source, share system audio instead.</strong></div>${preflightChecklist()}<div class="join-qr"><canvas data-join-qr aria-label="Player join QR code"></canvas><span>Scan to join</span></div><div class="field"><label>Player join link</label><input readonly value="${playerUrl}" aria-label="Player join link" /><button class="btn btn-secondary" data-copy-link>Copy link</button></div>${battleTestImagePanel()}` : "";
+  const hostedIntermission = isHostedRoom && ["round_end", "round_scoreboard"].includes(state.presentationScreen) ? battleTestImagePanel() : "";
   const intermissionAction = state.presentationScreen === "round_end"
     ? doorBonusEnabled() ? '<button class="btn btn-primary" data-open-door-choice>Open door selection</button>' : '<button class="btn btn-primary" data-start-round>Show next round</button>'
     : state.presentationScreen === "round_scoreboard"
@@ -3083,7 +3166,7 @@ function renderHost() {
     ? '<p class="host-auto-advance" role="status">Opening the first question…</p>'
     : "";
   const presentationAction = `${intermissionAction}${isHostedRoom ? `<a class="btn btn-secondary" href="${presentationUrl}" target="_blank" rel="noopener">Open presentation view</a>` : ""}`;
-    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
+    app.innerHTML = shell(`${brandTopbar(true)}<main class="host-layout"><div class="game-meta"><span><strong>${hostQuizDefinition?.title || "Quiz night"}</strong> · ${isHostedRoom ? `Room ${roomCode}` : "Local demo"}</span>${roundProgress()}</div>${demoNotice}<section class="round-panel"><span class="round-number">${state.presentationScreen === "title" ? "Opening title page" : state.phase === "complete" ? "Final standings" : `Round ${state.question.round || 1} of ${hostQuizDefinition?.rounds?.length || 5}`}</span><h1>${state.presentationScreen === "title" ? (hostQuizDefinition?.title || "Quiz night") : state.phase === "complete" ? "That’s the game." : state.question.roundTitle}</h1><p>${state.presentationScreen === "title" ? "The presentation is on its opening page. Cue waiting-room music here, then start when everyone is ready." : state.presentationScreen === "round_start" ? "The first question opens automatically after the round cue." : state.phase === "lobby" ? "Players are joining. Start when you are ready." : state.phase === "reveal" ? "Answer revealed. Celebrate the recognition, then move on." : state.phase === "complete" ? "Final scores are in—congratulations to the podium." : "Listen closely—your players are answering on their phones."}</p></section><div class="game-grid"><section class="question-card"><p class="eyebrow">${state.presentationScreen === "title" ? "Waiting room" : state.phase === "complete" ? "Final leaderboard" : state.phase === "lobby" ? "Lobby" : state.phase === "reveal" ? "Answer reveal" : `Question ${state.question.questionInRound || 1} of ${state.question.questionsInRound || 5}`}</p><h2>${state.presentationScreen === "title" ? "Your title page is live in Presentation." : state.phase === "complete" ? "Thanks for playing." : state.question.prompt}</h2>${state.phase === "complete" ? leaderboard() : `${openingAudio}${state.presentationScreen === "title" ? "" : `${videoPanel()}${audioPanel()}${matchingClipControls()}${answerControl()}`}`}</section><aside class="host-panel"><h3>Session control</h3><div class="stat"><strong data-host-submitted-count>${submittedCount}<span> / ${state.players.length}</span></strong><span>answers received</span></div><div data-host-answer-results>${answerResultsPanel()}</div>${hostedLobby}${hostedIntermission}<div class="host-actions">${presentationAction}${state.phase === "lobby" ? state.presentationScreen === "title" ? '<button class="btn btn-primary" data-start-round="0">Start Round 1 <span class="keyhint">N</span></button>' : state.presentationScreen === "round_start" ? "" : '<button class="btn btn-primary" data-phase="open">Start question <span class="keyhint">N</span></button>' : state.phase === "open" || state.phase === "locked" ? '<button class="btn btn-primary" data-reveal-question>Reveal answer <span class="keyhint">R</span></button>' : state.phase === "complete" ? '<button class="btn btn-secondary" data-export-results>Download standings CSV</button><button class="btn btn-secondary" data-export-detailed-results>Download score events CSV</button>' : hostQuizDefinition ? '<button class="btn btn-primary" data-next>Next question <span class="keyhint">N</span></button>' : '<button class="btn btn-primary" data-reset>Reset demo <span class="keyhint">↺</span></button>'}<button class="btn btn-secondary" data-player>Add demo player</button><button class="btn btn-secondary" data-download-diagnostics>Download diagnostics</button></div>${hostUtilityControls()}${timerControls()}${manualScoreControls()}${questionJumpControls()}${state.phase === "complete" ? "" : leaderboard()}</aside></div></main>${shortcutGuide()}`);
 }
 
 function scoreCelebration() {
@@ -3947,7 +4030,8 @@ function attachEvents() {
     battleTestPanel.prompt = event.currentTarget.value;
   });
   document.querySelector("[data-battle-test-generate]")?.addEventListener("click", async () => {
-    if (battleTestPanel.busy) return;
+    const model = effectiveBattleModel();
+    if (battleTestPanel.busy || !model || ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
     const hostSecret = getHostSecret();
     if (!hostSecret) { battleTestPanel.error = "Host authorization is required."; render(); return; }
     battleTestPanel.busy = true;
@@ -3958,7 +4042,7 @@ function attachEvents() {
       const response = await fetch(`${quizWorkerOrigin}/battle/test-image`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret },
-        body: JSON.stringify({ model: effectiveBattleModel(), prompt: battleTestPanel.prompt })
+        body: JSON.stringify({ model, prompt: battleTestPanel.prompt })
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {

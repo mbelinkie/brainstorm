@@ -15,12 +15,16 @@
         { "id": "pb-prompt-6", "text": "A squirrel running a lemonade stand on the moon." }
       ],
       "engine": {
-        "defaultProvider": "kaplan_proxy",
-        "defaultModel": "gemini-3.1-flash-image",
-        "permittedModels": ["gemini-3.1-flash-image"],
-        "variants": 2,
+        "defaultProvider": "openrouter",
+        "defaultModel": "x-ai/grok-imagine-image-quality",
+        "permittedModels": [
+          "x-ai/grok-imagine-image-quality",
+          "google/gemini-3.1-flash-image",
+          "black-forest-labs/flux-3-image"
+        ],
+        "variants": 1,
         "attemptBudget": 3,
-        "maxSessionSpendUsd": 20
+        "maxSessionSpendUsd": null
       },
       "scoring": {
         "winnerPoints": 100,
