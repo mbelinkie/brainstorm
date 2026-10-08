@@ -2470,3 +2470,123 @@ Branch `codex/winning-export-40`, starting at `main` baseline `c0beb0700a8815a01
 **Checks:** frozen `npm ci` completed; baseline `npm test` passed 973/973. Final `npm test` passed 977/977 with zero failures or skips. One prior full-suite attempt hit the existing 3-second subprocess timeout in `test/kaplan-proxy.test.js`; that unchanged file passed 40/40 in isolation and the final full-suite rerun passed. The focused Worker/config tests passed 4/4; `node --check` passed for changed JavaScript and `git diff --check` passed. After independent review found a host rerender leaving the current export control stuck busy and formula-like metadata unescaped, browser regressions reproduced both before the app fix and passed afterward. The isolated Chromium fixture then passed 11/11 with external-origin requests intercepted and aborted; it downloaded actual image bytes and verified exact bytes, creator/prompt CSV contents, formula-prefix neutralization, rerender completion and busy-guard behavior, partial failures, object-URL revocation, and Presentation exclusion. Passing artifacts are in `/tmp/winning-export-40-final-browser/`; earlier failing reports were retained in `/tmp/winning-export-40-rerender-repro/` and `/tmp/winning-export-40-security-regressions-red/`, alongside Sol's supplied rerender evidence.
 
 **Unproven / excluded:** all Supabase, Storage, and Worker HTTP fixtures were synthetic; no live room, provider, migration, or deployment was used, and no production services were changed. No public sharing or live-player rehearsal was performed. Playwright allowed downloads in the fixture; Chrome's interactive multi-file download permission prompt and user-settings behavior remain unverified. Producer acceptance and independent Sol review at the published SHA remain pending.
+
+
+### 2026-10-08 — Kaplan CrowdStrike handoff preparation (#19 / #94)
+
+Branch `codex/kaplan-crowdstrike-handoff`, base `2ca966729250d4e96b99af867ac4ad0bc78f98b2`. Codex coordinator authored `docs/KAPLAN_CROWDSTRIKE_HANDOFF.md` and the linked Kaplan section in `DEPLOYMENT.md`; independent `gpt-6-sol` (high) reviewed the credential and deployment boundaries. Its authentication-permission and test-mount findings were corrected.
+
+**Evidence:** authenticated Chrome confirmed all three Falcon secret names, enabled version 1 on each, and Secret Accessor for Matthew on 3 of 3. No secret values were opened. `node --test test/kaplan-proxy.test.js` passed 40/40, with no failures or skips. `git diff --check` passed. Proxy source and tests are unchanged from #94's pin.
+
+**Remaining:** user performs Docker/sensor patch and push, private Gen 2 deployment, approved live Vertex-location selection and the bounded paid checks. Tenant region/provisioning-token handling, separate application-secret setup, SecOps sensor reporting and administrator public invocation are not verified. No cloud mutation, credential retrieval, deployment, email or paid generation occurred. This is partial preparation, not External acceptance or a lifecycle state change.
+
+### 2026-10-08 — Refresh Kaplan CrowdStrike handoff (#19 / #94 / #21)
+
+Codex follow-up on `codex/kaplan-crowdstrike-handoff` at `aa83cc35`. Updated
+`docs/KAPLAN_CROWDSTRIKE_HANDOFF.md` only, using the authorized Cloud Shell
+build/push evidence and the private Gen 2 startup failure. The handoff now
+records the immutable application and sensor registry digests, automatic
+`us-1` sensor discovery, the 40/40 application checks, the missing
+`run.services.get` runtime permission, and the service-level Viewer remedy.
+
+**Checks:** `git diff --check` passed. No commit, push, email, public IAM
+change, paid generation, or secret-value exposure occurred. The ready revision,
+Falcon console reporting, SecOps decision, Worker deployment, and live-host
+acceptance remain unproven.
+
+### 2026-10-08 — Correct baked proxy file modes after private retry (#19 / #94)
+
+The first service-level `roles/run.viewer` remedy was verified, but revision
+`kaplan-image-proxy-00002-sr8` then failed with `EACCES` on `/app/server.mjs`.
+Offline inspection showed the three copied application files were root-owned
+mode 0600; the earlier 40/40 tests mounted the source checkout and did not
+exercise baked-file access as UID 1000. Prepared the smallest future-build fix
+in `kaplan-image-proxy/Dockerfile`: `COPY --chmod=0644` for exactly the three
+`.mjs` files, preserving `USER node` and the Falcon entrypoint.
+
+**Checks:** `git diff --check` passed. The corrected image has not been built,
+patched, pushed, or deployed; no application logic, public IAM, email, or paid
+generation changed.
+
+### 2026-10-08 — Verify repaired private proxy runtime (#19 / #21)
+
+After the service-level `roles/run.viewer` grant was verified, a derived chmod
+layer was pushed and read back as application digest
+`8ff9cef50f8397a803092bb22038196cc2d9c6c06fce6f3cf43731e84b4e55c6`.
+Private Gen 2 revision `kaplan-image-proxy-00003-spz` became ready with 100%
+traffic at `https://kaplan-image-proxy-wqifulzssq-uc.a.run.app`. Private
+identity-plus-application-auth probes passed 401/400/no-store assertions;
+zero Vertex calls occurred. No public binding was added.
+
+The Cloudflare dashboard build command was saved/reloaded as
+`npm test && npm run prepare:deploy`; clean-main validation reported 977 tests
+and 25 prepared assets. Production retry remains held pending live Supabase
+migration parity for 0043–0045, recorded unapplied; the CLI is unavailable.
+No Git commit/push, PR update, Worker production deployment, or paid call was
+made.
+
+**Checks:** `git diff --check` passed. Falcon console reporting, SecOps/public
+access approval, Worker configuration/deployment, and #21 live-host acceptance
+remain pending.
+
+Codex parent verification also built the exact `COPY --chmod=0644` instruction
+with mode-0600 source modules, asserted mode 0644 and UID 1000 in the image, and
+imported the actual modules with networking disabled. The regression passed.
+Ready revision logs show Falcon TLS connection and successful TCP startup;
+console reporting remains a separate SecOps check.
+
+### 2026-10-08 — Refresh migration and external-verification gates (#21)
+
+The official temporary Supabase CLI (`npx --package=supabase@2.120.0`) is now
+authenticated. Production migration parity is through `0043`; exactly
+`0044_battle_score_event_identity.sql` and
+`0045_player_battle_submission_state.sql` remain pending. Linked dry-run
+confirmed only those two, the nine-condition preflight returned zero counts,
+focused checks passed 42/42, and the current-main Wrangler deploy dry-run
+passed at 71.54 KiB with three bindings.
+
+Applying those migrations and deploying the Worker remain approval-gated. A
+read-only CrowdStrike OAuth check returned 201, but inventory for the exact
+deployed image returned 403; no values or extra scope were exposed. Falcon
+console verification, public-access approval, Worker credentials/deployment,
+and #21 live-host acceptance remain pending. No DB write, Worker deploy, GitHub
+mutation, commit, or paid generation occurred.
+
+**Checks:** `git diff --check` passed.
+
+### 2026-10-08 — Apply schema parity and deploy main Worker (#21)
+
+With Matthew's explicit approval, production migrations `0044` and `0045` were
+applied successfully. Local and production now pair through `0001`–`0045`;
+post-schema booleans for the battle identity column, matchup index, removed
+prior index, and submission status are all true. The Cloudflare production
+build `1b11694c-769e-4e89-945c-80228b818ce6` used
+`npm test && npm run prepare:deploy` from main
+`2ca966729250d4e96b99af867ac4ad0bc78f98b2`, passed 977/977 CI
+tests, prepared 25 top-level assets plus fonts, and activated version
+`24d6a606-8a26-4d04-8164-14de57d17189` at 100% traffic.
+
+Both public hosts returned that version; all 47 recursive public files matched
+the prepared release byte-for-byte by SHA-256. Anonymous battle-generation
+requests returned 401 with `no-store` on both hosts and made no provider call.
+Evidence is retained in `cloudflare-live-verification.json` and
+`cloudflare-production-deployed.jpg`. This validates the main Worker release
+only: Kaplan PR #103 wiring, Falcon/SecOps/public access, authenticated live
+gameplay, and paid model tests remain pending. No further GitHub mutation or
+paid call occurred.
+
+**Checks:** `git diff --check` passed.
+
+## 2026-10-08 — Publish saved Kaplan deployment handoff
+
+- Branch: `codex/kaplan-crowdstrike-handoff`. Model: Codex GPT-6; no new product implementation. Matthew requested independent follow-through with owner steps saved in Markdown.
+- Applied the previously saved, reviewed handoff patch: `kaplan-image-proxy/Dockerfile` normalizes the three baked source files to 0644; `docs/KAPLAN_CROWDSTRIKE_HANDOFF.md` records successful Cloud Shell build/push, the derived permission-corrected digest, healthy IAM-private revision and completed main Cloudflare release. Retained the previous deployment worker's worklog. Removed its machine-local evidence path from the public handoff.
+- Verification in this session: saved patch `git apply --check` passed; `node --test test/kaplan-proxy.test.js` passed 40/40, 0 failures/skips. Saved cloud execution evidence proves the baked-file regression and private 401/400/no-store checks; those cloud checks were not rerun here. `git diff --check` run before publication.
+- No deployment, secret transfer, IAM change, email or paid generation in this session. #19/#21 remain pending SecOps/public invocation and live paid acceptance; #36 retains paid model/refresh acceptance; #94 is updated with evidence without claiming owner completion.
+
+- Fresh read-only release recheck: both public hosts report Worker version `24d6a606-8a26-4d04-8164-14de57d17189`; all 47 public files on each host match the saved release SHA-256 values after following HTML clean-URL redirects (2026-10-08T22:04:50Z). No paid or authenticated gameplay request.
+
+- Final validation at published source `c1b2dd9fb293664532691a9f2c13ba84a877b06b`: initial `npm test` had 934 passes and five file-loading failures because this isolated checkout lacked the locked `@electric-sql/pglite` package. `npm ci` restored the existing lockfile dependencies without changing package manifests; the rerun passed 977/977, 0 failures/skips. PR #101's Workers Builds check is successful. No additional executable changes.
+- Published PR #101 and PR #102 updates and six issue-body evidence records (#19/#21/#36/#43/#55/#94) through the existing roadmap gate, then read back the bodies, PR heads, issue states and labels. No lifecycle transitions, merges or issue closures. Owner-only steps and the unsent Security follow-up are saved in `docs/ops/OWNER_ACTIONS_2026-10-08.md` in Matthew's original workspace; that local checklist is not part of this PR. Backup dry run succeeded without creating an archive.
+
+- Completion audit also corrected `DEPLOYMENT.md's` older Kaplan pointer: the private revision, approved Vertex `us` and service base URL are now recorded; SecOps/public invocation and PR #103 activation stay pending. Documentation only; executable source is unchanged from the 977/977 tested commit.
