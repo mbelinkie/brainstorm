@@ -319,7 +319,7 @@ test("Kaplan aggregate response still stores both authorized logical variants", 
     body:{prompt:"A raccoon in a crown"},
     env:{KAPLAN_PROXY_URL:"https://kaplan.test",KAPLAN_PROXY_SECRET:"synthetic-kaplan-secret"},
     routes:{
-      "/rpc/authorize_battle_generation":authPayload({provider:"kaplan_proxy",model:"some-model"}),
+      "/rpc/authorize_battle_generation":authPayload({provider:"kaplan_proxy",model:"gemini-3.1-flash-image"}),
       "/rest/v1/session_battle_generations":[{entry:{player_id:UUID.player}}],
       "/generate":Response.json({images:[{mimeType:"image/jpeg",bytesBase64:IMG("one")},{mimeType:"image/jpeg",bytesBase64:IMG("two")}],costUsd:0.12}),
       "/storage/v1/object/quiz-media/":req=>mockStorage(req),

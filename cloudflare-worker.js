@@ -146,6 +146,7 @@ function hostSubmissionsResponse(body, init = {}) {
 const BATTLE_TEST_IMAGE_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
 const BATTLE_TEST_IMAGE_VARIANTS = 2;
 const BATTLE_TEST_IMAGE_MAX_PER_SESSION = 10;
+const KAPLAN_PROXY_MAX_PROMPT_CODE_UNITS = 2000;
 
 // Deployment allowlist (base spec section 7.5): the host's model menu is
 // validated against this on the Worker, never against a model string taken
@@ -174,6 +175,9 @@ const BATTLE_MODEL_ALLOWLIST = {
   "black-forest-labs/flux-3-image": {
     provider: "openrouter", label: "FLUX.3 Image (less expensive)",
     endpointTag: "black-forest-labs", aspectRatio: "1:1", resolution: "1K"
+  },
+  "gemini-3.1-flash-image": {
+    provider: "kaplan_proxy", label: "Gemini 3.1 Flash Image (Kaplan proxy)"
   }
 };
 
@@ -538,11 +542,11 @@ async function battleGenerateFlow(env, roomCode, playerToken, playerPrompt) {
     const serverPrompt = typeof authorized.playerPrompt === "string" ? authorized.playerPrompt.trim() : "";
     const variantCount = authorized.variants;
     const deploymentProfile = BATTLE_MODEL_ALLOWLIST[serverModel];
-    // Worker AI and OpenRouter can only use an exact deployment allowlist
-    // entry. Kaplan retains its separate synthetic-model path, but cannot
-    // claim a known model that belongs to another provider.
+    // Worker AI and OpenRouter require exact deployment entries. Kaplan also
+    // keeps its existing synthetic-model path, and allowlisted models must
+    // still belong to the server-selected provider.
     const validModelProviderPair = serverProvider === "kaplan_proxy"
-      ? deploymentProfile === undefined
+      ? deploymentProfile === undefined || deploymentProfile.provider === serverProvider
       : deploymentProfile?.provider === serverProvider;
     const openRouterProfile = validModelProviderPair && serverProvider === "openrouter" ? deploymentProfile : null;
     const adapter = validModelProviderPair && (serverProvider === "workers_ai" || serverProvider === "kaplan_proxy" || serverProvider === "openrouter")
@@ -888,10 +892,13 @@ if (request.method === "GET" && url.pathname === "/__version") {
           return battleModelsResponse({ error: "Host authorization failed." }, { status: 403 });
         }
         const openRouterReady = typeof env.OPENROUTER_API_KEY === "string" && env.OPENROUTER_API_KEY.trim() !== "";
+        const kaplanProxyReady = await ENGINES.kaplan_proxy.resolveAuth(env).then(() => true, () => false);
         const models = Object.entries(BATTLE_MODEL_ALLOWLIST)
           .filter(([, profile]) => profile.provider === "workers_ai"
             ? Boolean(env.AI)
-            : profile.provider === "openrouter" && openRouterReady)
+            : profile.provider === "openrouter"
+              ? openRouterReady
+              : profile.provider === "kaplan_proxy" && kaplanProxyReady)
           .map(([id, profile]) => ({
             id,
             provider: profile.provider,
@@ -1044,6 +1051,9 @@ if (request.method === "GET" && url.pathname === "/__version") {
       // chars for workers_ai) bounds what actually reaches the provider.
       const requestedPrompt = typeof payload?.prompt === "string" ? payload.prompt.trim() : "";
       const prompt = requestedPrompt || BATTLE_TEST_IMAGE_PROMPT;
+      if (provider === "kaplan_proxy" && prompt.length > KAPLAN_PROXY_MAX_PROMPT_CODE_UNITS) {
+        return battleTestImageResponse({ error: `Prompt must be ${KAPLAN_PROXY_MAX_PROMPT_CODE_UNITS} UTF-16 code units or fewer for this model.` }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
 
       const sessionKey = roomCode.trim().toUpperCase();
       const usedCount = battleTestImageCounts.get(sessionKey) || 0;

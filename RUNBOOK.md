@@ -142,6 +142,16 @@ The Workers AI model-test path uses the `AI` binding and does not use a provider
 - `KAPLAN_PROXY_SECRET` — shared Bearer secret
 - `KAPLAN_PROXY_URL` — endpoint configuration
 
+The host catalogue exposes `gemini-3.1-flash-image` through `kaplan_proxy`
+only when `KAPLAN_PROXY_URL` is a valid HTTPS URL and
+`KAPLAN_PROXY_SECRET` is configured. Once the Cloud Run endpoint exists, set
+its actual URL as the non-secret `KAPLAN_PROXY_URL` variable in
+`wrangler.jsonc`; keep the shared secret in Worker secret storage. Do not add a
+placeholder URL. Cloudflare's [`wrangler secret put` command](https://developers.cloudflare.com/workers/configuration/secrets/)
+deploys a Worker version immediately, so provision it only during an approved
+deployment. A quiz must also permit this model in each Prompt Battle round
+before the host selector can offer it.
+
 The Worker allowlist also includes three OpenRouter image profiles: `x-ai/grok-imagine-image-quality` (default), `google/gemini-3.1-flash-image`, and `black-forest-labs/flux-3-image`. Each uses `n: 1`, square aspect ratio, and 1K resolution. The host-authenticated `GET /battle/models` route returns available allowlisted entries as `{id, provider, label, default}`. OpenRouter entries are omitted when `OPENROUTER_API_KEY` is unavailable; Workers AI entries are omitted when the `AI` binding is unavailable.
 
 These entries are names only in this documentation and in any references that must not carry secret values. Matthew provisions actual server-side values through secrets management under the existing deployment process; deployed configuration must use those real provisioned values. This document includes no secret values. Never put secret values in browser config, `.env.local` served to browsers, or fixture files. There is no downloadable service-account key for the Kaplan project; access is via the attached Cloud Run credentials. Provisioning is owner-managed; see [DEPLOYMENT.md](DEPLOYMENT.md) for the required secrets workflow (do not deploy or apply migrations as part of this documentation).
