@@ -2363,6 +2363,16 @@ Branch `codex/openrouter-worker-91`, starting from the accepted #90 baseline `17
 
 **Unproven / pending:** Sol's review findings on endpoint pinning and raster validation have been addressed; final independent confirmation and parent publication remain pending. The browser UI has not yet consumed the catalogue (#92), and no live host room/provider, production key, or deployment has been exercised.
 
+### 2026-10-07 — Host OpenRouter model selector and sample (#92)
+
+Branch `codex/openrouter-host-92`, starting at `main` baseline `593572537184346ec1c38aa95e2ead4b522d7e49`. This run claimed #92 through the lifecycle gate with native execution `01a11939-2560-7be3-83eb-b693c4bda75a`; Codex GPT-6 Luna (`gpt-6-luna`), logical medium / effective max, under Matthew's explicit routing override. Existing uncommitted #92 work from the stopped execution was preserved. This run added visible provider text below the model selector and the matching selector/browser assertions.
+
+**Files:** `app.js`, `quiz.battle.sample.json`, `RUNBOOK.md`, `test/battle-engine-selector.test.js`, `test/battle-host-browser.mjs`, `test/quiz-battle-fixture.test.js`, `CHANGELOG.md`, and this entry. The sample now defaults to Grok Imagine Image Quality through OpenRouter, permits the approved three-model shortlist, uses one image and three attempts, and has no dollar cap. The selector consumes the host-authenticated catalogue, filters against every battle round, persists the provider/model through the existing RPC, reads that choice back after refresh, and blocks Test when saved state is unavailable or unconfirmed. The former Kaplan-backed sample route is documented as deferred; its adapter notes remain for internally approved events.
+
+**Checks:** `node --test test/battle-engine-selector.test.js test/quiz-battle-fixture.test.js`: 27/27. `npm test`: 939/939, zero failures or skips. `node --check app.js`, `test/battle-engine-selector.test.js`, and `test/battle-host-browser.mjs`, plus `git diff --check`, passed. The isolated Chrome/Playwright fixture passed 7/7 with every non-local origin aborted; it covered all three OpenRouter models through select → Test → refresh, confirmed costs (including zero and unavailable), partial and failed responses, stale saved-model refusal, and the keyboard-open guard. Screenshots and `results.json` are in the ignored local `.codex-tmp/issue-92-01a11939-browser/` directory.
+
+**Unproven / excluded:** The browser uses synthetic RPC and Worker responses; no production room, Supabase write, provider call, migration, key configuration, deployment, or live-player rehearsal was used. Matthew's Producer acceptance, independent Sol review at the published SHA, and #36/#37 real-service/player checks remain outstanding.
+
 ### 2026-10-07 — Integrate current main into player submission review (#26)
 
 Branch `codex/submit-26-autonomous`, preserving the published PR #89 history from `b842d28f9f15dad24fd64e38377f4777e604b2a6` and normally merging `origin/main` at `3b5b0299bd87ed69326d10c673a80aaaaf9e8d82`. This Codex execution (`gpt-6-luna`, logical medium, effective max; native thread `01a11939-2560-7be3-83eb-b693c4bda75a`) claimed #26 through the lifecycle gate under Matthew's explicit per-run Luna Max authorization. DeepSeek Flash (`deepseek-flash`) supplied the validated import-union artifact; Codex applied it and resolved the merge.
@@ -2372,3 +2382,24 @@ Branch `codex/submit-26-autonomous`, preserving the published PR #89 history fro
 **Checks:** focused player/pairing/vote tests passed 65/65; `npm test` passed 962/962 with zero failures or skips. The isolated Chromium phone fixture passed all five submission cases at 390×844: pending selection, rejected refresh, retryable confirmation, submitted lock, and forfeited lock. Its Supabase/RPC and media responses were synthetic; other external requests were blocked. `node --check app.js`, `node --check test/battle-vote-screen.test.js`, and `git diff --check` passed.
 
 **Unproven / excluded:** no live room, Supabase write, provider call, migration, deployment, or real-player rehearsal. Matthew's Producer acceptance and independent Sol review of the final published SHA remain pending.
+
+### 2026-10-07 — Restore #92 host selector regression tests
+
+Branch `codex/openrouter-host-92`, based on the existing published #92 commit `5ce8cd4e4a08a44b1575d58fbba2f1df5d66a75e`. This test-only follow-up kept the same live lifecycle claim under native thread `01a11939-2560-7be3-83eb-b693c4bda75a`. DeepSeek Flash (`deepseek-flash`, low) authored five Sol-approved regression tests in a validated append artifact (reported response: 10,683 tokens / 22.3 seconds). Codex GPT-6 Luna, effective max, applied the exact append and formatted only the new tests.
+
+**Files:** `test/battle-engine-selector.test.js` and this work log. The five restored cases cover a rejected stale saved-engine read after a successful save; pending-save control disabling and error display; mutually exclusive test states plus two-image total/per-image cost; blocked reason and provider diagnostics; and direct host-identity/authorization guards. No application or helper code changed.
+
+**Checks:** `node --test test/battle-engine-selector.test.js` passed 29/29; `npm test` passed 944/944 with zero failures or skips. `node --check test/battle-engine-selector.test.js` and `git diff --check` passed. The full output was retained in the local temporary test log. The existing isolated browser proof remains 7/7 on the unchanged application source; Sol's independent final browser verification is pending.
+
+**Unproven / excluded:** The added tests use the existing synthetic fixtures. No production room, provider call, migration, secret, deployment, or live-player rehearsal was used. Matthew's Producer acceptance, independent Sol review at this published SHA, and #36/#37 real-service/player checks remain outstanding.
+
+
+### 2026-10-07 — Integrate latest main into host selector branch (#92)
+
+Branch `codex/openrouter-host-92` normally merged `origin/main` at `6b93b7d9747b3c3eeba51419abe474e51dbe127c` into #92's published test-restoration commit `183e07a670453bdbe04ed613dd8e5f4174f26166` after the merge preview found conflicts in `app.js` and this work log. Codex GPT-6 Luna, effective max, resolved the import union: the #92 host-selector imports and all current-main helper imports are retained, with `resolveBattleMatchupWithStandings` imported once. Both #92 and #26 work-log entries remain intact. No new product behavior was authored.
+
+**Files:** `app.js` (import union) and this work log. The ordinary merge also retains all already-merged current-main files and history.
+
+**Checks:** `node --test test/battle-engine-selector.test.js` passed 29/29; `npm test` passed 961/961 with zero failures or skips. `node --check app.js`, the selector test, and the browser harness passed; `git diff --check` passed. The isolated Chrome/Playwright fixture passed 7/7 with every non-local origin aborted and no page errors. Its local results and screenshots were retained in the temporary evidence directory.
+
+**Unproven / excluded:** The browser uses synthetic RPC and Worker responses; no production room, Supabase write, provider call, migration, key configuration, deployment, or live-player rehearsal was used. Matthew's Producer acceptance, independent Sol review/browser verification at the final published SHA, and #36/#37 real-service/player checks remain outstanding.

@@ -10,22 +10,31 @@ const evidence = path.resolve(process.env.EVIDENCE_DIR || '.battle-browser-evide
 await fs.mkdir(evidence, { recursive: true });
 const clone = value => structuredClone(value);
 const privateValues = ['PRIVATE-CREATOR-ALPHA', 'PRIVATE-PLAYER-ID', 'PRIVATE-PROMPT-TEXT', 'PRIVATE-ASSET-ID', 'https://private.invalid/PRIVATE-ASSET-URL'];
+const hostModels = [
+ {id:'x-ai/grok-imagine-image-quality',provider:'openrouter',label:'Grok Imagine Image Quality',default:true},
+ {id:'google/gemini-3.1-flash-image',provider:'openrouter',label:'Gemini 3.1 Flash Image (more expensive)',default:false},
+ {id:'black-forest-labs/flux-3-image',provider:'openrouter',label:'FLUX.3 Image (less expensive)',default:false}
+];
+const fixtureImage = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aE4AAAAASUVORK5CYII=';
+const modelTestRequests = [];
+const catalogueRequests = [];
 const question = { id:'q1', type:'single_choice', prompt:'Ordinary question remains usable', options:[{id:'a',label:'One'},{id:'b',label:'Two'}], correctOptionIds:['a'], round:1, totalRounds:2, roundTitle:'Ordinary round', questionInRound:1, questionsInRound:1 };
-const definition = { title:'Acceptance Quiz', rounds:[{title:'Ordinary round',questions:[question]}, {type:'prompt_battle',title:'Fixture Battle', questions:[],engine:{maxSessionSpendUsd:9.5}}] };
+const definition = { title:'Acceptance Quiz', rounds:[{title:'Ordinary round',questions:[question]}, {type:'prompt_battle',title:'Fixture Battle', questions:[],engine:{defaultProvider:'openrouter',defaultModel:'x-ai/grok-imagine-image-quality',permittedModels:hostModels.map(model=>model.id),variants:1,attemptBudget:3,maxSessionSpendUsd:null}}] };
 function fixture() {
   const entrants = [
     {entryId:'e1',playerId:privateValues[1],playerName:privateValues[0],logoKey:'spark',attemptsUsed:2,submitted:true,submittedAssetId:privateValues[3],generations:[{attemptIndex:1,status:'complete',assetIds:[privateValues[3],privateValues[4]],playerPrompt:privateValues[2]}]},
     {entryId:'e2',playerId:'p2',playerName:'Pending Person',attemptsUsed:1,submitted:false,generations:[{attemptIndex:1,status:'pending',playerPrompt:privateValues[2],assetIds:[]}]},
     {entryId:'e3',playerId:'p3',playerName:'New Person',attemptsUsed:0,submitted:false,generations:[]}
   ];
-  const battle = {roundIndex:1,phase:'battle_prompt',revision:41,opened:true,sessionSpendUsd:1.25,maxSessionSpendUsd:9.5,matchups:[{matchupId:'m1',matchupIndex:0,promptText:privateValues[2],viableEntryIds:[privateValues[3]],skipped:false,entrants}]};
+  const battle = {roundIndex:1,phase:'battle_prompt',revision:41,opened:true,engine:{provider:'openrouter',model:hostModels[0].id},sessionSpendUsd:1.25,maxSessionSpendUsd:null,matchups:[{matchupId:'m1',matchupIndex:0,promptText:privateValues[2],viableEntryIds:[privateValues[3]],skipped:false,entrants}]};
   const state = {phase:'battle_prompt',presentationScreen:'battle_prompt',questionId:'q1',question:{...question,round:2,roundTitle:'Fixture Battle'},battleRoundIndex:1,battleMatchupIndex:0,battleMatchupCount:1,players:[{id:'spectator',name:'Late Spectator',points:0}],presenterOverride:'Preserved credit',submitted:{}};
   return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],scoreAwards:0,mode:'normal',hold:false,failNextReviewRefresh:false };
 }
 const hook = `\nwindow.__acceptance = {
- get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
+ get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, get enginePanel(){return structuredClone(battleTestPanel)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
  projection:()=>publicRoomState(), payload:()=>hostStatePayload(),
  seed:(value,privatePayload)=>{state={...state,...value}; if(privatePayload) battleRoundPanel={...battleRoundPanel,state:privatePayload}; render()},
+ setEngineBusy:value=>{battleTestPanel.engineBusy=Boolean(value);render()},
  refresh:()=>refreshBattlePairing(), render:()=>render(),
 };\n`;
 const fakeModule = `export function createClient(){return {
@@ -38,6 +47,10 @@ const fakeModule = `export function createClient(){return {
   if(f.failNextReviewRefresh){f.failNextReviewRefresh=false;window.__persistFixture?.();return {error:{message:'Fixture review refresh failure',code:'P0001'}};}
   if(f.mode==='fail-refresh')return {error:{message:'Fixture transport failure',code:'P0001'}};
   return {data:structuredClone(f.battle)};
+ }
+ if(name==='set_battle_engine'){
+  f.battle.engine={provider:args.p_provider,model:args.p_model};f.battle.revision++;window.__persistFixture?.();
+  return {data:{provider:args.p_provider,model:args.p_model}};
  }
  if(name==='lock_battle_prompt'){
   if(f.hold)await new Promise(resolve=>window.__release=resolve);
@@ -83,6 +96,27 @@ const server = http.createServer(async(req,res)=>{
  try {
   const pathname = new URL(req.url,'http://localhost').pathname;
   if(pathname==='/__media-requests'){res.setHeader('content-type','application/json');res.end(JSON.stringify(mediaRequests));return}
+  if(pathname==='/battle/models'&&req.method==='GET'){
+   const authorized=req.headers['x-quiz-room']==='ACPT'&&Boolean(req.headers['x-quiz-host-secret']);
+   catalogueRequests.push({authorized,room:req.headers['x-quiz-room'],cache:req.headers['cache-control']||''});
+   res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');res.statusCode=authorized?200:401;
+   res.end(JSON.stringify(authorized?{models:hostModels}:{error:'Host authorization required'}));return;
+  }
+  if(pathname==='/battle/test-image'&&req.method==='POST'){
+   const chunks=[];for await(const chunk of req)chunks.push(chunk);
+   const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+   const authorized=req.headers['x-quiz-room']==='ACPT'&&Boolean(req.headers['x-quiz-host-secret']);
+   modelTestRequests.push({authorized,room:req.headers['x-quiz-room'],model:body.model,prompt:body.prompt});
+   res.setHeader('content-type','application/json');
+   if(!authorized){res.statusCode=401;res.end(JSON.stringify({error:'Host authorization required'}));return;}
+   if(body.prompt==='browser failure'){res.statusCode=502;res.end(JSON.stringify({error:'Mock upstream failure'}));return;}
+   const image={mimeType:'image/png',bytesBase64:fixtureImage};
+   if(body.prompt==='browser partial'){res.end(JSON.stringify({images:[image],costUsd:0.01,partial:true}));return;}
+   if(body.prompt==='browser unknown cost'){res.end(JSON.stringify({images:[image]}));return;}
+   const costs={'x-ai/grok-imagine-image-quality':0.05,'google/gemini-3.1-flash-image':0};
+   const result={images:[image]};if(Object.hasOwn(costs,body.model))result.costUsd=costs[body.model];
+   res.end(JSON.stringify(result));return;
+  }
   if(pathname.startsWith('/media/')){mediaRequests.push({assetId:decodeURIComponent(pathname.slice('/media/'.length)),room:req.headers['x-quiz-room'],hostSecret:req.headers['x-quiz-host-secret'],playerToken:req.headers['x-quiz-player-token']});res.setHeader('content-type','image/svg+xml');res.end('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="12"><rect width="16" height="12" fill="#503f8b"/></svg>');return}
   if(pathname==='/__fake-supabase.js'){res.setHeader('content-type','text/javascript');res.end(fakeModule);return}
   if(pathname==='/config.js'){res.setHeader('content-type','text/javascript');res.end(`window.QUIZ_PLATFORM_CONFIG={supabaseUrl:location.origin,supabasePublishableKey:'FAKE-PUBLISHABLE',workerOrigin:location.origin}`);return}
@@ -122,6 +156,67 @@ const progress=page=>page.evaluate(()=>window.__acceptance.projection().battlePr
 function assertProgress(value,submitted,total){assert.deepEqual(value,{submitted,total},'server-confirmed paired progress')}
 async function clickRefresh(page){const control=page.getByRole('button',{name:/refresh|retry/i}).first();assert.ok(await control.count(),'manual refresh/retry control exists');await control.click();await settle(page)}
 async function lockControl(page){const control=page.getByRole('button',{name:/lock.*submission|lock.*prompt|close.*submission/i}).first();assert.ok(await control.count(),'submission lock button exists');return control}
+await run('openrouter-host-menu', 'host model catalogue, selection, Test and refresh stay aligned without external calls', async ({page,errors}) => {
+ const showBetweenRounds=async()=>{
+  await page.evaluate(()=>window.__acceptance.seed({phase:'lobby',presentationScreen:'round_end',targetRoundIndex:1,battleRoundIndex:null}));
+  await page.waitForFunction(()=>window.__acceptance.enginePanel.modelsStatus==='ready');
+  await page.waitForSelector('[data-battle-test-model]');
+ };
+ await showBetweenRounds();
+ assert.deepEqual(await page.locator('[data-battle-test-model] option').evaluateAll(options=>options.map(option=>option.value).filter(Boolean)),hostModels.map(model=>model.id));
+ for(const [index,model] of hostModels.entries()){
+  await page.locator('[data-battle-test-model]').selectOption(model.id);
+  await page.waitForFunction(id=>window.__acceptance.enginePanel.savedModel===id&&!window.__acceptance.enginePanel.engineBusy,model.id);
+  assert.equal(await page.locator('[data-battle-test-model]').inputValue(),model.id,'selector reflects the server-confirmed room model');
+  assert.match(await body(page),/Provider: OpenRouter/,'the selected provider is visible to the host');
+  await page.getByRole('button',{name:'Test'}).click();
+  await page.waitForSelector('.battle-test-state--success');
+  const expectedCost=index===0?'Reported cost: $0.0500':index===1?'Reported cost: $0.0000':'Reported cost: unavailable';
+  assert.match(await body(page),new RegExp(expectedCost.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  assert.deepEqual(modelTestRequests.at(-1),{authorized:true,room:'ACPT',model:model.id,prompt:'A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.'});
+  await page.screenshot({path:path.join(evidence,`openrouter-${index+1}-tested.png`),fullPage:true});
+  await page.reload();
+  await page.waitForFunction(id=>window.__acceptance.enginePanel.modelsStatus==='ready'&&window.__acceptance.enginePanel.savedModel===id,model.id);
+  await showBetweenRounds();
+  assert.equal(await page.locator('[data-battle-test-model]').inputValue(),model.id,'refresh restores the same model used by Test');
+  await page.screenshot({path:path.join(evidence,`openrouter-${index+1}-refreshed.png`),fullPage:true});
+ }
+
+ await page.locator('[data-battle-test-prompt]').fill('browser partial');
+ await page.getByRole('button',{name:'Test'}).click();
+ await page.waitForSelector('.battle-test-state--success');
+ assert.match(await body(page),/Only 1 of the requested variants came back/);
+ await page.locator('[data-battle-test-prompt]').fill('browser unknown cost');
+ await page.getByRole('button',{name:'Test'}).click();
+ await page.waitForSelector('.battle-test-state--success');
+ assert.match(await body(page),/Reported cost: unavailable/);
+ await page.locator('[data-battle-test-prompt]').fill('browser failure');
+ await page.getByRole('button',{name:'Test'}).click();
+ await page.waitForSelector('.battle-test-state--failure');
+ assert.match(await body(page),/Mock upstream failure/);
+
+ await page.evaluate(()=>{window.__fixture.battle.engine={provider:'openrouter',model:'openrouter/retired-model'};window.__persistFixture();});
+ await page.reload();
+ await page.waitForFunction(()=>window.__acceptance.enginePanel.modelsStatus==='ready'&&window.__acceptance.enginePanel.savedModel==='openrouter/retired-model');
+ await showBetweenRounds();
+ assert.equal(await page.locator('[data-battle-test-model]').inputValue(),'','an unavailable saved model must not silently fall back');
+ assert.equal(await page.getByRole('button',{name:'Test'}).isDisabled(),true);
+ assert.match(await body(page),/saved model openrouter\/retired-model is unavailable/);
+ await page.screenshot({path:path.join(evidence,'openrouter-unavailable-saved.png'),fullPage:true});
+ await page.locator('[data-battle-test-model]').selectOption(hostModels[0].id);
+ await page.waitForFunction(id=>window.__acceptance.enginePanel.savedModel===id&&!window.__acceptance.enginePanel.engineBusy,hostModels[0].id);
+
+ await page.evaluate(()=>window.__acceptance.seed({phase:'battle_prompt',presentationScreen:'battle_prompt',battleRoundIndex:1}));
+ assert.equal(await page.locator('.battle-test-panel').count(),0,'the selector and Test are absent during active battle');
+ const opens=await page.evaluate(()=>window.__fixture.calls.filter(call=>call.name==='open_battle_round').length);
+ await page.evaluate(()=>{window.__acceptance.seed({phase:'lobby',presentationScreen:'round_start',battleRoundIndex:1});window.__acceptance.setEngineBusy(true);});
+ await page.keyboard.press('n');
+ await settle(page);
+ assert.equal(await page.evaluate(()=>window.__fixture.calls.filter(call=>call.name==='open_battle_round').length),opens,'N cannot start an old-model round during a save');
+ assert.deepEqual(errors,[]);
+ assert.ok(catalogueRequests.length>=4&&catalogueRequests.every(request=>request.authorized&&request.room==='ACPT'),'catalogue requests use the authenticated host route');
+ assert.ok(modelTestRequests.length>=6&&modelTestRequests.every(request=>request.authorized&&request.room==='ACPT'),'Test requests use the authenticated host route');
+},f=>{f.battle.engine={provider:'openrouter',model:hostModels[0].id};});
 // No projection injection: the second tab receives the host's real BroadcastChannel message.
 await run('broadcast', 'Presentation receives confirmed counts and recovered lock', async ({page, context}) => {
  const presentation = await open('presenter', fixture(), context);
