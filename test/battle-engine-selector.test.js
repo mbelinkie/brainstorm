@@ -2,9 +2,10 @@
 // menu, tests it, and sees the cost before the round starts.
 //
 // Contract (docs/roadmap, issue #18):
-//   - the menu is the deployment allowlist (BATTLE_TEST_MODELS, the client
-//     mirror of the Worker's BATTLE_MODEL_ALLOWLIST) intersected with the
-//     battle round's permittedModels; the host never types a model string;
+//   - the current static menu (BATTLE_TEST_MODELS) mirrors the Worker's
+//     Workers AI entries and intersects them with the battle round's
+//     permittedModels; OpenRouter options come from the Worker catalogue
+//     until the browser adopts it in #92;
 //   - selecting an engine calls the existing set_battle_engine RPC;
 //   - the saved choice is read back after a host refresh;
 //   - the Test button uses that same selection and shows an image and its
@@ -118,14 +119,16 @@ test("the test status separates loading, failure, success and idle", () => {
   assert.equal(battleTestStatus({ busy: false, error: "", result: { images: [image], costUsd: 0.004 } }), "success");
 });
 
-// ---- the allowlist mirror -------------------------------------------------
+// ---- the static Workers AI allowlist mirror -------------------------------
 
-test("BATTLE_TEST_MODELS stays a mirror of the Worker's BATTLE_MODEL_ALLOWLIST, provider included", () => {
+test("BATTLE_TEST_MODELS strictly mirrors the Worker allowlist's Workers AI entries", () => {
   const { BATTLE_TEST_MODELS } = lift([], {}, ["BATTLE_TEST_MODELS"]);
   const workerBlock = worker.slice(worker.indexOf("const BATTLE_MODEL_ALLOWLIST = {"));
   const workerEntries = [...workerBlock.slice(0, workerBlock.indexOf("};")).matchAll(/"([^"]+)":\s*\{\s*provider:\s*"([^"]+)"/g)].map((match) => `${match[2]}:${match[1]}`);
   assert.ok(workerEntries.length > 0, "could not read the Worker allowlist");
-  assert.deepEqual(BATTLE_TEST_MODELS.map((entry) => `${entry.provider}:${entry.value}`), workerEntries);
+  const workerAiEntries = workerEntries.filter((entry) => entry.startsWith("workers_ai:"));
+  assert.deepEqual(BATTLE_TEST_MODELS.map((entry) => `${entry.provider}:${entry.value}`), workerAiEntries);
+  assert.equal(BATTLE_TEST_MODELS.some((entry) => entry.provider === "openrouter"), false, "the browser menu remains on its current Workers AI choices until #92 consumes the host-authenticated catalogue");
 });
 
 // ---- app.js wiring, lifted and run against stubs ---------------------------
