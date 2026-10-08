@@ -177,15 +177,19 @@ test("migration presence: the shared payload helper is not reachable from a brow
   assert.doesNotMatch(sql, /grant execute on function public\.host_battle_state_payload/);
 });
 
-test("source presence: room-api exposes the three host RPCs and no player battle call", () => {
+test("source presence: room-api keeps host battle RPCs separate from player calls", () => {
   for (const [wrapper, rpc] of [["openBattleRound", "open_battle_round"], ["setBattleEngine", "set_battle_engine"], ["getHostBattleState", "get_host_battle_state"]]) {
     assert.match(roomApi, new RegExp(`${wrapper}\\(\\{ roomCode, hostSecret`), `${wrapper} must take a host secret`);
     assert.match(roomApi, new RegExp(`call\\("${rpc}"`));
   }
-  // Player-token battle wrappers: #23's read of the player's own entry and
-  // #31's vote. Submission belongs to its own slice (#26).
-  const playerBattleWrappers = [...roomApi.matchAll(/([A-Za-z]*battle[A-Za-z]*)\(\{ roomCode, playerToken/gi)].map((match) => match[1]);
-  assert.deepEqual(playerBattleWrappers.sort(), ["castBattleVote", "getPlayerBattleState"]);
+  // Player-token battle wrappers: #23's own-entry read, #26's submission and
+  // #31's vote. Scope the assertion to the roomApi object, not its helper that
+  // invokes the submission method.
+  const objectStart = roomApi.indexOf("export const roomApi = {");
+  const objectEnd = roomApi.indexOf("\n};", objectStart);
+  assert.ok(objectStart >= 0 && objectEnd > objectStart, "roomApi object is present");
+  const playerBattleWrappers = [...roomApi.slice(objectStart, objectEnd).matchAll(/([A-Za-z]*battle[A-Za-z]*)\(\{ roomCode, playerToken/gi)].map((match) => match[1]);
+  assert.deepEqual(playerBattleWrappers.sort(), ["castBattleVote", "getPlayerBattleState", "submitBattleEntry"]);
   assert.doesNotMatch(roomApi, /playerToken[^)]*battle/i);
 });
 

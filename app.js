@@ -1,12 +1,11 @@
-import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, playerBattleSubmissionStatus, randomRoomSecret, resolveBattleMatchupWithStandings, roomApi, submitBattleEntryAndConfirm, submitLiveAnswerWithRecovery } from "./room-api.js";
 import { autoLockDecision, battleEngineMenu, battleEngineSelection, battleTestStatus, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
-import { resolveBattleMatchupWithStandings } from "./room-api.js";
 import { battleRosterRows, battleSpendView, publicBattleProgress } from "./battle-roster.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
 import { presentationBattleMarkup, presentationBattleScene } from "./battle-presentation.js";
 import { battleVoteMarkup, battleVoteRenderKey, battleVoteView, classifyVoteError, publicBattleResult, publicBattleVote, sanitizePublicBattleResult, sanitizePublicBattleVote } from "./battle-vote.js";
-import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
+import { battlePlayerKey, battlePlayerMarkup, battlePlayerRenderKey, battlePlayerView, classifyGenerateReply, confirmedVariants, initialBattlePlayer, settleGenerateRequest } from "./battle-player.js";
 import { battleReviewMarkup, firstViableBattleMatchupIndex, vetoBattleEntryAndRefresh } from "./battle-review.js";
 
 const params = new URLSearchParams(location.search);
@@ -127,6 +126,12 @@ let battleLockInFlightToken = 0;
 // (mistakes.md #15); render() does not revoke these.
 let battlePlayer = initialBattlePlayer();
 let battlePlayerRenderedKey = "";
+let battlePlayerLoadedPhase = "";
+let battlePlayerEntryPhase = "";
+let battlePlayerLoadingPhase = "";
+let battlePlayerFailedPhase = "";
+let battlePlayerLoadRequestId = 0;
+let battlePlayerSubmitRequest = { status: "idle", assetId: "", message: "" };
 const battleImageUrls = new Map();
 // This phone's vote on the current matchup (issue #31). A confirmed vote is
 // remembered per matchup for the tab, so a refresh shows "Vote counted"
@@ -3425,8 +3430,14 @@ function battleFavouriteStorageKey() {
 function resetBattlePlayer(key) {
   battleImageUrls.forEach((entry) => entry.then((url) => url && URL.revokeObjectURL(url)));
   battleImageUrls.clear();
+  battlePlayerLoadRequestId += 1;
   battlePlayer = initialBattlePlayer(key);
   battlePlayerRenderedKey = "";
+  battlePlayerLoadedPhase = "";
+  battlePlayerEntryPhase = "";
+  battlePlayerLoadingPhase = "";
+  battlePlayerFailedPhase = "";
+  battlePlayerSubmitRequest = { status: "idle", assetId: "", message: "" };
   try { battlePlayer.favouriteAssetId = sessionStorage.getItem(battleFavouriteStorageKey()) || ""; } catch { /* storage unavailable: favourite is per-tab only */ }
 }
 
@@ -3434,27 +3445,162 @@ function resetBattlePlayer(key) {
 // returning fetch with identical data leaves focus and typing alone.
 function redrawBattlePlayer() {
   if (view !== "player" || state.phase !== "battle_prompt") return;
-  if (battlePlayerRenderKey(battlePlayerViewForState()) !== battlePlayerRenderedKey) render();
+  if (battlePlayerRenderStateKey() !== battlePlayerRenderedKey) render();
+}
+
+function ensureBattlePlayerState() {
+  if (!["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
+  if (battlePlayerLoadedPhase === state.phase || battlePlayerLoadingPhase === state.phase || battlePlayerFailedPhase === state.phase) return;
+  battlePlayer.loadError = "";
+  void loadBattlePlayerState();
 }
 
 async function loadBattlePlayerState({ redraw = true } = {}) {
   const key = battlePlayer.key;
+  const requestedPhase = state.phase;
+  const requestId = ++battlePlayerLoadRequestId;
   battlePlayer.loading = true;
+  battlePlayerLoadedPhase = "";
+  battlePlayerEntryPhase = "";
+  battlePlayerLoadingPhase = requestedPhase;
   try {
     const result = await roomApi.getPlayerBattleState({ roomCode, playerToken: playerId });
-    if (battlePlayer.key !== key) return;
+    if (battlePlayer.key !== key || requestId !== battlePlayerLoadRequestId) return;
     battlePlayer.entry = result?.entry ?? null;
+    battlePlayerLoadedPhase = requestedPhase;
+    battlePlayerEntryPhase = typeof result?.phase === "string" ? result.phase : requestedPhase;
+    battlePlayerFailedPhase = "";
     battlePlayer.loadError = "";
   } catch (error) {
-    if (battlePlayer.key !== key) return;
+    if (battlePlayer.key !== key || requestId !== battlePlayerLoadRequestId) return;
     recordDiagnostic("battle-player-state", error, { roomCode });
     battlePlayer.loadError = "Could not load your prompt. Check your connection and try again.";
+    battlePlayerFailedPhase = requestedPhase;
   } finally {
-    if (battlePlayer.key === key) {
+    if (battlePlayer.key === key && requestId === battlePlayerLoadRequestId) {
       battlePlayer.loading = false;
+      battlePlayerLoadingPhase = "";
       if (redraw) { redrawBattlePlayer(); redrawBattleVote(); }
     }
   }
+}
+
+function battlePlayerRenderStateKey(view = battlePlayerViewForState()) {
+  return JSON.stringify({
+    screen: battlePlayerRenderKey(view),
+    phase: state.phase,
+    loadedPhase: battlePlayerLoadedPhase,
+    entryPhase: battlePlayerEntryPhase,
+    submissionStatus: playerBattleSubmissionStatus(battlePlayer.entry),
+    submitRequest: battlePlayerSubmitRequest,
+  });
+}
+
+function battleVoteRenderStateKey(view) {
+  return JSON.stringify({
+    vote: battleVoteRenderKey(view),
+    submission: state.phase === "battle_review" ? {
+      loadedPhase: battlePlayerLoadedPhase,
+      entryPhase: battlePlayerEntryPhase,
+      status: playerBattleSubmissionStatus(battlePlayer.entry),
+      loadError: battlePlayer.loadError,
+    } : null,
+  });
+}
+
+function retryBattlePlayerState() {
+  battlePlayer.loadError = "";
+  battlePlayerFailedPhase = "";
+  battlePlayerLoadedPhase = "";
+  battlePlayerEntryPhase = "";
+  battlePlayerSubmitRequest = { status: "idle", assetId: "", message: "" };
+  const request = loadBattlePlayerState();
+  render();
+  void request;
+}
+
+function battleSubmissionMarkup() {
+  if (!["battle_prompt", "battle_review"].includes(state.phase)) return "";
+  const currentEntry = battlePlayerLoadedPhase === state.phase && battlePlayerEntryPhase === state.phase;
+  if (!currentEntry) {
+    if (state.phase === "battle_prompt") return "";
+    if (battlePlayerFailedPhase === state.phase) {
+      return `<section class="battle-submission"><p class="battle-submission-status battle-submission-status--failed" role="alert">Could not check your entry. Check your connection and try again.</p><button type="button" class="btn btn-primary battle-submit-reload" data-battle-submit-reload>Check again</button></section>`;
+    }
+    return `<section class="battle-submission"><p class="battle-submission-status" role="status">Checking your entry status…</p><div class="player-waiting-pulse" aria-hidden="true"><i></i><i></i><i></i></div></section>`;
+  }
+
+  const entry = battlePlayer.entry;
+  if (!entry) {
+    return state.phase === "battle_review"
+      ? `<section class="battle-submission"><p class="battle-submission-status" role="status">This battle started before you joined. Wait for the host to open voting.</p></section>`
+      : "";
+  }
+
+  const submissionStatus = playerBattleSubmissionStatus(entry);
+  if (state.phase === "battle_review") {
+    const message = submissionStatus === "submitted"
+      ? "Time’s up. Your entry is on file. If you did not submit a choice, your latest finished image was submitted automatically. Waiting for the host to open voting."
+      : submissionStatus === "forfeited"
+        ? "Time’s up. You had no completed image to submit, so your entry was forfeited. Waiting for the host to open voting."
+        : "Time’s up. Your entry status could not be confirmed. Waiting for the host to open voting.";
+    return `<section class="battle-submission"><p class="battle-submission-status" role="status">${message}</p></section>`;
+  }
+
+  const variants = confirmedVariants(entry);
+  const selectedIndex = variants.findIndex((variant) => variant.assetId === battlePlayer.favouriteAssetId);
+  const selectedAssetId = selectedIndex < 0 ? "" : variants[selectedIndex].assetId;
+  const request = battlePlayerSubmitRequest.assetId === selectedAssetId || battlePlayerSubmitRequest.status === "pending" ? battlePlayerSubmitRequest : { status: "idle", message: "" };
+  const requestMessages = {
+    pending: "Submitting your image…",
+    confirmed: "Your image is submitted. You can change it until the host locks submissions.",
+    rejected: "The server did not accept that image. Refresh to check that submissions are still open.",
+    retryable: "We could not confirm your submission. Check your connection, then try again.",
+    unconfirmed: "We could not verify that choice. Refresh to check your entry before trying again.",
+  };
+  const message = requestMessages[request.status]
+    || (submissionStatus === "unknown" ? "We could not verify your submission status. Refresh your entry before submitting." : submissionStatus === "submitted" ? "Your entry is on file. You can change your choice until the host locks submissions." : "Choose one of your finished images, then submit it.");
+  const failed = ["rejected", "retryable", "unconfirmed"].includes(request.status) || submissionStatus === "unknown";
+  const requiresStatusRefresh = submissionStatus === "unknown" || ["rejected", "unconfirmed"].includes(request.status);
+  const canSubmit = ["open", "submitted"].includes(submissionStatus) && Boolean(selectedAssetId) && !["pending", "rejected", "unconfirmed"].includes(request.status);
+  const buttonLabel = request.status === "retryable" ? "Try again" : submissionStatus === "submitted" ? "Update submission" : "Submit chosen image";
+  const selection = selectedIndex < 0
+    ? `<p class="battle-submission-selection">Choose a finished image above to submit it.</p>`
+    : `<p class="battle-submission-selection" role="status">Selected image: Image ${selectedIndex + 1}</p>`;
+  const submitButton = requiresStatusRefresh
+    ? `<button type="button" class="btn btn-primary battle-submit-reload" data-battle-submit-reload>Refresh entry status</button>`
+    : `<button type="button" class="btn btn-primary battle-submit-action" data-battle-submit ${canSubmit ? "" : "disabled"}>${buttonLabel}</button>`;
+  return `<section class="battle-submission"><p class="battle-submission-status${failed ? " battle-submission-status--failed" : ""}" role="${failed ? "alert" : "status"}">${message}</p>${selection}<p class="battle-submission-note">The image marked as your favourite is the one you can submit. You may change your submission until the host locks the round.</p><div class="battle-submission-actions">${submitButton}</div></section>`;
+}
+
+async function submitBattlePlayerEntry() {
+  const phase = state.phase;
+  const key = battlePlayer.key;
+  const assetId = battlePlayer.favouriteAssetId;
+  const ownAssetIds = new Set(confirmedVariants(battlePlayer.entry).map((variant) => variant.assetId));
+  if (view !== "player" || phase !== "battle_prompt" || battlePlayerLoadedPhase !== phase || battlePlayerEntryPhase !== phase) return;
+  if (!["open", "submitted"].includes(playerBattleSubmissionStatus(battlePlayer.entry))) return;
+  if (!assetId || !ownAssetIds.has(assetId) || battlePlayerSubmitRequest.status === "pending") return;
+
+  battlePlayerSubmitRequest = { status: "pending", assetId, message: "" };
+  render();
+  const result = await submitBattleEntryAndConfirm({ roomCode, playerToken: playerId, assetId });
+  if (battlePlayer.key !== key || state.phase !== phase) return;
+  if (result.status === "retryable") recordDiagnostic("battle-submit", result.error, { roomCode });
+  if (result.status === "confirmed") battlePlayer.entry.submissionStatus = "submitted";
+  const messages = {
+    confirmed: "Your image is submitted. You can change it until the host locks submissions.",
+    rejected: "The server did not accept that image. Refresh to check that submissions are still open.",
+    retryable: "We could not confirm your submission. Check your connection, then try again.",
+    unconfirmed: "We could not verify that choice. Refresh to check your entry before trying again.",
+  };
+  battlePlayerSubmitRequest = { status: result.status, assetId, message: messages[result.status] || "" };
+  render();
+}
+
+function attachBattleSubmissionEvents() {
+  document.querySelector("[data-battle-submit]")?.addEventListener("click", () => submitBattlePlayerEntry());
+  document.querySelectorAll("[data-battle-submit-reload]").forEach((button) => button.addEventListener("click", retryBattlePlayerState));
 }
 
 async function generateBattleImages() {
@@ -3566,15 +3712,15 @@ document.addEventListener("keydown", (event) => {
 function renderPlayerBattle() {
   const key = battlePlayerKey(state);
   if (battlePlayer.key !== key) resetBattlePlayer(key);
-  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  ensureBattlePlayerState();
   const battleView = battlePlayerViewForState();
   // A redraw for any other reason (a score or roster broadcast) must not drop
   // the player's caret mid-sentence.
   const input = document.querySelector("[data-battle-prompt-input]");
   const focus = input && document.activeElement === input ? { start: input.selectionStart, end: input.selectionEnd } : null;
   const heading = battleView.kind === "compose" ? "Your matchup" : "Get ready";
-  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${battleView.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battlePlayerMarkup(battleView, escapeHtml)}</section></main>`, true);
-  battlePlayerRenderedKey = battlePlayerRenderKey(battleView);
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${battleView.kind === "compose" ? "" : " player-card--holding player-holding-card"}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battlePlayerMarkup(battleView, escapeHtml)}${battleSubmissionMarkup()}</section></main>`, true);
+  battlePlayerRenderedKey = battlePlayerRenderStateKey(battleView);
   const nextInput = document.querySelector("[data-battle-prompt-input]");
   if (focus && nextInput && !nextInput.disabled) {
     nextInput.focus();
@@ -3593,9 +3739,9 @@ function attachBattlePlayerEvents() {
   });
   document.querySelector("[data-battle-generate]")?.addEventListener("click", () => generateBattleImages());
   document.querySelector("[data-battle-reload]")?.addEventListener("click", () => {
-    battlePlayer.loadError = "";
-    render();
+    retryBattlePlayerState();
   });
+  attachBattleSubmissionEvents();
   attachBattleLightboxEvents("variants", battlePlayer.key);
   document.querySelectorAll("[data-battle-favourite]").forEach((button) => button.addEventListener("click", () => {
     battlePlayer.favouriteAssetId = button.dataset.battleFavourite;
@@ -3640,7 +3786,7 @@ function currentBattleVote(matchupId) {
 function battleVoteViewForState() {
   const key = battlePlayerKey(state);
   if (battlePlayer.key !== key) resetBattlePlayer(key);
-  if (battlePlayer.entry === undefined && !battlePlayer.loading && !battlePlayer.loadError) loadBattlePlayerState();
+  ensureBattlePlayerState();
   // Until this phone knows its own images it cannot tell a ballot from its
   // own matchup, so it waits rather than offering a vote it would lose.
   if (state.phase === "battle_vote" && battlePlayer.entry === undefined) {
@@ -3665,14 +3811,14 @@ function renderPlayerBattleVote() {
   const matchupLabel = Number.isInteger(state.battleMatchupIndex) && Number(state.battleMatchupCount) > 0 && state.phase !== "battle_review"
     ? ` · Matchup ${state.battleMatchupIndex + 1} of ${state.battleMatchupCount}` : "";
   const calm = ["review-wait", "vote-wait", "eligibility-error", "result-wait"].includes(voteView.kind) ? " player-card--holding player-holding-card" : "";
-  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}</section></main>`, true);
-  battleVoteRenderedKey = battleVoteRenderKey(voteView);
+  app.innerHTML = shell(`<main class="player-main player-main--battle">${brandTopbar()}<section class="player-card player-card--battle${calm}"><header class="player-round"><p class="eyebrow">Round ${Number(state.battleRoundIndex) + 1} · Prompt Battle${matchupLabel}</p><h1>${heading}</h1>${playerIdentityBadge()}</header>${battleVoteMarkup(voteView, escapeHtml)}${battleSubmissionMarkup()}</section></main>`, true);
+  battleVoteRenderedKey = battleVoteRenderStateKey(voteView);
   loadBattleScreenImages();
 }
 
 function redrawBattleVote() {
   if (view !== "player" || !["battle_review", "battle_vote", "battle_result"].includes(state.phase)) return;
-  if (battleVoteRenderKey(battleVoteViewForState()) !== battleVoteRenderedKey) render();
+  if (battleVoteRenderStateKey(battleVoteViewForState()) !== battleVoteRenderedKey) render();
 }
 
 async function castBattleVoteFromPhone(entryId) {
@@ -4014,6 +4160,7 @@ function attachEvents() {
     loadBattleReviewImages();
   }
   if (view === "player" && state.phase === "battle_prompt") attachBattlePlayerEvents();
+  if (view === "player" && state.phase === "battle_review") attachBattleSubmissionEvents();
   if (view === "player" && state.phase === "battle_vote") attachBattleVoteEvents();
   document.querySelectorAll("[data-preflight-item]").forEach((input) => input.addEventListener("change", () => {
     const key = `quiz-preflight:${roomCode}`;

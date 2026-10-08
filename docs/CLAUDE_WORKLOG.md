@@ -2362,3 +2362,13 @@ Branch `codex/openrouter-worker-91`, starting from the accepted #90 baseline `17
 **Checks:** focused adapter/route/failure tests passed 61/61. After integrating `origin/main` and the selector-test adjustment, `npm test` passed 946/946 with zero failures or skips. `node --check` passed for the Worker, adapter and changed tests; `git diff --check` passed. `sips` decoded the new 1×1 PNG fixture. All provider paths were mocked; no paid OpenRouter call, secret provisioning, production change, or deployment occurred.
 
 **Unproven / pending:** Sol's review findings on endpoint pinning and raster validation have been addressed; final independent confirmation and parent publication remain pending. The browser UI has not yet consumed the catalogue (#92), and no live host room/provider, production key, or deployment has been exercised.
+
+### 2026-10-07 — Integrate current main into player submission review (#26)
+
+Branch `codex/submit-26-autonomous`, preserving the published PR #89 history from `b842d28f9f15dad24fd64e38377f4777e604b2a6` and normally merging `origin/main` at `3b5b0299bd87ed69326d10c673a80aaaaf9e8d82`. This Codex execution (`gpt-6-luna`, logical medium, effective max; native thread `01a11939-2560-7be3-83eb-b693c4bda75a`) claimed #26 through the lifecycle gate under Matthew's explicit per-run Luna Max authorization. DeepSeek Flash (`deepseek-flash`) supplied the validated import-union artifact; Codex applied it and resolved the merge.
+
+**Files:** `app.js`, `test/battle-vote-screen.test.js`, and this entry. `app.js` retains current-main's battle-engine selector helpers and all PR #89's player submission helpers, with `resolveBattleMatchupWithStandings` imported once. In the phone-vote render conflict, current-main's reconnect-error heading/holding state and PR #89's submission markup/submission-aware render key are both preserved. The vote-screen test VM now seeds the phase-loader state introduced by PR #89. No product behavior was newly authored.
+
+**Checks:** focused player/pairing/vote tests passed 65/65; `npm test` passed 962/962 with zero failures or skips. The isolated Chromium phone fixture passed all five submission cases at 390×844: pending selection, rejected refresh, retryable confirmation, submitted lock, and forfeited lock. Its Supabase/RPC and media responses were synthetic; other external requests were blocked. `node --check app.js`, `node --check test/battle-vote-screen.test.js`, and `git diff --check` passed.
+
+**Unproven / excluded:** no live room, Supabase write, provider call, migration, deployment, or real-player rehearsal. Matthew's Producer acceptance and independent Sol review of the final published SHA remain pending.

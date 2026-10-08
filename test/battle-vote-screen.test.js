@@ -183,6 +183,12 @@ function phoneApp({ playerId = "player-a", entry, loadError = "", session = new 
   const context = vm.createContext({
     state: { phase: "battle_vote", battleRoundIndex: 0, battleMatchupIndex: 0, battleVote: ballot, battleResult: null },
     battlePlayer: { ...initialBattlePlayer("round-0"), entry, loadError },
+    battlePlayerLoadedPhase: entry === undefined ? "" : "battle_vote",
+    battlePlayerEntryPhase: entry === undefined ? "" : "battle_vote",
+    battlePlayerLoadingPhase: "",
+    battlePlayerFailedPhase: loadError ? "battle_vote" : "",
+    battlePlayerLoadRequestId: 0,
+    battlePlayerSubmitRequest: { status: "idle", assetId: "", message: "" },
     battleVote: null, battleLightbox: null, battleImageUrls: new Map(),
     battleVoteRenderedKey: "", battlePlayerRenderedKey: "",
     roomCode: "ROOM42", playerId, view: "player", roomApi: { castBattleVote: castVote, getPlayerBattleState },
