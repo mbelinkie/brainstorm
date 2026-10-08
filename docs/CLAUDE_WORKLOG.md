@@ -2478,3 +2478,10 @@ Branch `codex/kaplan-spend-design` from main `2ca966729250d4e96b99af867ac4ad0bc7
 **Decision record:** the model does not support a fixed quota; a native Vertex spend-cap budget is delayed and service-specific; a strict proxy refusal requires a durable atomic pre-call reservation. The note prefers a metadata-only Cloud Storage counter if Kaplan approves a new GCP data service, defines failure and concurrency invariants, and separates the proxy limit from the wider $75 project budget. It does not claim that any option guarantees an exact total-project ceiling.
 
 **Checks and limits:** reviewed issue #43, proxy callers/tests, and official Google documentation; `git diff --cached --check` passed before the design commit. No product code, tests, GCP settings, secrets, Docker image, GitHub issue, or paid generation call changed. Live billing-account eligibility, storage approval, IAM, per-call charge bounds, and end-to-end enforcement remain unverified.
+
+## 2026-10-08 — Record Matthew's Kaplan pilot spend-control waiver
+
+- Branch: `codex/kaplan-spend-design`. Model: Codex GPT-6; documentation only.
+- Updated `docs/KAPLAN_SPEND_CONTROL_DESIGN.md` to record Matthew's October 8 waiver of the proposed Cloud Storage counter after Kaplan confirmed existing reporting and planned Analytics/Redshift work. Preserved the original design as historical future material.
+- The waiver defers implementation; it is not proof of an enforced spending cap or successful automated acceptance. #19 security gates and #21 live-host acceptance are unaffected. No cloud resource, counter, budget or executable code changed.
+- Verification: inspected Matthew's actual prior user message and the saved deployment handoff; `git diff --check` run before publication. No runtime tests needed for this documentation-only update.

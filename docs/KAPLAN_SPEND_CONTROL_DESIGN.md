@@ -1,6 +1,12 @@
 # Kaplan proxy spend control: decision record for issue #43
 
-Status: design only, 2026-10-08. No counter, spend cap, quota, or GCP resource has been created or verified in the live project. This document does not authorize deployment or paid calls.
+Status: pilot implementation deferred by Matthew, 2026-10-08. The design below is retained for later reconsideration. No durable counter or automatic proxy spending cap has been implemented. This document does not authorize deployment or paid calls.
+
+## Pilot waiver — 2026-10-08
+
+Matthew decided to waive the proposed Cloud Storage counter for the Kaplan pilot after David confirmed existing spend tracking and an Analytics/Redshift reporting interface in progress. The current pilot therefore proceeds without new counter storage or further #43 implementation work. The historical options, invariants and tests below are future design material, not outstanding pilot implementation instructions.
+
+Spend reporting does not refuse generation requests. The existing $75 monthly budget remains an alert, not a hard cap; the proxy has no durable cross-instance daily/monthly reservation counter. This waiver does not satisfy the original automated circuit-breaker acceptance and does not waive SecOps/Falcon/public-access gates in #19 or live host acceptance in #21. Reconsider this design before expanding beyond the pilot or if Kaplan requires an enforced proxy limit; any new GCP storage still needs approval.
 
 ## Outcome and boundary
 
