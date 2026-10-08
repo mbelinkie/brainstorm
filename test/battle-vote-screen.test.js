@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import vm from "node:vm";
+import { battlePlayerKey, initialBattlePlayer } from "../battle-player.js";
 import {
+  battleLightboxMarkup,
   battleVoteMarkup,
   battleVoteRenderKey,
   battleVoteView,
@@ -69,7 +72,10 @@ test("the public result reveals creators and counts, never player IDs", () => {
 });
 
 test("vote errors map to confirmed, rejected or retryable", () => {
-  assert.equal(classifyVoteError(new Error("You have already voted in this matchup")).status, "confirmed");
+  const alreadyVoted = classifyVoteError(new Error("You have already voted in this matchup"));
+  assert.equal(alreadyVoted.status, "confirmed");
+  assert.equal(alreadyVoted.entryId, "", "the error confirms a vote, but not its image");
+  assert.match(alreadyVoted.message, /could not confirm which image/);
   for (const message of ["Voting is not open: this round is not in the battle_vote phase", "That matchup is not the current matchup for this round", "That entry was vetoed and cannot be voted for", "That entry image is not a valid battle asset for this matchup", "You have left this room and cannot vote"]) {
     assert.equal(classifyVoteError(new Error(message)).status, "rejected", message);
   }
@@ -105,6 +111,23 @@ test("the ballot moves through idle, pending, confirmed, rejected and retryable"
   assert.equal(retryable.canVote, true);
   const stale = battleVoteView({ ...base, vote: { matchupId: "older", entryId: E1, status: "confirmed" } });
   assert.equal(stale.status, "idle", "a vote on a previous matchup does not carry over");
+});
+
+test("a retryable vote freezes the original choice and enables only that retry", () => {
+  const retrying = battleVoteView({
+    phase: "battle_vote", battleVote: ballot, matchupIndex: 0,
+    vote: { matchupId: M, entryId: E1, status: "retryable", message: "Your vote may have gone through. Retry the same image to confirm." },
+  });
+  const markup = battleVoteMarkup(retrying, escapeHtml);
+  assert.match(markup, new RegExp(`data-battle-vote="${E1}"[^>]*>Retry vote for A<`));
+  assert.match(markup, new RegExp(`data-battle-vote="${E3}"[^>]*disabled`));
+  const otherImageExpanded = battleVoteMarkup(battleVoteView({
+    phase: "battle_vote", battleVote: ballot, matchupIndex: 0, expandedIndex: 1,
+    vote: { matchupId: M, entryId: E1, status: "retryable", message: "Your vote may have gone through. Retry the same image to confirm." },
+  }), escapeHtml);
+  const lightbox = otherImageExpanded.slice(otherImageExpanded.indexOf('<div class="battle-lightbox"'));
+  assert.match(lightbox, new RegExp(`data-battle-vote="${E3}"[^>]*disabled`));
+  assert.match(markup, /Retry the same image to confirm/);
 });
 
 test("the voting branch shows no creator, count or other-matchup data", () => {
@@ -147,6 +170,164 @@ test("the render key changes with the ballot state, not with unrelated room upda
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const withoutLineComments = (source) => source.split("\n").filter((line) => !line.trimStart().startsWith("//")).join("\n");
+const appFunctions = [...app.matchAll(/^(?:async )?function \w+\([^\n]*\) \{[\s\S]*?^\}/gm)].map((match) => match[0]).join("\n");
+
+function phoneApp({ playerId = "player-a", entry, loadError = "", session = new Map(), castVote = async () => {}, getPlayerBattleState = async () => ({ entry: null }) } = {}) {
+  const listeners = new Map();
+  const sessionStorage = {
+    getItem: (key) => session.get(key) ?? null,
+    setItem: (key, value) => session.set(key, String(value)),
+    removeItem: (key) => session.delete(key),
+  };
+  const retryButton = { addEventListener: (event, listener) => listeners.set(event, listener) };
+  const context = vm.createContext({
+    state: { phase: "battle_vote", battleRoundIndex: 0, battleMatchupIndex: 0, battleVote: ballot, battleResult: null },
+    battlePlayer: { ...initialBattlePlayer("round-0"), entry, loadError },
+    battlePlayerLoadedPhase: entry === undefined ? "" : "battle_vote",
+    battlePlayerEntryPhase: entry === undefined ? "" : "battle_vote",
+    battlePlayerLoadingPhase: "",
+    battlePlayerFailedPhase: loadError ? "battle_vote" : "",
+    battlePlayerLoadRequestId: 0,
+    battlePlayerSubmitRequest: { status: "idle", assetId: "", message: "" },
+    battleVote: null, battleLightbox: null, battleImageUrls: new Map(),
+    battleVoteRenderedKey: "", battlePlayerRenderedKey: "",
+    roomCode: "ROOM42", playerId, view: "player", roomApi: { castBattleVote: castVote, getPlayerBattleState },
+    sessionStorage, recordDiagnostic() {},
+    document: {
+      querySelectorAll: () => [],
+      querySelector: (selector) => selector === "[data-battle-vote-retry]" ? retryButton : null,
+    },
+    battlePlayerKey, initialBattlePlayer, battleVoteView, battleVoteRenderKey, battleVoteMarkup,
+    battleLightboxMarkup, classifyVoteError, escapeHtml,
+    URL: { revokeObjectURL() {} },
+  });
+  vm.runInContext(`${appFunctions}\nrender = () => {};`, context);
+  return { context, session, listeners, run: (code) => vm.runInContext(code, context) };
+}
+
+test("eligibility read errors fail closed and expose a retry that reloads the player's own state", async () => {
+  let reads = 0;
+  const h = phoneApp({
+    entry: undefined,
+    loadError: "Could not load your prompt. Check your connection and try again.",
+    getPlayerBattleState: async () => {
+      reads += 1;
+      return { entry: { generations: [{ assetIds: [A1] }] } };
+    },
+  });
+  const failed = h.run("battleVoteViewForState()");
+  assert.equal(failed.kind, "eligibility-error");
+  assert.match(battleVoteMarkup(failed, escapeHtml), /data-battle-vote-retry/);
+  assert.ok(!/data-battle-vote=/.test(battleVoteMarkup(failed, escapeHtml)), "an unknown entrant must not receive a ballot");
+
+  h.run("attachBattleVoteEvents()");
+  await h.listeners.get("click")();
+  assert.equal(reads, 1);
+  assert.equal(h.run("battleVoteViewForState()").kind, "on-stage");
+});
+
+test("same-tab retry freezes the choice but a duplicate response confirms no entry", async () => {
+  const calls = [];
+  const session = new Map();
+  let serverVote = "";
+  const castVote = async ({ entryId }) => {
+    calls.push(entryId);
+    if (!serverVote) {
+      serverVote = entryId;
+      throw new Error("Failed to fetch");
+    }
+    throw new Error("You have already voted in this matchup");
+  };
+  const h = phoneApp({ entry: null, session, castVote });
+
+  await h.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.equal(h.context.battleVote.status, "retryable");
+  const reloaded = phoneApp({ entry: null, session, castVote });
+  const restored = reloaded.run(`currentBattleVote(${JSON.stringify(M)})`);
+  assert.deepEqual([restored.status, restored.entryId], ["retryable", E1]);
+  await reloaded.run(`castBattleVoteFromPhone(${JSON.stringify(E3)})`);
+  assert.deepEqual(calls, [E1], "a different entry cannot replace an ambiguous first choice, even after reload");
+  assert.equal(reloaded.context.battleVote.entryId, E1);
+  assert.equal(reloaded.context.battleVote.status, "retryable");
+
+  await reloaded.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.deepEqual(calls, [E1, E1]);
+  assert.equal(reloaded.context.battleVote.entryId, "");
+  assert.equal(reloaded.context.battleVote.status, "confirmed");
+  assert.match(reloaded.context.battleVote.message, /could not confirm which image/);
+  const markup = battleVoteMarkup(reloaded.run("battleVoteViewForState()"), escapeHtml);
+  assert.match(markup, /could not confirm which image/);
+  assert.doesNotMatch(markup, /✓ Your vote/);
+  const refreshed = phoneApp({ entry: null, session, castVote });
+  const restoredAfterRefresh = refreshed.run(`currentBattleVote(${JSON.stringify(M)})`);
+  assert.deepEqual([restoredAfterRefresh.status, restoredAfterRefresh.entryId, restoredAfterRefresh.message], ["confirmed", "", reloaded.context.battleVote.message]);
+});
+
+test("a same-player cross-tab vote stays unknown after refreshing the ambiguous tab", async () => {
+  const firstTabSession = new Map();
+  const secondTabSession = new Map();
+  let serverVote = "";
+  const firstTabCast = async () => {
+    if (serverVote) throw new Error("You have already voted in this matchup");
+    throw new Error("Failed to fetch"); // This tab's first request did not reach the server.
+  };
+  const secondTabCast = async ({ entryId }) => {
+    if (serverVote) throw new Error("You have already voted in this matchup");
+    serverVote = entryId;
+  };
+  const firstTab = phoneApp({ playerId: "player-a", entry: null, session: firstTabSession, castVote: firstTabCast });
+  await firstTab.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.equal(firstTab.context.battleVote.status, "retryable");
+
+  const secondTab = phoneApp({ playerId: "player-a", entry: null, session: secondTabSession, castVote: secondTabCast });
+  await secondTab.run(`castBattleVoteFromPhone(${JSON.stringify(E3)})`);
+  assert.equal(serverVote, E3);
+  assert.deepEqual([secondTab.context.battleVote.status, secondTab.context.battleVote.entryId], ["confirmed", E3]);
+
+  const refreshedTab = phoneApp({ playerId: "player-a", entry: null, session: firstTabSession, castVote: firstTabCast });
+  const restored = refreshedTab.run(`currentBattleVote(${JSON.stringify(M)})`);
+  assert.deepEqual([restored.status, restored.entryId], ["retryable", E1]);
+  await refreshedTab.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.deepEqual([refreshedTab.context.battleVote.status, refreshedTab.context.battleVote.entryId], ["confirmed", ""]);
+  assert.match(refreshedTab.context.battleVote.message, /could not confirm which image/);
+  const markup = battleVoteMarkup(refreshedTab.run("battleVoteViewForState()"), escapeHtml);
+  assert.match(markup, /could not confirm which image/);
+  assert.doesNotMatch(markup, /✓ Your vote/);
+});
+
+test("an initial already-voted error does not falsely confirm this phone's selected image", async () => {
+  const h = phoneApp({ entry: null, castVote: async () => { throw new Error("You have already voted in this matchup"); } });
+  await h.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  assert.equal(h.context.battleVote.status, "confirmed");
+  assert.equal(h.context.battleVote.entryId, "");
+  assert.match(h.context.battleVote.message, /could not confirm which image/);
+  const markup = battleVoteMarkup(h.run("battleVoteViewForState()"), escapeHtml);
+  assert.match(markup, /role="status">A vote is already recorded, but this phone could not confirm which image/);
+  assert.doesNotMatch(markup, /✓ Your vote/);
+  const result = battleVoteView({
+    phase: "battle_result", matchupIndex: 0, vote: h.context.battleVote,
+    battleResult: publicBattleResult({
+      matchupId: M, matchupIndex: 0, outcome: "winner",
+      entries: [{ entryId: E1, playerName: "Bo", assetId: A1, votes: 1, viable: true, winner: true }],
+    }),
+  });
+  assert.doesNotMatch(battleVoteMarkup(result, escapeHtml), /Your vote/);
+});
+
+test("vote persistence is scoped to player identity and survives a same-player reload", async () => {
+  const session = new Map();
+  const first = phoneApp({ playerId: "player-a", session, castVote: async () => ({ voteId: "vote-1" }) });
+  await first.run(`castBattleVoteFromPhone(${JSON.stringify(E1)})`);
+  const key = first.run(`battleVoteStorageKey(${JSON.stringify(M)})`);
+  assert.ok(key.includes("player-a"));
+
+  const otherPlayer = phoneApp({ playerId: "player-b", session });
+  assert.equal(otherPlayer.run(`currentBattleVote(${JSON.stringify(M)})`), null, "another player in the same room does not inherit the vote");
+  const reloaded = phoneApp({ playerId: "player-a", session });
+  const restored = reloaded.run(`currentBattleVote(${JSON.stringify(M)})`);
+  assert.equal(restored.entryId, E1);
+  assert.equal(restored.status, "confirmed");
+});
 
 test("the phone's voting branch precedes any question rendering and reads no host data", () => {
   const renderPlayer = withoutLineComments(app.slice(app.indexOf("function renderPlayer() {"), app.indexOf("\nfunction render() {")));

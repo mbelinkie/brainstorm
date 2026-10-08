@@ -24,9 +24,8 @@
 // through parseResponses -- see addendum section 2.3. This module never
 // calls fetch() or a binding's .run() itself.
 //
-// Adapter status: workers_ai, kaplan_proxy and openrouter are implemented
-// (openrouter is not yet enabled in the Worker's allowlist); vertex is not
-// yet present.
+// Adapter status: workers_ai, kaplan_proxy and openrouter are implemented;
+// vertex is not yet present.
 
 const WORKERS_AI_MAX_PROMPT = 2048;
 
@@ -78,8 +77,8 @@ export function isWorkersAiSafetyRejection(_error) {
 
 // --- OpenRouter (issue #44) ---------------------------------------------
 //
-// POST https://openrouter.ai/api/v1/images, one request per variant: every
-// Gemini image model on OpenRouter accepts only n: 1. Behaviour below follows
+// POST https://openrouter.ai/api/v1/images, one request per variant. The
+// approved OpenRouter profiles all use n: 1. Behavior below follows
 // OpenRouter's documentation as checked on 2026-10-05 (image generation,
 // authentication, usage accounting, errors); none of it has been confirmed
 // against the live API yet.
@@ -89,15 +88,10 @@ export const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images";
 // OpenRouter's general error documentation; its image page shows no refusal,
 // so the host test button has to confirm the real shape.
 //
-// Where the error body comes from: runBattleDescriptor() in
-// cloudflare-worker.js turns a non-2xx response into
-// { ok: false, status, error } with error.status set, but today it does not
-// read the response body. This adapter reads OpenRouter's
-// { error: { code, message } } envelope from result.error.body. The Worker
-// ticket that enables openrouter must attach the parsed error body as
-// error.body in runBattleDescriptor (and pass config.auth to buildRequests).
-// Until then every OpenRouter failure is refused as an unaccounted outcome,
-// which is the safe direction: an unknown charge is never assumed to be zero.
+// runBattleDescriptor() attaches only bounded, sanitized error evidence to
+// result.error.body. Provider messages and image bytes never enter this
+// adapter through a failed response. Unknown or contradictory usage remains
+// an unaccounted outcome; it is never assumed to be zero.
 const OPENROUTER_REFUSAL_CODES = new Set(["content_policy_violation", "refusal"]);
 
 // Base64 prefixes of the PNG, JPEG and WebP file signatures, used only when
@@ -114,26 +108,39 @@ function openRouterUnaccounted(detail) {
 
 function openRouterMimeType(entry) {
   const declared = entry.media_type;
-  if (typeof declared === "string" && declared.trim() !== "") {
-    return declared.startsWith("image/") ? declared : null;
-  }
+  let inferred = null;
   for (const [prefix, mimeType] of OPENROUTER_BASE64_SIGNATURES) {
-    if (entry.b64_json.startsWith(prefix)) return mimeType;
+    if (entry.b64_json.startsWith(prefix)) {
+      inferred = mimeType;
+      break;
+    }
   }
-  return null;
+  if (typeof declared === "string" && declared.trim() !== "") {
+    return declared.trim() === inferred ? inferred : null;
+  }
+  return inferred;
 }
 
-// A failed result is an unbilled OpenRouter error response only when it has
-// a real non-2xx HTTP status AND carries OpenRouter's { error: { ... } }
-// envelope at result.error.body (contract Decision 4). Anything else -- status
-// 0 or none (fetch never got a response, or a 2xx body would not parse), or a
-// non-2xx without that envelope (an edge timeout such as 524, or today's
-// Worker, which drops the body) -- is an unknown charge.
+// A failed result is confirmed unbilled only when OpenRouter returned a valid
+// non-2xx error envelope and the body does not contradict the all-or-nothing
+// billing contract with images or a positive/invalid usage.cost. A missing
+// usage cost is normal for documented provider errors; on successful
+// responses, usage.cost is still required by parseResponses below.
 function isOpenRouterErrorResponse(result) {
   const status = result.status;
-  const isErrorStatus = Number.isInteger(status) && status >= 100 && status <= 599 && (status < 200 || status > 299);
-  const envelope = result.error?.body?.error;
-  return isErrorStatus && envelope !== null && typeof envelope === "object" && !Array.isArray(envelope);
+  const isErrorStatus = Number.isInteger(status) && status >= 400 && status <= 599;
+  const body = result.error?.body;
+  const envelope = body?.error;
+  if (!isErrorStatus || envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) return false;
+  const code = envelope.code;
+  if (!((Number.isInteger(code) && code >= 400 && code <= 599) || (typeof code === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(code)))) return false;
+
+  for (const field of ["data", "images"]) {
+    if (body[field] !== undefined && (!Array.isArray(body[field]) || body[field].length > 0)) return false;
+  }
+  if (body.usage !== undefined && (!body.usage || typeof body.usage !== "object" || Array.isArray(body.usage))) return false;
+  const cost = body.usage?.cost;
+  return cost === undefined || (typeof cost === "number" && Number.isFinite(cost) && cost === 0);
 }
 
 export const ENGINES = {
@@ -355,13 +362,18 @@ export const ENGINES = {
         throw new Error("openrouter.buildRequests requires the resolved auth object from resolveAuth");
       }
 
-      // Seeds are deliberately not forwarded, nor any other optional field:
-      // the body is model, prompt and n: 1, plus resolution / output_format
-      // only when the round sets them. Built fresh per variant so a caller
-      // mutating one descriptor cannot reach the others.
+      // Seeds are deliberately not forwarded. The body is model, prompt and
+      // n: 1, plus profile fields when set. Built fresh per variant so a
+      // caller mutating one descriptor cannot reach the others.
       const descriptors = [];
       for (let index = 0; index < config.variants; index += 1) {
         const body = { model: config.model, prompt: config.prompt, n: 1 };
+        if (typeof config.endpointTag === "string" && config.endpointTag !== "") {
+          body.provider = { only: [config.endpointTag], allow_fallbacks: false };
+        }
+        if (config.aspectRatio !== undefined && config.aspectRatio !== null) {
+          body.aspect_ratio = config.aspectRatio;
+        }
         if (config.resolution !== undefined && config.resolution !== null) {
           body.resolution = config.resolution;
         }
@@ -410,9 +422,7 @@ export const ENGINES = {
           const providerError = result.error.body.error;
           if (!sawRefusal && OPENROUTER_REFUSAL_CODES.has(providerError.code)) {
             sawRefusal = true;
-            refusalMessage = typeof providerError.message === "string" && providerError.message.trim() !== ""
-              ? providerError.message
-              : "The image model declined that prompt.";
+            refusalMessage = "The image model declined that prompt.";
           }
           continue;
         }
@@ -436,7 +446,9 @@ export const ENGINES = {
           if (!entry || typeof entry !== "object") continue;
           if (typeof entry.b64_json !== "string" || entry.b64_json.trim() === "") continue;
           const mimeType = openRouterMimeType(entry);
-          if (mimeType === null) continue;
+          if (mimeType === null) {
+            throw openRouterUnaccounted("a successful image payload has an unknown or mismatched raster signature");
+          }
           images.push({ mimeType, bytesBase64: entry.b64_json });
         }
       }
