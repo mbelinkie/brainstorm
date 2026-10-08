@@ -57,12 +57,16 @@ The provider should set `PORT`; the server listens on it automatically. Use `/he
 The approved internal Kaplan route uses the separate `kaplan-image-proxy/`
 container. Follow [the CrowdStrike build and deployment handoff](docs/KAPLAN_CROWDSTRIKE_HANDOFF.md)
 for the sensor patch, private Gen 2 deployment and SecOps verification before
-an administrator enables public invocation. Issues #94 and #19 retain their
-work-machine and live acceptance steps; neither has deployment evidence yet.
+an administrator enables public invocation. The authorized Cloud Shell build,
+Falcon patch and permission-corrected image push are recorded there. Private
+Gen 2 revision `kaplan-image-proxy-00003-spz` is healthy at 100% traffic;
+Falcon console reporting, SecOps/public invocation and live image acceptance
+remain pending in #19 and #21.
 
-The live `VERTEX_LOCATION` (`global`, `us`, or `eu`) and service URL remain
-unconfirmed. The `us-central1` registry location does not select the Vertex
-endpoint. The application shared secret stays outside source control.
+The approved live `VERTEX_LOCATION` is `us`. The IAM-private service base URL
+is `https://kaplan-image-proxy-wqifulzssq-uc.a.run.app`. The application shared
+secret stays outside source control. Main's current production release does
+not include PR #103's future Kaplan Worker activation.
 
 ## Container deployment
 
