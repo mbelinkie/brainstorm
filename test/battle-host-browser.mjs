@@ -31,7 +31,7 @@ function fixture() {
   return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],scoreAwards:0,mode:'normal',hold:false,failNextReviewRefresh:false };
 }
 const hook = `\nwindow.__acceptance = {
- get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, get enginePanel(){return structuredClone(battleTestPanel)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
+ get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, get enginePanel(){return structuredClone(battleTestPanel)}, get exportState(){return structuredClone(battleWinnerExport)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
  projection:()=>publicRoomState(), payload:()=>hostStatePayload(),
  seed:(value,privatePayload)=>{state={...state,...value}; if(privatePayload) battleRoundPanel={...battleRoundPanel,state:privatePayload}; render()},
  setEngineBusy:value=>{battleTestPanel.engineBusy=Boolean(value);render()},
@@ -629,6 +629,51 @@ await run('winner-export-partial','partial image failure stays visible, repeat c
  const requests=winnerExportRequests.slice(before);
  assert.deepEqual(requests.map(request=>request.path),['/battle/winners',`/battle/winners/${exportWinnerA}`,`/battle/winners/${exportWinnerB}`]);
  assert.ok(requests.every(request=>request.room==='ACPT'&&request.hasHostSecret));
+ assert.deepEqual(errors,[]);
+});
+winnerExportManifest=[
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:0,playerName:'Ada Winner',promptText:'An owl in the observatory',playerPrompt:'Paint a silver owl beneath the stars',available:true,mimeType:'image/png'}
+];
+winnerExportFailures=new Map();
+await run('winner-export-rerender','a host rerender during export keeps the current control responsive and busy guard active',async({page,errors})=>{
+ const before=winnerExportRequests.filter(request=>request.path==='/battle/winners').length;
+ holdNextWinnerManifest=true;releaseWinnerManifest=null;
+ await page.getByRole('button',{name:'Download winning images'}).click();
+ const deadline=Date.now()+5000;while(!releaseWinnerManifest&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.ok(releaseWinnerManifest,'the export manifest request is held');
+ await page.evaluate(()=>window.__acceptance.render());
+ const currentButton=page.locator('[data-export-battle-winners]');
+ assert.equal(await currentButton.isDisabled(),true,'rerender preserves the active busy state');
+ await currentButton.evaluate(element=>element.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})));
+ assert.equal(winnerExportRequests.filter(request=>request.path==='/battle/winners').length,before+1,'the rerendered control still rejects a repeated click');
+ const release=releaseWinnerManifest;releaseWinnerManifest=null;release();
+ await page.waitForFunction(()=>window.__acceptance.exportState.busy===false);
+ const currentUi=await page.evaluate(()=>({status:document.querySelector('[data-battle-winner-export-status]')?.textContent,disabled:document.querySelector('[data-export-battle-winners]')?.disabled}));
+ assert.equal(currentUi.disabled,false,`the current export control is enabled after completion: ${JSON.stringify(currentUi)}`);
+ assert.match(currentUi.status,/Downloaded 1 winning image and the manifest\./,`the current status reports the completed export: ${JSON.stringify(currentUi)}`);
+ assert.deepEqual(errors,[]);
+});
+winnerExportManifest=[
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:0,playerName:'=1+1',promptText:' =HYPERLINK("https://example.invalid","open")',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerB,roundIndex:0,matchupIndex:1,playerName:'+1+1',promptText:'\t+1+2',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerC,roundIndex:0,matchupIndex:2,playerName:'-1+2',promptText:'\r-1+2',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:3,playerName:'@SUM(A1:A2)',promptText:'\n@SUM(A1:A2)',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerB,roundIndex:0,matchupIndex:4,playerName:'＝1+1',promptText:'Safe prompt',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'}
+];
+await run('winner-export-csv-formulas','the downloaded manifest neutralizes formula-leading creator and prompt text while preserving CSV quoting',async({page,errors})=>{
+ const downloads=[];page.on('download',download=>downloads.push(download));
+ await page.getByRole('button',{name:'Download winning images'}).click();
+ await page.waitForFunction(()=>document.querySelector('[data-battle-winner-export-status]')?.textContent.includes('Downloaded 0 of 5 winning images'));
+ assert.equal(downloads.length,1,'the unavailable rows still produce one manifest');
+ const output=path.join(evidence,'winner-export-csv-formulas');await fs.mkdir(output,{recursive:true});
+ await downloads[0].saveAs(path.join(output,downloads[0].suggestedFilename()));
+ const csv=await fs.readFile(path.join(output,downloads[0].suggestedFilename()),'utf8');
+ for(const value of ['\t=1+1','\t+1+1','\t-1+2','\t@SUM(A1:A2)','\t＝1+1'])assert.ok(csv.includes(`"${value}"`),`formula-like creator text is prefixed: ${JSON.stringify(value)}`);
+ assert.ok(csv.includes('"\t =HYPERLINK(""https://example.invalid"",""open"")"'),'leading whitespace and CSV quotes are preserved after neutralization');
+ assert.ok(csv.includes('"\t\t+1+2"'),'a leading tab before a formula is neutralized');
+ assert.ok(csv.includes('"\t\r-1+2"'),'a leading carriage return before a formula is neutralized');
+ assert.ok(csv.includes('"\t\n@SUM(A1:A2)"'),'a leading line feed before a formula is neutralized');
+ assert.match(csv,/"Creator","Matchup prompt","Player prompt"/,'CSV columns remain quoted');
  assert.deepEqual(errors,[]);
 });
 await browser.close();await new Promise(resolve=>server.close(resolve));

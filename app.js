@@ -2939,8 +2939,17 @@ function battleWinnerManifestCsv(rows) {
     row.filename || "",
     row.status,
     row.detail || ""
-  ].map(csvCell).join(","));
+  ].map(battleWinnerCsvCell).join(","));
   return [header, ...body].join("\n") + "\n";
+}
+
+function battleWinnerCsvCell(value) {
+  const text = String(value ?? "");
+  // Spreadsheet imports can ignore leading whitespace/control characters. A
+  // tab inside the quoted field is Excel-resistant for formula-like cells;
+  // csvCell still handles quotes, delimiters, and embedded line breaks.
+  const formulaLike = /^[\s\u0000-\u001f\ufeff]*[=+\-@＝＋－＠]/u.test(text);
+  return csvCell(formulaLike ? `\t${text}` : text);
 }
 
 function downloadBattleExport(blob, filename) {
@@ -2950,21 +2959,25 @@ function downloadBattleExport(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function exportBattleWinners(event) {
-  if (battleWinnerExport.busy || view !== "host" || !isHostedRoom) return;
-  const button = event.currentTarget;
+function updateBattleWinnerExportUi() {
+  const button = document.querySelector("[data-export-battle-winners]");
   const status = document.querySelector("[data-battle-winner-export-status]");
+  if (button) button.disabled = battleWinnerExport.busy;
+  if (status) status.textContent = battleWinnerExport.message;
+}
+
+async function exportBattleWinners() {
+  if (battleWinnerExport.busy || view !== "host" || !isHostedRoom) return;
   const hostSecret = getHostSecret();
   if (!hostSecret) {
     battleWinnerExport.message = "Host authorization is unavailable. Reopen this room as host and try again.";
-    if (status) status.textContent = battleWinnerExport.message;
+    updateBattleWinnerExportUi();
     return;
   }
 
   battleWinnerExport.busy = true;
   battleWinnerExport.message = "Loading winning images…";
-  button.disabled = true;
-  if (status) status.textContent = battleWinnerExport.message;
+  updateBattleWinnerExportUi();
   const headers = { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret };
   try {
     const response = await fetch(`${quizWorkerOrigin}/battle/winners`, { headers, cache: "no-store" });
@@ -3020,8 +3033,7 @@ async function exportBattleWinners(event) {
     battleWinnerExport.message = error?.message || "Could not export winning images.";
   } finally {
     battleWinnerExport.busy = false;
-    button.disabled = false;
-    if (status) status.textContent = battleWinnerExport.message;
+    updateBattleWinnerExportUi();
   }
 }
 
