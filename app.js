@@ -99,6 +99,7 @@ let battleTestPanel = { model: "", models: [], modelsStatus: "idle", modelsError
 // assigned onto `state` where publicRoomState() could forward it.
 // See docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 6.
 let battleRoundPanel = { busy: false, error: "", state: null, stale: false, lockBusy: false, reviewAction: "", confirmedAt: 0, roundIndex: null };
+let battleWinnerExport = { busy: false, message: "" };
 let battleRosterPollTimer = null;
 let battleRefreshRequestId = 0;
 let battleRefreshInFlight = null;
@@ -2147,7 +2148,14 @@ function roundProgress() {
 }
 
 function hostUtilityControls() {
-  return `<div class="host-utilities"><button class="btn btn-secondary" data-previous>Previous <span class="keyhint">P / ←</span></button><button class="btn btn-secondary" data-next-screen>Next <span class="keyhint">N / →</span></button><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button></div>${presenterOverrideControl()}`;
+  const showWinnerExport = view === "host" && isHostedRoom && (hostQuizDefinition?.rounds || []).some(isBattleRound);
+  const winnerExport = showWinnerExport
+    ? `<button class="btn btn-secondary" data-export-battle-winners ${battleWinnerExport.busy ? "disabled" : ""}>Download winning images</button>`
+    : "";
+  const winnerExportStatus = showWinnerExport
+    ? `<p class="battle-round-note" data-battle-winner-export-status role="status" aria-live="polite">${escapeHtml(battleWinnerExport.message)}</p>`
+    : "";
+  return `<div class="host-utilities"><button class="btn btn-secondary" data-previous>Previous <span class="keyhint">P / ←</span></button><button class="btn btn-secondary" data-next-screen>Next <span class="keyhint">N / →</span></button><button class="btn btn-secondary" data-toggle-shortcuts>Shortcuts</button>${winnerExport}</div>${winnerExportStatus}${presenterOverrideControl()}`;
 }
 
 // Per-session credit line. This lives on every host screen (including the
@@ -2912,6 +2920,109 @@ function manualScoreControls() {
 
 function csvCell(value) {
   return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function battleWinnerFilename(winner) {
+  const extensions = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+  const extension = extensions[winner.mimeType] || "img";
+  return `battle-r${Number(winner.roundIndex) + 1}-m${Number(winner.matchupIndex) + 1}-${String(winner.assetId || "image").slice(0, 8)}.${extension}`;
+}
+
+function battleWinnerManifestCsv(rows) {
+  const header = ["Round", "Matchup", "Creator", "Matchup prompt", "Player prompt", "Image file", "Status", "Detail"].map(csvCell).join(",");
+  const body = rows.map((row) => [
+    Number(row.roundIndex) + 1,
+    Number(row.matchupIndex) + 1,
+    row.playerName || "Player",
+    row.promptText || "",
+    row.playerPrompt || "",
+    row.filename || "",
+    row.status,
+    row.detail || ""
+  ].map(csvCell).join(","));
+  return [header, ...body].join("\n") + "\n";
+}
+
+function downloadBattleExport(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = Object.assign(document.createElement("a"), { href: url, download: filename });
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function exportBattleWinners(event) {
+  if (battleWinnerExport.busy || view !== "host" || !isHostedRoom) return;
+  const button = event.currentTarget;
+  const status = document.querySelector("[data-battle-winner-export-status]");
+  const hostSecret = getHostSecret();
+  if (!hostSecret) {
+    battleWinnerExport.message = "Host authorization is unavailable. Reopen this room as host and try again.";
+    if (status) status.textContent = battleWinnerExport.message;
+    return;
+  }
+
+  battleWinnerExport.busy = true;
+  battleWinnerExport.message = "Loading winning images…";
+  button.disabled = true;
+  if (status) status.textContent = battleWinnerExport.message;
+  const headers = { "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret };
+  try {
+    const response = await fetch(`${quizWorkerOrigin}/battle/winners`, { headers, cache: "no-store" });
+    if (!response.ok) throw new Error(`Could not load winning images (${response.status}).`);
+    const manifest = await response.json();
+    if (!Array.isArray(manifest.winners)) throw new Error("The winning image list is unavailable.");
+    const rows = [];
+    let downloaded = 0;
+    for (const winner of manifest.winners) {
+      const row = { ...winner, filename: battleWinnerFilename(winner), status: "", detail: "" };
+      if (!winner.available) {
+        row.status = winner.unavailableReason === "expired" ? "expired" : "unavailable";
+        row.detail = row.status === "expired" ? "Past the 30-day retention window" : "Image is missing or no longer available";
+        rows.push(row);
+        continue;
+      }
+      try {
+        const imageResponse = await fetch(`${quizWorkerOrigin}/battle/winners/${encodeURIComponent(winner.assetId)}`, { headers, cache: "no-store" });
+        if (imageResponse.status === 410) {
+          row.status = "expired";
+          row.detail = "Past the 30-day retention window";
+          rows.push(row);
+          continue;
+        }
+        if (imageResponse.status === 404) {
+          row.status = "unavailable";
+          row.detail = "Image is missing or no longer available";
+          rows.push(row);
+          continue;
+        }
+        if (!imageResponse.ok) throw new Error(`Image request failed (${imageResponse.status})`);
+        const blob = await imageResponse.blob();
+        if (!blob.size) throw new Error("Image response was empty");
+        downloadBattleExport(blob, row.filename);
+        downloaded += 1;
+        row.status = "downloaded";
+      } catch (error) {
+        row.status = "failed";
+        row.detail = error?.message || "Image download failed";
+      }
+      rows.push(row);
+    }
+
+    const csv = new Blob([battleWinnerManifestCsv(rows)], { type: "text/csv;charset=utf-8" });
+    downloadBattleExport(csv, `${roomCode}-battle-winners.csv`);
+    const unavailable = rows.length - downloaded;
+    battleWinnerExport.message = rows.length === 0
+      ? "No winning images were recorded for this room. The empty manifest was downloaded."
+      : unavailable === 0
+        ? `Downloaded ${downloaded} winning image${downloaded === 1 ? "" : "s"} and the manifest.`
+        : `Downloaded ${downloaded} of ${rows.length} winning images. The manifest lists expired, unavailable, or failed files.`;
+  } catch (error) {
+    battleWinnerExport.message = error?.message || "Could not export winning images.";
+  } finally {
+    battleWinnerExport.busy = false;
+    button.disabled = false;
+    if (status) status.textContent = battleWinnerExport.message;
+  }
 }
 
 function resultsCsv(players) {
@@ -4348,6 +4459,7 @@ function attachEvents() {
   document.querySelector("[data-reset]")?.addEventListener("click", reset);
   document.querySelector("[data-export-results]")?.addEventListener("click", exportResults);
   document.querySelector("[data-export-detailed-results]")?.addEventListener("click", exportDetailedResults);
+  document.querySelector("[data-export-battle-winners]")?.addEventListener("click", exportBattleWinners);
   document.querySelector("[data-download-diagnostics]")?.addEventListener("click", downloadDiagnostics);
   attachHostSyncRetry();
   document.querySelectorAll("[data-toggle-shortcuts]").forEach((button) => button.addEventListener("click", () => {
