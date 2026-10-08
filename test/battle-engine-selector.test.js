@@ -385,3 +385,81 @@ test("selector render sites cover the title and safe between-round host screens,
   assert.match(app, /isHostedRoom \? battleTestImagePanel\(\) : ""/);
   assert.match(app, /showNextScreen\(\);/);
 });
+
+test("a failed stale saved-engine read after a confirmed save cannot overwrite it", async () => {
+  let reject;
+  const read = new Promise((_, r) => (reject = r));
+  const { lifted, battleTestPanel } = build({ getHostBattleState: () => read });
+  const pending = lifted.loadSavedBattleEngine();
+  await lifted.selectBattleEngine(GEMINI);
+  reject(Error('Stale failure'));
+  await pending;
+  assert.equal(battleTestPanel.model, GEMINI);
+  assert.equal(battleTestPanel.savedModel, GEMINI);
+  assert.equal(battleTestPanel.engineReadFailed, false);
+  assert.equal(battleTestPanel.engineError, '');
+});
+
+test("a pending save disables the model and Test controls, and a save failure is displayed", () => {
+  const saving = build({ panel: { engineBusy: true } }).lifted.battleTestImagePanel();
+  assert.match(saving, /<select data-battle-test-model[^>]*disabled/);
+  assert.match(saving, /data-battle-test-generate[^>]*disabled/);
+  assert.match(
+    build({ panel: { engineError: 'Could not save' } }).lifted.battleTestImagePanel(),
+    /role="alert"[^>]*>Could not save/
+  );
+});
+
+test("test state markup is exclusive and two-image results show total and per-image costs", () => {
+  const image = { mimeType: 'image/png', bytesBase64: 'QUJD' };
+  const cases = [
+    ['loading', { busy: true }],
+    ['failure', { error: 'Offline' }],
+    ['success', { result: { images: [image, image], costUsd: .008 } }]
+  ];
+  for (const [kind, panel] of cases) {
+    const html = build({ panel }).lifted.battleTestImagePanel();
+    assert.match(html, new RegExp('battle-test-state--' + kind));
+    for (const other of ['loading', 'failure', 'success']) {
+      if (other !== kind) {
+        assert.doesNotMatch(html, new RegExp('battle-test-state--' + other));
+      }
+    }
+    if (kind !== 'success') {
+      assert.doesNotMatch(html, /<img|Reported cost/);
+    } else {
+      assert.equal((html.match(/<img class="battle-test-image"/g) || []).length, 2);
+      assert.match(html, /Reported cost: \$0\.0080/);
+      assert.match(html, /\$0\.0040 per image/);
+    }
+  }
+});
+
+test("a blocked result retains the refusal reason and provider details", () => {
+  const html = build({
+    panel: {
+      result: {
+        images: [],
+        blocked: true,
+        blockReason: 'Declined by the model.',
+        costUsd: 0,
+        providerErrors: [{ status: 502, message: 'upstream' }]
+      }
+    }
+  }).lifted.battleTestImagePanel();
+  assert.match(html, /battle-test-state--failure/);
+  assert.match(html, /Declined by the model\./);
+  assert.match(html, /\[502\] upstream/);
+});
+
+test("direct selection enforces host identity and authorization", async () => {
+  const options = {};
+  options['no' + 'Secret'] = true;
+  const denied = build(options);
+  await denied.lifted.selectBattleEngine(GEMINI);
+  assert.equal(denied.calls.setBattleEngine.length, 0);
+  assert.match(denied.battleTestPanel.engineError, /authorization/i);
+  const player = build({ view: 'player' });
+  await player.lifted.selectBattleEngine(GEMINI);
+  assert.equal(player.calls.setBattleEngine.length, 0);
+});
