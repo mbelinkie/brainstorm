@@ -4,6 +4,7 @@ This log records meaningful product, infrastructure, and data-model changes. Dat
 
 ## 2026-10-07
 
+- Fixed Prompt Battle editor recovery for malformed saved permitted-model values without rewriting the saved draft; the shared validator remains visible until an explicit correction. Question-type filters now hide ordinary rounds with no matching questions while keeping Prompt Battle rounds discoverable.
 - Fixed Prompt Battle load-error text on player holding cards: the failed-state red now takes precedence over the generic muted paragraph color, keeping the message readable on phones.
 - Added the Prompt Battle media purge schedule (#39): a daily 03:00 UTC Worker run deletes up to 1,000 expired battle objects in one Supabase Storage batch, then migration 0043 finalizes only objects absent from Storage metadata. Failed batches and still-present objects remain retryable; the trigger has not been deployed or run against live Storage.
 - Added authoritative Prompt Battle submission status to the player refresh RPC (#84): each entrant now reads `open`, `submitted`, or `forfeited` from the persisted entry timestamps. PGlite runtime regressions and the full test suite pass; migration `0045` has not been applied to production.

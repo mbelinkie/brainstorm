@@ -53,6 +53,10 @@ export function restoredAuthorSelection(draft) {
   return { roundIndex, questionIndex };
 }
 
+export function formatPermittedModelsForDisplay(value) {
+  return Array.isArray(value) ? value.join("\n") : "";
+}
+
 export function setPromptBattleField(round, path, rawValue) {
   const parts = path.split(".");
   if (parts[0] === "title" && parts.length === 1) { round.title = rawValue; return; }

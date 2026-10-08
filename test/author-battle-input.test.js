@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import {
   createPromptBattleRound,
   duplicatePromptBattleRound,
+  formatPermittedModelsForDisplay,
   isRestorableAuthorDraft,
   setPromptBattleField,
   promptBattleErrorsByField,
@@ -182,6 +183,7 @@ test('malformed battle prompt containers remain visible, invalid, and safe to co
       selection: { roundIndex: 0 },
       round,
       promptBattleErrorsByField,
+      formatPermittedModelsForDisplay,
       battleField: () => '',
       escapeHtml: (value) => String(value),
     };
@@ -194,4 +196,84 @@ test('malformed battle prompt containers remain visible, invalid, and safe to co
     assert.doesNotThrow(() => removePromptFromBattleRound(round, 0), `${name} removal`);
     if (name === 'non-array list') assert.deepEqual(round.prompts, { preserved: true }, 'invalid persisted data is left untouched');
   }
+});
+
+test('malformed permitted model values render validator feedback without changing the saved value', () => {
+  const source = readFileSync(new URL('../author.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function renderPromptBattleEditor(');
+  const end = source.indexOf('\nfunction renderEditor(', start);
+  assert.ok(start >= 0 && end > start, 'Prompt Battle renderer source found');
+  const editorSource = source.slice(start, end);
+
+  for (const malformed of ['model-a', { preserved: 'model-a' }]) {
+    const round = createPromptBattleRound('battle', 'Battle');
+    round.prompts[0].text = 'Draw a tiny moon.';
+    round.engine.defaultProvider = 'workers_ai';
+    round.engine.defaultModel = 'model-a';
+    round.engine.permittedModels = structuredClone(malformed);
+    const original = structuredClone(malformed);
+    const context = {
+      round,
+      selection: { roundIndex: 0 },
+      promptBattleErrorsByField,
+      formatPermittedModelsForDisplay,
+      battleField: (label, path, value, errors) => path === 'engine.permittedModels'
+        ? `<textarea data-battle-field="${path}">${value}</textarea><small data-battle-error="${path}"${errors[path] ? '' : ' hidden'}>${errors[path] || ''}</small>`
+        : '',
+      escapeHtml: (value) => String(value),
+    };
+    vm.runInNewContext(`${editorSource}; result = renderPromptBattleEditor(round);`, context);
+
+    assert.match(context.result, /data-battle-field="engine\.permittedModels"><\/textarea>/);
+    assert.match(context.result, /data-battle-error="engine\.permittedModels"[^>]*>Round 1 engine needs at least one permitted model\./);
+    assert.deepEqual(round.engine.permittedModels, original, 'rendering must preserve the malformed draft value');
+    assert.equal(formatPermittedModelsForDisplay(round.engine.permittedModels), '');
+
+    setPromptBattleField(round, 'engine.permittedModels', 'model-a\nmodel-b');
+    assert.deepEqual(round.engine.permittedModels, ['model-a', 'model-b'], 'an explicit edit repairs it into the supported array shape');
+    assert.equal(promptBattleErrorsByField(round, 0)['engine.permittedModels'], undefined);
+  }
+});
+
+test('question type filters remove empty rounds while Prompt Battle remains searchable', () => {
+  const source = readFileSync(new URL('../author.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function renderNav() {');
+  const end = source.indexOf('\nfunction renderQuizHealth(', start);
+  assert.ok(start >= 0 && end > start, 'navigation renderer source found');
+  const navSource = source.slice(start, end);
+  const rounds = [
+    { id: 'single', title: 'Round One', questions: [{ id: 'q1', type: 'single_choice', prompt: 'Pick one.' }] },
+    { id: 'short', title: 'Round Two', questions: [{ id: 'q2', type: 'short_answer', prompt: 'Type an answer.' }] },
+    { id: 'battle', type: 'prompt_battle', title: 'Art Battle', prompts: [{ id: 'pb1', text: 'Draw a tiny moon.' }] },
+  ];
+  const renderNav = (filter, search = '') => {
+    const elements = { '#nav-title': {}, '#round-nav': { innerHTML: '' }, '#add-battle-round': { addEventListener() {} } };
+    const context = {
+      $: (selector) => elements[selector],
+      bank: { title: 'Quiz', rounds },
+      navSearch: search,
+      navTypeFilter: filter,
+      selection: { roundIndex: 0, questionIndex: 0 },
+      escapeHtml: (value) => String(value),
+      typeLabel: (value) => value,
+      addPromptBattleRound() {},
+      document: { querySelectorAll: () => [] },
+    };
+    vm.runInNewContext(`${navSource}; renderNav();`, context);
+    return elements['#round-nav'].innerHTML;
+  };
+
+  const filtered = renderNav('single_choice');
+  assert.match(filtered, /Round One/);
+  assert.doesNotMatch(filtered, /Round Two/);
+  assert.match(filtered, /Art Battle/);
+
+  const allTypes = renderNav('');
+  assert.match(allTypes, /Round One/);
+  assert.match(allTypes, /Round Two/);
+  assert.match(allTypes, /Art Battle/);
+
+  const battleSearch = renderNav('single_choice', 'tiny moon');
+  assert.match(battleSearch, /Art Battle/);
+  assert.doesNotMatch(battleSearch, /Round One|Round Two/);
 });

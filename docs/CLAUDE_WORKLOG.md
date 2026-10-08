@@ -2,6 +2,15 @@
 
 Durable record of Claude's contributions to this repo, separate from `CHANGELOG.md`. One entry per session.
 
+## 2026-10-07 — Late record: presentation sizing (#33)
+- Added four CSS declarations and a layout regression check for the Prompt Battle presentation at smaller viewport sizes. Commit `bdbd276` was independently reviewed and merged as PR #99; integrated verification passed on `09d05f3`.
+- Evidence recorded by the independent review: 953 full-suite tests, 32 focused tests, and 10 synthetic browser checks; the integrated suite passed 953 tests. Verification was synthetic only; no production room or service was used.
+
+## 2026-10-07 — Prompt Battle editor recovery and navigation (#42)
+- On `codex/editor-42-autonomous`, fixed malformed saved `engine.permittedModels` values crashing the editor. The renderer now leaves the saved value untouched, shows the shared validation error, and allows an explicit correction. Type filters now omit ordinary question rounds with no matching questions while keeping Prompt Battle rounds discoverable by title or prompt.
+- Added focused regressions and a private synthetic Playwright recovery check. Focused tests passed 14/14; the browser check verified malformed-value restoration, adjacent edits and reload, explicit correction and reload, zero page errors, and no auth/RPC/media access. `npm test` passed 912/912 on the worktree.
+- No production room, provider, migration, or deploy was used. PR #53 remains pending independent Sol review; this work is not accepted until that review is complete.
+
 ## 2026-08-18 — Investigated: "I don't see brainstorm.matthewbelinkie.com on the title screen"
 - **Branch:** `claude/investigate-title-url-deploy`. Investigation only; no product code changed.
 - **Report:** User said the join URL added by `bf7df3f` ("feat: show join URL on the presentation title screen only") isn't visible on the live title screen, even though that commit is merged to `main`.
