@@ -1,5 +1,6 @@
-import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, resolveBattleMatchupWithStandings, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
-import { autoLockDecision, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { classifyChooseDoorError, isTransientSaveError, lockAndScoreWithRecovery, randomRoomSecret, roomApi, submitLiveAnswerWithRecovery } from "./room-api.js";
+import { autoLockDecision, battleEngineMenu, battleEngineSelection, battleTestStatus, correctOptionId, firstPlayableRound, hostLiveCounts, hostRenderKey, hostSavedPosition, isBattleRound, isPlayerSessionExpired, mergeRecoveredSubmissions, nextPlayablePosition, normalizedAudioVolume, playerIdentityForRoom, presenterRenderKey, rankPlayers, resolvePresenterCredit, revealedAnswerKeys, revealKeyFor, presentationCueDecision, sameSubmittedAnswer, submissionStatusView, tallyQuestionResults, toPlayerQuestion, writePlayerIdentityForRoom } from "./quiz-core.js";
+import { resolveBattleMatchupWithStandings } from "./room-api.js";
 import { battleRosterRows, battleSpendView, publicBattleProgress } from "./battle-roster.js";
 import { downloadDiagnostics, recordDiagnostic, startDiagnostics } from "./diagnostics.js";
 import { visibleCaptionAt } from "./subtitle-core.js";
@@ -86,17 +87,26 @@ const quizWorkerOrigin = config.workerOrigin || location.origin;
 // is the only allowlisted path to a player or presentation client and this
 // data -- generated image bytes -- must never reach one. See
 // docs/superpowers/specs/2026-08-17-prompt-battle-design.md section 7.5.
+// Each entry carries its provider because set_battle_engine takes provider and
+// model together and the host never types either. The host's engine menu is
+// this list intersected with the battle rounds' permittedModels
+// (battleEngineMenu in quiz-core.js), so a new entry here appears in the menu
+// as soon as a round permits it.
 const BATTLE_TEST_MODELS = [
-  { value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" },
-  { value: "@cf/black-forest-labs/flux-2-klein-4b", label: "Flux 2 Klein 4B (Workers AI, free)" },
-  { value: "@cf/black-forest-labs/flux-2-klein-9b", label: "Flux 2 Klein 9B (Workers AI, free)" },
-  { value: "@cf/leonardo/lucid-origin", label: "Lucid Origin (Workers AI, paid)" }
+  { provider: "workers_ai", value: "@cf/black-forest-labs/flux-1-schnell", label: "Flux Schnell (Workers AI, free)" },
+  { provider: "workers_ai", value: "@cf/black-forest-labs/flux-2-klein-4b", label: "Flux 2 Klein 4B (Workers AI, free)" },
+  { provider: "workers_ai", value: "@cf/black-forest-labs/flux-2-klein-9b", label: "Flux 2 Klein 9B (Workers AI, free)" },
+  { provider: "workers_ai", value: "@cf/leonardo/lucid-origin", label: "Lucid Origin (Workers AI, paid)" }
 ];
 // Mirrors the Worker's own default (cloudflare-worker.js, BATTLE_TEST_IMAGE_PROMPT)
 // only as a starting point the host can freely edit -- unlike the model
 // menu, the prompt is host-typed free text, sent to the Worker as-is.
 const BATTLE_TEST_DEFAULT_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
-let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null };
+// model is the one engine selection: the menu writes it (after set_battle_engine
+// accepts it) and the Test button reads it. savedModel is what the server last
+// confirmed (null until the host has saved one), engineBusy/engineError cover
+// the set_battle_engine call.
+let battleTestPanel = { model: BATTLE_TEST_MODELS[0].value, prompt: BATTLE_TEST_DEFAULT_PROMPT, busy: false, error: "", result: null, engineBusy: false, engineError: "", savedModel: null };
 // Prompt Battle pairing panel (host only). Local UI state for the same reason
 // battleTestPanel above is: the pairing maps player names to matchups, which is
 // exactly what a player must not hold during battle_prompt, so it must never be
@@ -596,6 +606,66 @@ async function endBattleRound() {
   battleLockOperationId++;
   if (next) await startRoundEnd(next.roundIndex);
   else await startFinale();
+}
+
+// Host-only. Saves the host's menu choice as the session's effective engine
+// through set_battle_engine. Provider and model both come from the allowlist
+// entry the host picked; a value that is not on the menu is ignored, so a
+// typed or stale model string can never reach the RPC. The menu only moves to
+// the new engine once the server accepts it, so it never shows an engine the
+// room is not using.
+async function selectBattleEngine(value) {
+  if (view !== "host" || battleTestPanel.engineBusy || battleTestPanel.busy) return;
+  const entry = battleEngineMenuEntries().find((candidate) => candidate.value === value);
+  if (!entry) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) { battleTestPanel.engineError = "Host authorization is required."; render(); return; }
+  const previous = effectiveBattleModel();
+  battleTestPanel.model = entry.value;
+  battleTestPanel.engineBusy = true;
+  battleTestPanel.engineError = "";
+  // The old result and error belonged to the previous engine.
+  battleTestPanel.result = null;
+  battleTestPanel.error = "";
+  render();
+  try {
+    await roomApi.setBattleEngine({ roomCode, hostSecret, provider: entry.provider, model: entry.value });
+    battleTestPanel.engineSelectionVersion = (battleTestPanel.engineSelectionVersion || 0) + 1;
+    battleTestPanel.savedModel = entry.value;
+  } catch (error) {
+    battleTestPanel.model = previous;
+    battleTestPanel.engineError = error?.message || "Could not save the engine.";
+  } finally {
+    battleTestPanel.engineBusy = false;
+    render();
+  }
+}
+
+// Host-only. After a refresh, reads the saved effective engine back from the
+// session (get_host_battle_state returns it from any phase) so the menu shows
+// the host's earlier choice. Nothing saved yet leaves the round's default
+// selected and savedModel null.
+async function loadSavedBattleEngine() {
+  if (view !== "host" || !battleEngineMenuEntries().length) return;
+  const hostSecret = getHostSecret();
+  if (!hostSecret) return;
+  // Successful saves invalidate older reads, even after engineBusy clears.
+  const selectionVersion = battleTestPanel.engineSelectionVersion || 0;
+  try {
+    const result = await roomApi.getHostBattleState({ roomCode, hostSecret });
+    // A pick the host made while this read was in flight wins.
+    if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
+    const saved = result?.engine?.model || null;
+    battleTestPanel.model = battleEngineSelection(battleEngineMenuEntries(), saved, hostQuizDefinition?.rounds);
+    battleTestPanel.savedModel = saved && battleTestPanel.model === saved ? saved : null;
+  } catch {
+    if (battleTestPanel.engineBusy || selectionVersion !== (battleTestPanel.engineSelectionVersion || 0)) return;
+    battleTestPanel.model = battleEngineSelection(battleEngineMenuEntries(), null, hostQuizDefinition?.rounds);
+    battleTestPanel.savedModel = null;
+    battleTestPanel.engineError = "Could not read the saved engine. The menu shows the round default.";
+  } finally {
+    render();
+  }
 }
 
 async function revealBattleMatchup({ recovery = false } = {}) {
@@ -1744,6 +1814,9 @@ async function connectHostedRoom() {
           await persistHostState();
         }
         if (view === "host" && ["battle_prompt", "battle_review", "battle_vote", "battle_result"].includes(state.phase)) refreshBattlePairing();
+        // Un-awaited: the engine menu shows the round default until the saved
+        // choice arrives, and a failed read must not block the host screen.
+        if (view === "host") loadSavedBattleEngine();
         emit();
         render();
         // Un-awaited on purpose: the host screen must paint immediately, and
@@ -2912,22 +2985,62 @@ function renderHostFinale() {
 // free-text field -- a client-typed model string is exactly what the
 // Worker's deployment allowlist exists to refuse.
 function battleTestImagePanel() {
+  // No battle round: there is no engine to choose, so no panel at all.
+  if (!(hostQuizDefinition?.rounds || []).some(isBattleRound)) return "";
+  const menu = battleEngineMenuEntries();
+  if (!menu.length) return `<div class="battle-test-panel"><h3>Prompt Battle — image engine</h3><p class="battle-test-note battle-test-note--blocked" role="alert">No permitted engine is available for this quiz's battle round.</p></div>`;
   const busy = battleTestPanel.busy;
-  const modelOptions = BATTLE_TEST_MODELS.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === battleTestPanel.model ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("");
+  const locked = busy || battleTestPanel.engineBusy;
+  const selected = effectiveBattleModel();
+  const modelOptions = menu.map((entry) => `<option value="${escapeHtml(entry.value)}" ${entry.value === selected ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("");
+  const engineStatus = battleTestPanel.engineBusy
+    ? `<p class="battle-test-note" role="status">Saving engine…</p>`
+    : battleTestPanel.engineError
+      ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.engineError)}</p>`
+      : battleTestPanel.savedModel && battleTestPanel.savedModel === selected
+        ? `<p class="battle-test-note" role="status">Saved for this room.</p>`
+        : `<p class="battle-test-note" role="status">Round default — not saved yet. Pick an engine to save it.</p>`;
+  return `<div class="battle-test-panel"><h3>Prompt Battle — image engine</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Engine</label><select data-battle-test-model ${locked ? "disabled" : ""}>${modelOptions}</select></div>${engineStatus}<button class="btn btn-secondary" data-battle-test-generate ${locked ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${battleTestStatusMarkup()}</div>`;
+}
+
+// The host's engine menu: the deployment allowlist intersected with the
+// battle rounds' permittedModels. effectiveBattleModel() is the single
+// selection both the menu and the Test button use.
+function battleEngineMenuEntries() {
+  return battleEngineMenu(BATTLE_TEST_MODELS, hostQuizDefinition?.rounds);
+}
+
+function effectiveBattleModel() {
+  return battleEngineSelection(battleEngineMenuEntries(), battleTestPanel.model, hostQuizDefinition?.rounds);
+}
+
+// Loading, failure and success each get their own element and class, so a
+// host can tell them apart at a glance. Only success shows images and cost.
+function battleTestStatusMarkup() {
+  const status = battleTestStatus(battleTestPanel);
+  if (status === "idle") return "";
+  if (status === "loading") return `<p class="battle-test-state battle-test-state--loading" role="status">Generating test images…</p>`;
   const result = battleTestPanel.result;
   const images = result?.images || [];
-  const gallery = images.length ? `<div class="battle-test-gallery">${images.map((image) => `<img class="battle-test-image" src="data:${escapeHtml(image.mimeType)};base64,${image.bytesBase64}" alt="Test generation from ${escapeHtml(battleTestPanel.model)}" />`).join("")}</div>` : "";
-  const partialNotice = result?.partial ? `<p class="battle-test-note" role="status">Only ${images.length} of the requested variants came back — the attempt still counted.</p>` : "";
-  const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
-  const costLine = result ? `<p class="battle-test-cost">Reported cost: ${result.costUsd ? `$${Number(result.costUsd).toFixed(4)}` : "$0 (Workers AI free tier)"}</p>` : "";
-  const errorLine = battleTestPanel.error ? `<p class="battle-test-note battle-test-note--blocked" role="alert">${escapeHtml(battleTestPanel.error)}</p>` : "";
   // Diagnostic only: raw per-call failure reasons from the provider, so a
   // zero-image response is legible without opening devtools. Host-only, by
   // construction -- this whole panel only renders for the host.
   const providerErrorsNotice = result?.providerErrors?.length
     ? `<details class="battle-test-note battle-test-note--blocked" open><summary>${images.length === 0 ? "No images came back" : "Some calls failed"} — provider details</summary>${result.providerErrors.map((entry) => `<p>${entry.status ? `[${escapeHtml(String(entry.status))}] ` : ""}${escapeHtml(entry.message)}</p>`).join("")}</details>`
     : "";
-  return `<div class="battle-test-panel"><h3>Prompt Battle — test image model</h3><div class="field"><label>Prompt</label><textarea data-battle-test-prompt rows="2" ${busy ? "disabled" : ""}>${escapeHtml(battleTestPanel.prompt)}</textarea></div><div class="field"><label>Model</label><select data-battle-test-model ${busy ? "disabled" : ""}>${modelOptions}</select></div><button class="btn btn-secondary" data-battle-test-generate ${busy ? "disabled" : ""}>${busy ? "Generating…" : "Test"}</button>${errorLine}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}${gallery}</div>`;
+  if (status === "failure") {
+    const reason = battleTestPanel.error || (result?.blocked ? (result.blockReason || "The image model declined that prompt.") : "No image came back.");
+    return `<div class="battle-test-state battle-test-state--failure"><p class="battle-test-note battle-test-note--blocked" role="alert">Test failed: ${escapeHtml(reason)}</p>${providerErrorsNotice}</div>`;
+  }
+  const gallery = `<div class="battle-test-gallery">${images.map((image) => `<img class="battle-test-image" src="data:${escapeHtml(image.mimeType)};base64,${image.bytesBase64}" alt="Test generation from ${escapeHtml(effectiveBattleModel())}" />`).join("")}</div>`;
+  const partialNotice = result?.partial ? `<p class="battle-test-note" role="status">Only ${images.length} of the requested variants came back — the attempt still counted.</p>` : "";
+  const blockedNotice = result?.blocked ? `<p class="battle-test-note battle-test-note--blocked" role="status">${escapeHtml(result.blockReason || "The image model declined that prompt.")}</p>` : "";
+  // costUsd is the whole call's reported cost, so the per-image figure is it
+  // divided across the images that came back.
+  const cost = result?.costUsd;
+  const hasReportedCost = typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+  const costLine = `<p class="battle-test-cost">Reported cost: ${hasReportedCost ? `$${cost.toFixed(4)} (about $${(cost / images.length).toFixed(4)} per image)` : "unavailable"}</p>`;
+  return `<div class="battle-test-state battle-test-state--success">${gallery}${costLine}${partialNotice}${blockedNotice}${providerErrorsNotice}</div>`;
 }
 
 // Host-only Prompt Battle panel. Its private review grid is backed only by
@@ -3823,7 +3936,7 @@ function attachEvents() {
     try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand("copy"); }
   });
   document.querySelector("[data-battle-test-model]")?.addEventListener("change", (event) => {
-    battleTestPanel.model = event.currentTarget.value;
+    selectBattleEngine(event.currentTarget.value);
   });
   // "input", not "change", and no render() call: render() replaces the
   // whole panel's innerHTML, which would drop focus and cursor position on
@@ -3839,12 +3952,13 @@ function attachEvents() {
     if (!hostSecret) { battleTestPanel.error = "Host authorization is required."; render(); return; }
     battleTestPanel.busy = true;
     battleTestPanel.error = "";
+    battleTestPanel.result = null;
     render();
     try {
       const response = await fetch(`${quizWorkerOrigin}/battle/test-image`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-quiz-room": roomCode, "x-quiz-host-secret": hostSecret },
-        body: JSON.stringify({ model: battleTestPanel.model, prompt: battleTestPanel.prompt })
+        body: JSON.stringify({ model: effectiveBattleModel(), prompt: battleTestPanel.prompt })
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {

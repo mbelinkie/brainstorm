@@ -2097,6 +2097,16 @@ Matthew froze the delegation harness and assigned Ready ticket #18 to an interac
 
 Unproven: the first real claim with it (#18).
 
+### 2026-10-05 — #18 Prompt Battle host engine selector and cost readout
+
+Branch `claude/pb-engine-selector-18`, base `0999c67` (origin/main). Claude Sonnet 5.5 sub-agent of a Claude Code Opus 5.5 session; the coordinating session holds the claim. Files: `app.js`, `quiz-core.js`, `styles.css`, `test/battle-engine-selector.test.js`, `docs/CLAUDE_WORKLOG.md`. Feature commit `e92991f`.
+
+**Built:** the existing host test panel's model menu is now the single engine selector. `battleEngineMenu` (quiz-core.js) = `BATTLE_TEST_MODELS` entries permitted by every `prompt_battle` round (the rule `set_battle_engine` enforces); `BATTLE_TEST_MODELS` entries now carry `provider`. Picking an entry calls `roomApi.setBattleEngine` with the entry's provider and model and only moves the menu once the server accepts it. `loadSavedBattleEngine` reads `get_host_battle_state`'s `engine` back on host refresh. The Test button sends the same selection (`effectiveBattleModel()`). Loading, failure and success render as separate blocks (`battle-test-state--loading|failure|success`); success shows images, the reported `costUsd` and cost per image. A quiz with no battle round no longer shows the panel; an empty intersection shows a notice instead of a menu. No Worker change, no migration, no spend-to-date readout, kaplan_proxy not added (issue #21).
+
+**Commands run:** `node --test test/battle-engine-selector.test.js` red first (missing quiz-core exports), then 28/28; `node --check app.js` ok; `npm test` 707 tests, 707 pass, 0 fail.
+
+**Unproven:** the screen itself (layout, the three states, menu after a real refresh) has not been seen in a browser; nothing was run against a server or Supabase. Matthew's acceptance is outstanding. With nothing saved, the menu shows the round default as "not saved yet"; the Worker's own read of the saved engine is a later slice.
+
 ### 2026-10-05 — Prompt Battle generation RPCs (issue #20, migration 0038)
 
 Branch `claude/pb-generation-rpcs-20` (from origin/main `a04918a`). Claude Code (Opus 5.5) sub-agent of a Claude Code Opus 5.5 session; the ticket claim is held by the coordinating session. Files: `supabase/migrations/0038_prompt_battle_generation_rpcs.sql` (new), `test/battle-generation-rpcs.test.js` (new), this entry.

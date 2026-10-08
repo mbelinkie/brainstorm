@@ -602,3 +602,43 @@ export function rankPlayers(players = []) {
     return { ...player, rank };
   });
 }
+
+// Prompt Battle host engine menu (issue #18). The host picks the effective
+// image engine from a menu and never types a model string. The menu is the
+// client's deployment allowlist (BATTLE_TEST_MODELS in app.js, a mirror of the
+// Worker's BATTLE_MODEL_ALLOWLIST) intersected with the quiz's battle rounds.
+//
+// A model must be permitted by EVERY prompt_battle round, which is the rule
+// set_battle_engine() enforces in 0036: there is one effective engine per
+// session, so a model only some rounds permit would be the wrong engine for
+// the others. A quiz with no battle round has no menu. Entry order follows the
+// allowlist, so adding an allowlist entry later surfaces it here unchanged.
+export function battleEngineMenu(allowlist, rounds) {
+  const battleRounds = (Array.isArray(rounds) ? rounds : []).filter(isBattleRound);
+  if (!battleRounds.length || !Array.isArray(allowlist)) return [];
+  return allowlist.filter((entry) => battleRounds.every((round) => Array.isArray(round.engine?.permittedModels) && round.engine.permittedModels.includes(entry.value)));
+}
+
+// Which menu entry to show selected: the host's current or saved model when it
+// is still on the menu, otherwise the first battle round's default model if
+// that is on the menu, otherwise the first entry. "" when the menu is empty.
+export function battleEngineSelection(menu, preferredModel, rounds) {
+  const entries = Array.isArray(menu) ? menu : [];
+  if (preferredModel && entries.some((entry) => entry.value === preferredModel)) return preferredModel;
+  for (const round of (Array.isArray(rounds) ? rounds : []).filter(isBattleRound)) {
+    const fallback = round.engine?.defaultModel;
+    if (fallback && entries.some((entry) => entry.value === fallback)) return fallback;
+  }
+  return entries[0]?.value || "";
+}
+
+// The host test button's visible state: "loading" while a call is in flight,
+// "failure" for a transport/route error or a result that produced no image
+// (blocked or empty), "success" when at least one image came back, otherwise
+// "idle". Kept pure so loading, failure and success cannot blur together.
+export function battleTestStatus({ busy, error, result } = {}) {
+  if (busy) return "loading";
+  if (error) return "failure";
+  if (!result) return "idle";
+  return Array.isArray(result.images) && result.images.length > 0 ? "success" : "failure";
+}
