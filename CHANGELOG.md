@@ -2,6 +2,10 @@
 
 This log records meaningful product, infrastructure, and data-model changes. Dates use the local project timezone (America/New_York).
 
+## 2026-10-08
+
+- Added a host-only Prompt Battle export for every resolved winning image in a room, including all winners in ties and defaults, with matchup/player prompts and creator names in a CSV manifest. The Worker rechecks room host authorization, session ownership, and the existing 30-day expiry before each image download; missing, expired, and failed images are listed instead of being presented as downloaded.
+
 ## 2026-10-07
 
 - Fixed Prompt Battle editor recovery for malformed saved permitted-model values without rewriting the saved draft; the shared validator remains visible until an explicit correction. Question-type filters now hide ordinary rounds with no matching questions while keeping Prompt Battle rounds discoverable.

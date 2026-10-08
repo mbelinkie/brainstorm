@@ -31,7 +31,7 @@ function fixture() {
   return { definition:clone(definition), battle, saved:{phase:'battle_prompt',revision:41,roundIndex:1,questionIndex:0,state}, calls:[],broadcasts:[],scoreAwards:0,mode:'normal',hold:false,failNextReviewRefresh:false };
 }
 const hook = `\nwindow.__acceptance = {
- get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, get enginePanel(){return structuredClone(battleTestPanel)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
+ get state(){return structuredClone(state)}, get panel(){return structuredClone(battleRoundPanel)}, get enginePanel(){return structuredClone(battleTestPanel)}, get exportState(){return structuredClone(battleWinnerExport)}, startVoting:()=>startBattleVoting(), reveal:()=>revealBattleMatchup(), next:()=>nextBattleMatchup(),
  projection:()=>publicRoomState(), payload:()=>hostStatePayload(),
  seed:(value,privatePayload)=>{state={...state,...value}; if(privatePayload) battleRoundPanel={...battleRoundPanel,state:privatePayload}; render()},
  setEngineBusy:value=>{battleTestPanel.engineBusy=Boolean(value);render()},
@@ -92,10 +92,38 @@ const fakeModule = `export function createClient(){return {
  return {data:[]};
  }} }`;
 const mediaRequests=[];
+const winnerExportRequests=[];
+const blockedExternalRequests=[];
+const exportWinnerA='11111111-1111-4111-8111-111111111111';
+const exportWinnerB='22222222-2222-4222-8222-222222222222';
+const exportWinnerC='33333333-3333-4333-8333-333333333333';
+const exportImageBytes=Buffer.from(fixtureImage,'base64');
+let winnerExportManifest=[];
+let winnerExportFailures=new Map();
+let holdNextWinnerManifest=false;
+let releaseWinnerManifest=null;
 const server = http.createServer(async(req,res)=>{
  try {
   const pathname = new URL(req.url,'http://localhost').pathname;
   if(pathname==='/__media-requests'){res.setHeader('content-type','application/json');res.end(JSON.stringify(mediaRequests));return}
+  if(pathname==='/__winner-export-requests'){res.setHeader('content-type','application/json');res.end(JSON.stringify(winnerExportRequests));return}
+  if(pathname==='/battle/winners'&&req.method==='GET'){
+   const authorized=req.headers['x-quiz-room']==='ACPT'&&Boolean(req.headers['x-quiz-host-secret']);
+   winnerExportRequests.push({path:pathname,method:req.method,room:req.headers['x-quiz-room']||'',hasHostSecret:Boolean(req.headers['x-quiz-host-secret']),cache:req.headers['cache-control']||'',url:req.url});
+   if(!authorized){res.statusCode=401;res.setHeader('cache-control','no-store');res.end(JSON.stringify({error:'Host authorization required'}));return}
+   if(holdNextWinnerManifest){holdNextWinnerManifest=false;await new Promise(resolve=>{releaseWinnerManifest=resolve})}
+   res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');res.end(JSON.stringify({winners:winnerExportManifest}));return;
+  }
+  if(pathname.startsWith('/battle/winners/')&&req.method==='GET'){
+   const assetId=decodeURIComponent(pathname.slice('/battle/winners/'.length));
+   const authorized=req.headers['x-quiz-room']==='ACPT'&&Boolean(req.headers['x-quiz-host-secret']);
+   winnerExportRequests.push({path:pathname,method:req.method,room:req.headers['x-quiz-room']||'',hasHostSecret:Boolean(req.headers['x-quiz-host-secret']),cache:req.headers['cache-control']||'',url:req.url});
+   if(!authorized){res.statusCode=401;res.setHeader('cache-control','no-store');res.end(JSON.stringify({error:'Host authorization required'}));return}
+   const failure=winnerExportFailures.get(assetId);
+   if(failure){res.statusCode=failure;res.setHeader('cache-control','no-store');res.end(JSON.stringify({error:`Fixture image failure (${failure})`}));return}
+   if(![exportWinnerA,exportWinnerB,exportWinnerC].includes(assetId)){res.statusCode=404;res.setHeader('cache-control','no-store');res.end(JSON.stringify({error:'Winning image not found'}));return}
+   res.writeHead(200,{'content-type':'image/png','cache-control':'private, no-store','content-disposition':`attachment; filename="${assetId.slice(0,8)}.png"`,'x-content-type-options':'nosniff'});res.end(exportImageBytes);return;
+  }
   if(pathname==='/battle/models'&&req.method==='GET'){
    const authorized=req.headers['x-quiz-room']==='ACPT'&&Boolean(req.headers['x-quiz-host-secret']);
    catalogueRequests.push({authorized,room:req.headers['x-quiz-room'],cache:req.headers['cache-control']||''});
@@ -133,14 +161,16 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({executablePath:process.env.CHROME_PATH,headless:true});
 const results=[];
 async function open(view='host',f=fixture(),existingContext=null) {
- const context = existingContext || await browser.newContext({viewport:{width:1440,height:1100}});
+ const context = existingContext || await browser.newContext({viewport:{width:1440,height:1100},acceptDownloads:true});
  await context.route('**/*',async route=>{
   const url=route.request().url();
   if(url.startsWith('https://esm.sh/@supabase/supabase-js'))return route.fulfill({contentType:'text/javascript',body:`export {createClient} from '${origin}/__fake-supabase.js'`});
   if(url.startsWith(origin+'/'))return route.continue();
+  blockedExternalRequests.push(new URL(url).origin);
   return route.abort('blockedbyclient');
  });
  await context.addInitScript(value=>{const key='quiz-fixture-state';window.__fixture=JSON.parse(sessionStorage.getItem(key)||'null')||value;window.__persistFixture=()=>sessionStorage.setItem(key,JSON.stringify(window.__fixture));window.__persistFixture();localStorage.setItem('quiz-host-secret:ACPT','FIXTURE-AUTH');window.alert=message=>{window.__lastAlert=message}},f);
+ await context.addInitScript(()=>{window.__objectUrls={created:[],revoked:[]};const originalCreate=URL.createObjectURL.bind(URL);const originalRevoke=URL.revokeObjectURL.bind(URL);URL.createObjectURL=blob=>{const url=originalCreate(blob);window.__objectUrls.created.push(url);return url};URL.revokeObjectURL=url=>{window.__objectUrls.revoked.push(url);return originalRevoke(url)}});
  const page=await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.clock.install({time:new Date('2026-10-06T12:00:00Z')});
  await page.clock.pauseAt(new Date('2026-10-06T12:00:00Z'));
@@ -150,7 +180,7 @@ async function open(view='host',f=fixture(),existingContext=null) {
  return {page,context,errors};
 }
 async function settle(page){await page.evaluate(async()=>{for(let i=0;i<12;i++)await Promise.resolve()});await page.waitForTimeout(30)}
-async function run(id,label,fn,configure=()=>{}){let env;try{const f=fixture();configure(f);env=await open('host',f);await fn(env);results.push({id,label,status:'passed'})}catch(error){results.push({id,label,status:error.code==='ERR_ASSERTION'?'assertion-failed':'harness-error',message:error.message,stack:error.stack})}finally{console.log(id+': '+results.at(-1).status);if(env){results.at(-1).pageErrors=env.errors;results.at(-1).rpcCalls=await env.page.evaluate(()=>window.__fixture.calls.map(c=>c.name)).catch(()=>[]);try{await env.page.screenshot({path:path.join(evidence,id+'.png'),fullPage:true})}catch{}await env.context.close()}}}
+async function run(id,label,fn,configure=()=>{}){let env;try{const f=fixture();configure(f);env=await open('host',f);await fn(env);results.push({id,label,status:'passed'})}catch(error){results.push({id,label,status:error.code==='ERR_ASSERTION'?'assertion-failed':'harness-error',message:error.message,stack:error.stack})}finally{console.log(id+': '+results.at(-1).status+(results.at(-1).message?` — ${results.at(-1).message}`:''));if(env){results.at(-1).pageErrors=env.errors;results.at(-1).rpcCalls=await env.page.evaluate(()=>window.__fixture.calls.map(c=>c.name)).catch(()=>[]);try{await env.page.screenshot({path:path.join(evidence,id+'.png'),fullPage:true})}catch{}await env.context.close()}}}
 const body=page=>page.locator('body').innerText();
 const progress=page=>page.evaluate(()=>window.__acceptance.projection().battleProgress);
 function assertProgress(value,submitted,total){assert.deepEqual(value,{submitted,total},'server-confirmed paired progress')}
@@ -525,6 +555,126 @@ await run('contrast', 'battle Presentation supporting text remains readable', as
  const reviewRatio=await ratio();
  assert.ok(reviewRatio>=4.5,`review supporting text contrast ${reviewRatio.toFixed(2)} must be at least 4.5:1`);
  assert.equal(await presentation.page.locator('.presentation-card img').count(),0,'locked judging card has no battle images');
+});
+winnerExportFailures=new Map();
+winnerExportManifest=[
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:0,playerName:'Ada Winner',promptText:'An owl in the observatory',playerPrompt:'Paint a silver owl beneath the stars',available:true,mimeType:'image/png'},
+ {assetId:exportWinnerB,roundIndex:0,matchupIndex:0,playerName:'Bea Winner',promptText:'An owl in the observatory',playerPrompt:'Draw a blue telescope on the moon',available:true,mimeType:'image/png'}
+];
+await run('winner-export-downloads','host downloads both tied winners as exact image bytes and a matching metadata manifest',async({page,context,errors})=>{
+ const externalStart=blockedExternalRequests.length;
+ const downloads=[];page.on('download',download=>downloads.push(download));
+ assert.equal(await page.locator('[data-export-battle-winners]').count(),1,'the host has a battle export control');
+ const publicView=await open('presenter',fixture(),context);
+ assert.equal(await publicView.page.locator('[data-export-battle-winners]').count(),0,'the presentation view cannot export private winners');
+ await page.getByRole('button',{name:'Download winning images'}).click();
+ await page.waitForFunction(()=>document.querySelector('[data-battle-winner-export-status]')?.textContent.includes('Downloaded 2 winning images'));
+ const deadline=Date.now()+5000;while(downloads.length<3&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(downloads.length,3,'two image files and one manifest were downloaded');
+ const output=path.join(evidence,'winner-export-downloads');await fs.mkdir(output,{recursive:true});
+ for(const download of downloads)await download.saveAs(path.join(output,download.suggestedFilename()));
+ const imageFiles=downloads.filter(download=>download.suggestedFilename().endsWith('.png'));
+ assert.equal(imageFiles.length,2,'both tie winners have separate image files');
+ for(const download of imageFiles)assert.deepEqual(await fs.readFile(path.join(output,download.suggestedFilename())),exportImageBytes,'downloaded bytes match the Worker response exactly');
+ const manifestFile=downloads.find(download=>download.suggestedFilename()==='ACPT-battle-winners.csv');
+ assert.ok(manifestFile,'the export includes a CSV manifest');
+ const csv=await fs.readFile(path.join(output,manifestFile.suggestedFilename()),'utf8');
+ assert.match(csv,/Ada Winner/);assert.match(csv,/Bea Winner/);assert.match(csv,/An owl in the observatory/);
+ assert.match(csv,/Paint a silver owl beneath the stars/);assert.match(csv,/Draw a blue telescope on the moon/);
+ assert.equal((csv.match(/downloaded/g)||[]).length,2,'the manifest identifies each successfully downloaded winner');
+ await page.clock.runFor(1100);await settle(page);
+ const urls=await page.evaluate(()=>window.__objectUrls);
+ assert.equal(urls.created.length,3,'one object URL is created per image and for the manifest');
+ assert.deepEqual([...urls.revoked].sort(),[...urls.created].sort(),'all download object URLs are revoked');
+ const requests=await page.evaluate(()=>fetch('/__winner-export-requests').then(response=>response.json()));
+ const batch=requests.slice(-3);
+ assert.deepEqual(batch.map(request=>request.path),['/battle/winners',`/battle/winners/${exportWinnerA}`,`/battle/winners/${exportWinnerB}`]);
+ assert.ok(batch.every(request=>request.room==='ACPT'&&request.hasHostSecret),'each route uses host authorization headers');
+ assert.ok(batch.every(request=>!request.url.includes('?')),'the host secret is never placed in a URL');
+ assert.ok(blockedExternalRequests.slice(externalStart).every(requestOrigin=>requestOrigin!==origin),'every non-local request is intercepted before it can reach the local fixture');
+ assert.deepEqual(errors,[]);
+ await publicView.page.close();
+},f=>{});
+winnerExportManifest=[
+ {assetId:exportWinnerA,roundIndex:1,matchupIndex:0,playerName:'Ada Winner',promptText:'A second-round tie',playerPrompt:'A red kite',available:true,mimeType:'image/png'},
+ {assetId:exportWinnerB,roundIndex:1,matchupIndex:0,playerName:'Bea Winner',promptText:'A second-round tie',playerPrompt:'A gold kite',available:true,mimeType:'image/png'},
+ {assetId:exportWinnerC,roundIndex:1,matchupIndex:1,playerName:'Cy Winner',promptText:'Default winner',playerPrompt:'A green kite',available:false,unavailableReason:'expired'}
+];
+winnerExportFailures=new Map([[exportWinnerB,503]]);
+await run('winner-export-partial','partial image failure stays visible, repeat clicks are ignored, and object URLs are revoked',async({page,errors})=>{
+ const downloads=[];page.on('download',download=>downloads.push(download));
+ const before=winnerExportRequests.length;holdNextWinnerManifest=true;releaseWinnerManifest=null;
+ const button=page.getByRole('button',{name:'Download winning images'});
+ await button.click();
+ const deadline=Date.now()+5000;while(!releaseWinnerManifest&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.ok(releaseWinnerManifest,'the first manifest request is held for the repeat-click check');
+ assert.equal(await button.isDisabled(),true,'the export action is disabled while running');
+ await button.evaluate(element=>element.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})));
+ assert.equal(winnerExportRequests.filter(request=>request.path==='/battle/winners').length,2,'the repeated click does not make another manifest request');
+ const release=releaseWinnerManifest;releaseWinnerManifest=null;release();
+ await page.waitForFunction(()=>document.querySelector('[data-battle-winner-export-status]')?.textContent.includes('Downloaded 1 of 3 winning images'));
+ const downloadsDeadline=Date.now()+5000;while(downloads.length<2&&Date.now()<downloadsDeadline)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(downloads.length,2,'the successful image and manifest download even when other rows fail');
+ const output=path.join(evidence,'winner-export-partial');await fs.mkdir(output,{recursive:true});
+ for(const download of downloads)await download.saveAs(path.join(output,download.suggestedFilename()));
+ const image=downloads.find(download=>download.suggestedFilename().endsWith('.png'));
+ assert.ok(image);assert.deepEqual(await fs.readFile(path.join(output,image.suggestedFilename())),exportImageBytes);
+ const manifest=downloads.find(download=>download.suggestedFilename()==='ACPT-battle-winners.csv');assert.ok(manifest);
+ const csv=await fs.readFile(path.join(output,manifest.suggestedFilename()),'utf8');
+ assert.match(csv,/downloaded/);assert.match(csv,/failed/);assert.match(csv,/expired/);
+ assert.match(csv,/Image request failed \(503\)/);assert.match(csv,/Past the 30-day retention window/);
+ await page.clock.runFor(1100);await settle(page);
+ const urls=await page.evaluate(()=>window.__objectUrls);
+ assert.equal(urls.created.length,2);assert.deepEqual([...urls.revoked].sort(),[...urls.created].sort());
+ const requests=winnerExportRequests.slice(before);
+ assert.deepEqual(requests.map(request=>request.path),['/battle/winners',`/battle/winners/${exportWinnerA}`,`/battle/winners/${exportWinnerB}`]);
+ assert.ok(requests.every(request=>request.room==='ACPT'&&request.hasHostSecret));
+ assert.deepEqual(errors,[]);
+});
+winnerExportManifest=[
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:0,playerName:'Ada Winner',promptText:'An owl in the observatory',playerPrompt:'Paint a silver owl beneath the stars',available:true,mimeType:'image/png'}
+];
+winnerExportFailures=new Map();
+await run('winner-export-rerender','a host rerender during export keeps the current control responsive and busy guard active',async({page,errors})=>{
+ const before=winnerExportRequests.filter(request=>request.path==='/battle/winners').length;
+ holdNextWinnerManifest=true;releaseWinnerManifest=null;
+ await page.getByRole('button',{name:'Download winning images'}).click();
+ const deadline=Date.now()+5000;while(!releaseWinnerManifest&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.ok(releaseWinnerManifest,'the export manifest request is held');
+ await page.evaluate(()=>window.__acceptance.render());
+ const currentButton=page.locator('[data-export-battle-winners]');
+ assert.equal(await currentButton.isDisabled(),true,'rerender preserves the active busy state');
+ await currentButton.evaluate(element=>element.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})));
+ assert.equal(winnerExportRequests.filter(request=>request.path==='/battle/winners').length,before+1,'the rerendered control still rejects a repeated click');
+ const release=releaseWinnerManifest;releaseWinnerManifest=null;release();
+ await page.waitForFunction(()=>window.__acceptance.exportState.busy===false);
+ const currentUi=await page.evaluate(()=>({status:document.querySelector('[data-battle-winner-export-status]')?.textContent,disabled:document.querySelector('[data-export-battle-winners]')?.disabled}));
+ assert.equal(currentUi.disabled,false,`the current export control is enabled after completion: ${JSON.stringify(currentUi)}`);
+ assert.match(currentUi.status,/Downloaded 1 winning image and the manifest\./,`the current status reports the completed export: ${JSON.stringify(currentUi)}`);
+ assert.deepEqual(errors,[]);
+});
+winnerExportManifest=[
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:0,playerName:'=1+1',promptText:' =HYPERLINK("https://example.invalid","open")',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerB,roundIndex:0,matchupIndex:1,playerName:'+1+1',promptText:'\t+1+2',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerC,roundIndex:0,matchupIndex:2,playerName:'-1+2',promptText:'\r-1+2',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerA,roundIndex:0,matchupIndex:3,playerName:'@SUM(A1:A2)',promptText:'\n@SUM(A1:A2)',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'},
+ {assetId:exportWinnerB,roundIndex:0,matchupIndex:4,playerName:'＝1+1',promptText:'Safe prompt',playerPrompt:'Safe player prompt',available:false,unavailableReason:'missing'}
+];
+await run('winner-export-csv-formulas','the downloaded manifest neutralizes formula-leading creator and prompt text while preserving CSV quoting',async({page,errors})=>{
+ const downloads=[];page.on('download',download=>downloads.push(download));
+ await page.getByRole('button',{name:'Download winning images'}).click();
+ await page.waitForFunction(()=>document.querySelector('[data-battle-winner-export-status]')?.textContent.includes('Downloaded 0 of 5 winning images'));
+ assert.equal(downloads.length,1,'the unavailable rows still produce one manifest');
+ const output=path.join(evidence,'winner-export-csv-formulas');await fs.mkdir(output,{recursive:true});
+ await downloads[0].saveAs(path.join(output,downloads[0].suggestedFilename()));
+ const csv=await fs.readFile(path.join(output,downloads[0].suggestedFilename()),'utf8');
+ for(const value of ['\t=1+1','\t+1+1','\t-1+2','\t@SUM(A1:A2)','\t＝1+1'])assert.ok(csv.includes(`"${value}"`),`formula-like creator text is prefixed: ${JSON.stringify(value)}`);
+ assert.ok(csv.includes('"\t =HYPERLINK(""https://example.invalid"",""open"")"'),'leading whitespace and CSV quotes are preserved after neutralization');
+ assert.ok(csv.includes('"\t\t+1+2"'),'a leading tab before a formula is neutralized');
+ assert.ok(csv.includes('"\t\r-1+2"'),'a leading carriage return before a formula is neutralized');
+ assert.ok(csv.includes('"\t\n@SUM(A1:A2)"'),'a leading line feed before a formula is neutralized');
+ assert.match(csv,/"Creator","Matchup prompt","Player prompt"/,'CSV columns remain quoted');
+ assert.deepEqual(errors,[]);
 });
 await browser.close();await new Promise(resolve=>server.close(resolve));
 await fs.writeFile(path.join(evidence,'results.json'),JSON.stringify({results},null,2));

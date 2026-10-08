@@ -247,6 +247,109 @@ const BATTLE_BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const BATTLE_UNCONFIRMED_ERROR = "Image generation failed. Refresh to check your attempt.";
 const BATTLE_UNAVAILABLE_ERROR = "Image generation is not available for this game.";
 
+const battleWinnerCorsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-allow-headers": "x-quiz-room, x-quiz-host-secret",
+  "access-control-expose-headers": "content-disposition",
+  "access-control-max-age": "86400"
+};
+
+function battleWinnerResponse(body, init = {}) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...battleWinnerCorsHeaders, "cache-control": "no-store", ...(init.headers || {}) }
+  });
+}
+
+async function loadBattleWinners(env, roomCode, hostSecret, requestedAssetId = null) {
+  const headers = supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY, { json: true });
+  const stateResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/get_host_live_room_state`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ p_room_code: roomCode, p_host_secret: hostSecret })
+  });
+  if (!stateResponse.ok) return { status: 403, error: "Host authorization failed." };
+  const roomState = await stateResponse.json().catch(() => null);
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return { status: 403, error: "Host authorization failed." };
+
+  const sessionResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/sessions?room_code=eq.${encodeURIComponent(roomCode.trim().toUpperCase())}&select=id`, { headers });
+  if (!sessionResponse.ok) return { status: 502, error: "Could not load the active room." };
+  const [session] = await sessionResponse.json().catch(() => []);
+  if (!session?.id) return { status: 404, error: "The active room was not found." };
+
+  const matchupsResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/session_battle_matchups?session_id=eq.${encodeURIComponent(session.id)}&resolved_at=not.is.null&select=round_index,matchup_index,prompt_text,result&order=round_index.asc,matchup_index.asc`, { headers });
+  if (!matchupsResponse.ok) return { status: 502, error: "Could not load resolved battle results." };
+  const matchups = await matchupsResponse.json().catch(() => null);
+  if (!Array.isArray(matchups)) return { status: 502, error: "Could not load resolved battle results." };
+
+  let winners = matchups.flatMap((matchup) => {
+    const result = matchup?.result;
+    if (!result || result.outcome === "skipped" || !Array.isArray(result.entries)) return [];
+    return result.entries.filter((entry) => entry?.winner === true
+      && entry.viable === true
+      && entry.vetoed !== true
+      && entry.forfeited !== true
+      && BATTLE_UUID_PATTERN.test(entry.assetId || "")
+      && BATTLE_UUID_PATTERN.test(entry.playerId || "")
+    ).map((entry) => ({
+      assetId: entry.assetId,
+      entryId: BATTLE_UUID_PATTERN.test(entry.entryId || "") ? entry.entryId : "",
+      playerId: entry.playerId,
+      playerName: typeof entry.playerName === "string" ? entry.playerName : "Player",
+      promptText: typeof result.promptText === "string" ? result.promptText : (typeof matchup.prompt_text === "string" ? matchup.prompt_text : ""),
+      roundIndex: Number.isInteger(result.roundIndex) ? result.roundIndex : Number(matchup.round_index),
+      matchupIndex: Number.isInteger(result.matchupIndex) ? result.matchupIndex : Number(matchup.matchup_index)
+    }));
+  });
+  if (requestedAssetId !== null) {
+    if (!BATTLE_UUID_PATTERN.test(requestedAssetId)) return { status: 200, winners: [] };
+    winners = winners.filter((winner) => winner.assetId === requestedAssetId);
+  }
+  if (winners.length === 0) return { status: 200, winners: [] };
+
+  const entryIds = [...new Set(winners.map((winner) => winner.entryId).filter(Boolean))];
+  const generations = new Map();
+  if (entryIds.length) {
+    const generationResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/session_battle_generations?entry_id=in.(${entryIds.join(",")})&select=entry_id,player_prompt,asset_ids`, { headers });
+    if (!generationResponse.ok) return { status: 502, error: "Could not load winning image prompts." };
+    const rows = await generationResponse.json().catch(() => null);
+    if (!Array.isArray(rows)) return { status: 502, error: "Could not load winning image prompts." };
+    for (const generation of rows) {
+      if (!Array.isArray(generation?.asset_ids) || typeof generation.player_prompt !== "string") continue;
+      for (const assetId of generation.asset_ids) generations.set(assetId, generation.player_prompt);
+    }
+  }
+
+  const assetIds = [...new Set(winners.map((winner) => winner.assetId))];
+  const assetResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/media_assets?id=in.(${assetIds.join(",")})&select=id,source,generated_by_player_id,expires_at,mime_type,storage_path`, { headers });
+  if (!assetResponse.ok) return { status: 502, error: "Could not check winning image availability." };
+  const assets = await assetResponse.json().catch(() => null);
+  if (!Array.isArray(assets)) return { status: 502, error: "Could not check winning image availability." };
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const now = Date.now();
+  for (const winner of winners) {
+    const asset = assetsById.get(winner.assetId);
+    const expiresAt = Date.parse(asset?.expires_at || "");
+    const expired = !Number.isFinite(expiresAt) || expiresAt <= now;
+    const valid = asset?.source === "battle"
+      && asset.generated_by_player_id === winner.playerId
+      && !expired
+      && Object.hasOwn(BATTLE_IMAGE_EXTENSION_BY_MIME, asset.mime_type)
+      && isBattleStoragePath(asset.storage_path);
+    winner.playerPrompt = generations.get(winner.assetId) || "";
+    winner.available = Boolean(valid);
+    if (winner.available) {
+      winner.mimeType = asset.mime_type;
+      winner.storagePath = asset.storage_path;
+    } else {
+      winner.unavailableReason = asset && expired ? "expired" : "missing";
+    }
+  }
+
+  return { status: 200, winners };
+}
+
 function battlePurgeFailure(stage, upstreamStatus) {
   console.error("Prompt Battle media purge failed", {
     stage,
@@ -732,6 +835,39 @@ if (request.method === "GET" && url.pathname === "/__version") {
     if (request.method === "OPTIONS" && url.pathname === "/host-submissions") return new Response(null, { status: 204, headers: hostSubmissionsCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/battle/test-image") return new Response(null, { status: 204, headers: battleTestImageCorsHeaders });
     if (request.method === "OPTIONS" && url.pathname === "/battle/models") return new Response(null, { status: 204, headers: { ...battleModelsCorsHeaders, "cache-control": "no-store" } });
+    if (request.method === "OPTIONS" && (url.pathname === "/battle/winners" || url.pathname.startsWith("/battle/winners/"))) return new Response(null, { status: 204, headers: battleWinnerCorsHeaders });
+    if (url.pathname === "/battle/winners" || url.pathname.startsWith("/battle/winners/")) {
+      if (request.method !== "GET") return battleWinnerResponse({ error: "Method not allowed." }, { status: 405, headers: { allow: "GET, OPTIONS" } });
+      const roomCode = request.headers.get("x-quiz-room");
+      const hostSecret = request.headers.get("x-quiz-host-secret");
+      if (!roomCode || !hostSecret || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return battleWinnerResponse({ error: "Host authorization is required." }, { status: 401 });
+      try {
+        let requestedAssetId = null;
+        if (url.pathname !== "/battle/winners") {
+          try { requestedAssetId = decodeURIComponent(url.pathname.slice("/battle/winners/".length)); } catch { requestedAssetId = ""; }
+        }
+        const result = await loadBattleWinners(env, roomCode, hostSecret, requestedAssetId);
+        if (result.status !== 200) return battleWinnerResponse({ error: result.error }, { status: result.status });
+        if (url.pathname === "/battle/winners") {
+          return battleWinnerResponse({ winners: result.winners.map(({ storagePath, playerId, entryId, ...winner }) => winner) });
+        }
+        const winner = result.winners.find((entry) => entry.assetId === requestedAssetId);
+        if (!winner) return battleWinnerResponse({ error: "Winning image not found." }, { status: 404 });
+        if (!winner.available) return battleWinnerResponse({ error: winner.unavailableReason === "expired" ? "This winning image has expired." : "Winning image not found." }, { status: winner.unavailableReason === "expired" ? 410 : 404 });
+        const extension = BATTLE_IMAGE_EXTENSION_BY_MIME[winner.mimeType];
+        const downloadName = `battle-r${winner.roundIndex + 1}-m${winner.matchupIndex + 1}-${winner.assetId.slice(0, 8)}.${extension}`;
+        const delivery = await deliverMediaObject(env, winner.storagePath, winner.mimeType, supabaseAdminHeaders(env.SUPABASE_SERVICE_ROLE_KEY), {
+          ...battleWinnerCorsHeaders,
+          "cache-control": "private, no-store",
+          "content-disposition": `attachment; filename="${downloadName}"`,
+          "x-content-type-options": "nosniff"
+        }, ctx);
+        if (!delivery.ok) return battleWinnerResponse({ error: "Could not download this winning image." }, { status: 502 });
+        return delivery.response;
+      } catch {
+        return battleWinnerResponse({ error: "Could not load winning images." }, { status: 502 });
+      }
+    }
     if (url.pathname === "/battle/models") {
       if (request.method !== "GET") return battleModelsResponse({ error: "Method not allowed." }, { status: 405, headers: { allow: "GET, OPTIONS" } });
       const roomCode = request.headers.get("x-quiz-room");
