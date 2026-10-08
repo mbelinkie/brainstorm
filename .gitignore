@@ -1,5 +1,6 @@
 .env.local
 .env.*.local
+.local/openrouter-comparison/
 # wrangler's local-secret mechanism for `wrangler dev` (SUPABASE_SERVICE_ROLE_KEY
 # et al.) -- same sensitivity as .env.local above, must never be committed.
 .dev.vars
