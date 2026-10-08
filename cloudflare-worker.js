@@ -146,6 +146,7 @@ function hostSubmissionsResponse(body, init = {}) {
 const BATTLE_TEST_IMAGE_PROMPT = "A colorful, family-friendly illustration of a game show host holding an oversized novelty question mark.";
 const BATTLE_TEST_IMAGE_VARIANTS = 2;
 const BATTLE_TEST_IMAGE_MAX_PER_SESSION = 10;
+const KAPLAN_PROXY_MAX_PROMPT_CODE_UNITS = 2000;
 
 // Deployment allowlist (base spec section 7.5): the host's model menu is
 // validated against this on the Worker, never against a model string taken
@@ -1050,6 +1051,9 @@ if (request.method === "GET" && url.pathname === "/__version") {
       // chars for workers_ai) bounds what actually reaches the provider.
       const requestedPrompt = typeof payload?.prompt === "string" ? payload.prompt.trim() : "";
       const prompt = requestedPrompt || BATTLE_TEST_IMAGE_PROMPT;
+      if (provider === "kaplan_proxy" && prompt.length > KAPLAN_PROXY_MAX_PROMPT_CODE_UNITS) {
+        return battleTestImageResponse({ error: `Prompt must be ${KAPLAN_PROXY_MAX_PROMPT_CODE_UNITS} UTF-16 code units or fewer for this model.` }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
 
       const sessionKey = roomCode.trim().toUpperCase();
       const usedCount = battleTestImageCounts.get(sessionKey) || 0;

@@ -379,6 +379,73 @@ test("Kaplan host test sends two variants through the bearer proxy and reports i
   assert.doesNotMatch(JSON.stringify(body), /synthetic-kaplan-secret/);
 });
 
+test("Kaplan host test rejects prompts over 2000 UTF-16 code units before reserving a slot", async () => {
+  const roomCode = "room-kaplan-prompt-limit";
+  const headers = hostHeadersFor(roomCode);
+  const env = {
+    KAPLAN_PROXY_URL: "https://proxy.example",
+    KAPLAN_PROXY_SECRET: "synthetic-kaplan-secret"
+  };
+  const routes = {
+    ...authorizedRoom,
+    "/generate": Response.json({
+      images: [
+        { mimeType: "image/png", bytesBase64: OPENROUTER_PNG },
+        { mimeType: "image/png", bytesBase64: OPENROUTER_PNG }
+      ],
+      costUsd: 0.09
+    })
+  };
+
+  const overlong = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers,
+    body: { model: KAPLAN_MODEL, prompt: `${"😀".repeat(1000)}x` },
+    routes,
+    env
+  });
+  assert.equal(overlong.response.status, 400);
+  assert.match(overlong.body.error, /prompt.*2000|2000.*prompt/i);
+  assert.equal(overlong.requested.some((url) => url.includes("/generate")), false);
+
+  const boundary = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers,
+    body: { model: KAPLAN_MODEL, prompt: "😀".repeat(1000) },
+    routes,
+    env
+  });
+  assert.equal(boundary.response.status, 200);
+  assert.equal(boundary.body.prompt.length, 2000);
+  const boundaryProxyCall = boundary.outbound.find((request) => request.url === "https://proxy.example/generate");
+  assert.ok(boundaryProxyCall);
+  assert.equal(JSON.parse(boundaryProxyCall.body).prompt.length, 2000);
+
+  let successfulGenerations = 1;
+  for (let index = 1; index < 10; index += 1) {
+    const { response } = await callWorker("/battle/test-image", {
+      method: "POST",
+      headers,
+      body: { model: KAPLAN_MODEL, prompt: "A bounded test prompt" },
+      routes,
+      env
+    });
+    assert.equal(response.status, 200);
+    successfulGenerations += 1;
+  }
+
+  const capped = await callWorker("/battle/test-image", {
+    method: "POST",
+    headers,
+    body: { model: KAPLAN_MODEL, prompt: "A bounded test prompt" },
+    routes,
+    env
+  });
+  assert.equal(capped.response.status, 429);
+  assert.equal(capped.requested.some((url) => url.includes("/generate")), false);
+  assert.equal(successfulGenerations, 10);
+});
+
 test("OpenRouter host test pins all approved models to their tested endpoint and fixed profile", async () => {
   const profiles=[
     ["x-ai/grok-imagine-image-quality","xai"],
