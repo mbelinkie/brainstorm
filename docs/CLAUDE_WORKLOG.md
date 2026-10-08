@@ -11,6 +11,12 @@ Durable record of Claude's contributions to this repo, separate from `CHANGELOG.
 - Added focused regressions and a private synthetic Playwright recovery check. Focused tests passed 14/14; the browser check verified malformed-value restoration, adjacent edits and reload, explicit correction and reload, zero page errors, and no auth/RPC/media access. `npm test` passed 912/912 on the worktree.
 - No production room, provider, migration, or deploy was used. PR #53 remains pending independent Sol review; this work is not accepted until that review is complete.
 
+## 2026-10-07 — Current-main integration for #42
+- **Branch:** `codex/editor-42-autonomous`. Fetched `origin/main` at `c065ea1b3a404449727521e0476ad74cf8b7158b` and merged it into `63e4b8350b8a846ae21880e404cea811d75f8a55` with merge commit `79d47194eb2cc2688e13c7d3e4c19ee75261acc1`. Kept both sides of the `CHANGELOG.md` conflict; `docs/CLAUDE_WORKLOG.md` merged without conflict.
+- **Checks on the merge commit:** `npm test` passed 973/973; the focused editor and reliability tests passed 49/49; `quiz.sample.json`, `music-trivia.question-bank.json`, and `quiz.battle.sample.json` all passed `validateQuiz`; `git diff --check origin/main...HEAD` passed. The synthetic Chrome recovery check passed restoration without draft mutation, adjacent edit/reload, explicit correction/reload, and no page errors or RPC/auth/storage/media calls (3 external requests blocked, 33 local requests).
+- **Commands:** `ctx-wire run git fetch origin main:refs/remotes/origin/main`; `ctx-wire run git merge --no-ff origin/main`; `ctx-wire run npm test`; `ctx-wire run node --test test/author-battle-input.test.js test/author-battle-round-guard.test.js test/author-prompt-battle-editor.test.js test/reliability-contract.test.js`; offline `validateQuiz` check for the three fixtures; synthetic browser recovery check.
+- No production room, provider, migration, or deploy was used. PR #53 remains pending independent Sol review; no PR acceptance, merge, or issue completion was recorded.
+
 ## 2026-08-18 — Investigated: "I don't see brainstorm.matthewbelinkie.com on the title screen"
 - **Branch:** `claude/investigate-title-url-deploy`. Investigation only; no product code changed.
 - **Report:** User said the join URL added by `bf7df3f` ("feat: show join URL on the presentation title screen only") isn't visible on the live title screen, even though that commit is merged to `main`.
