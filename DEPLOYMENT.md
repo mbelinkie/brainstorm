@@ -64,3 +64,4 @@ The included `Dockerfile` works on any Docker-compatible service. Build and run 
 4. In Google Meet, share the browser tab and enable **Share tab audio**.
 5. Keep the host tab open; free Supabase projects pause after inactivity and may take a moment to wake.
 6. For a video question, click **Enable presentation media** in the Presentation tab before the Host cues playback. Verify tab audio, Play/Pause/Restart, a slow preload, and that a joined phone sees no video information.
+7. Run a backup, verify it, and copy the dated folder to the private Kaplan Drive destination; follow [the backup runbook](docs/ops/backups.md).

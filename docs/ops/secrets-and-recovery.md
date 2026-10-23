@@ -69,6 +69,6 @@ Important: database and media backup hashes do NOT restore credentials. Credenti
 
 ## Status and ownership
 
-- Actual backup and restore remain unverified under #55; Kaplan Drive copy, location, access, retention, and a successful restore are tracked separately.
-- Owner: Matthew. Never claim a real backup, policy acceptance, or successful restoration.
+- The October 23, 2026 owner-run backup, private Kaplan Drive round trip and disposable local restore passed; see [the backup runbook](backups.md) for evidence, access, retention and exclusions. Matthew's External acceptance of #55 remains pending.
+- Owner: Matthew. Auth credentials and raw music originals are outside the proven restore scope; do not infer broader recovery coverage.
 - No automated restore, upload, or schedule is added here.

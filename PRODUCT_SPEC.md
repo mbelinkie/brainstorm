@@ -65,7 +65,7 @@ document’s “Later formats” list, but no scoring branch anywhere. See §5.
 
 ### Development and version control
 
-- The local project folder is the working copy; GitHub (`mbelinkie/kq`) is the authoritative backup and version history for source, documentation, tests, deployment configuration, and database migrations.
+- The local project folder is the working copy; GitHub (`mbelinkie/brainstorm`) is the authoritative backup and version history for source, documentation, tests, deployment configuration, and database migrations.
 - Raw media originals remain local-only in `music quiz originals/`. Secrets remain local-only in `.env.local`. Neither belongs in GitHub.
 - Working agreement: push each completed task to GitHub unless a reason not to push is explicitly flagged. Do not push partial experiments, unreviewed work, credentials, or raw media originals.
 - Before work starts on another machine, clone the repository once and pull the latest `main` branch. Commit and push completed work before switching machines.
